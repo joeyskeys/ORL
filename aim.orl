@@ -1,0 +1,65 @@
+/*
+This file is a prototype of ORL source syntax.
+I'll try to write down an aim constraint as the first step of language design.
+ORL is going to be another C like language, which should be easy to learn.
+*/
+
+// preprocess part, functionality of including header
+
+#include ""
+#include <>
+
+// Basic unit of rigging consists deformer and constraint.
+// Can be concluded as three parts(from my perspective):
+// 1. vertex group;
+// 2. corresponding weight;
+// 3. function to do the transformation.
+//
+// Here we define "deform" to be the function type of a rigging unit, just like a deformer or a constraint.
+
+// Basic data types:
+// int
+// float
+// point/vector/normal
+// matrix (4x4)
+
+// Built-in variables
+// P : Current point, point type
+// N : Normal correspond to current point, normal type
+// W : weight correspond to current point, float type
+// O : object center point, point type
+// T : local matrix of the current object, matrix type
+// I : identical matrix
+
+// Built-in functions
+// translate_from_matrix(matrix) : extract the translate vector from matrix
+//
+// --vector operations--
+// vector cross(vector, vector) : vector cross product
+// float dot(vector, vector) : vector dot product
+// 
+
+deform aim(point aim_to, vector aiming_axis)
+{
+    vector destination_vector = normalize(aim_to - O);
+    vector norm_aiming_axis = normalize(aiming_axis);
+    vector v = cross(norm_aiming_axis, destination_vector);
+    float s = length(v);
+    float c = dot(aiming_axis, destination_vector);
+    matrix ss = {0, -v.z, v.y, 0, 
+                 v.z, 0, -v.x, 0, 
+                 -v.y, v.x, 0, 0,
+                 0, 0, 0, 0};
+    matrix rot = I + ss + ss * ss * (1 / (1 + c));
+    P = P * ss; // row majored here, but is column majored better?
+}
+
+/* 
+******
+one variation could be:
+1. this constraint is applied to an object, then object center is valid;
+2. this constraint is applied to a vectice group, then perhaps we should 
+   compute the averaged center of the vertex group or specify it from the
+   parameter.
+******
+*/
