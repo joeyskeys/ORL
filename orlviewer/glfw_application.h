@@ -20,7 +20,10 @@ private:
     void loop();
     void cleanup();
 
+private:
+
     GLFWwindow *m_window;
+    VkInstance instance;
 
     size_t      m_width;
     size_t      m_height;
