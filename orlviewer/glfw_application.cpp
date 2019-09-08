@@ -36,8 +36,8 @@ void destroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
 Application::Application(size_t w, size_t h):
     m_width(w), m_height(h)
 {
-    init_window(m_width, m_height);
-    init_vulkan();
+    initWindow(m_width, m_height);
+    initVulkan();
 }
 
 void Application::run()
@@ -46,7 +46,7 @@ void Application::run()
     cleanup();
 }
 
-void Application::init_window(size_t w, size_t h)
+void Application::initWindow(size_t w, size_t h)
 {
     glfwInit();
 
@@ -56,7 +56,35 @@ void Application::init_window(size_t w, size_t h)
     m_window = glfwCreateWindow(w, h, "orlviewer", nullptr, nullptr);
 }
 
-void Application::init_vulkan()
+void Application::initVulkan()
+{
+    createInstance();
+    setupDebugMessenger();
+
+}
+
+void Application::loop()
+{
+    while (!glfwWindowShouldClose(m_window))
+    {
+        glfwPollEvents();
+    }
+}
+
+void Application::cleanup()
+{
+    if (enable_validation_layers)
+    {
+        destroyDebugUtilsMessengerEXT(instance, m_debug_messenger, nullptr);
+    }
+
+    vkDestroyInstance(instance, nullptr);
+    
+    glfwDestroyWindow(m_window);
+    glfwTerminate();
+}
+
+void Application::createInstance()
 {
     if (enable_validation_layers && !checkValidationLayerSupport())
     {
@@ -101,27 +129,6 @@ void Application::init_vulkan()
     {
         throw std::runtime_error("failed to create instance!");
     }
-}
-
-void Application::loop()
-{
-    while (!glfwWindowShouldClose(m_window))
-    {
-        glfwPollEvents();
-    }
-}
-
-void Application::cleanup()
-{
-    if (enable_validation_layers)
-    {
-        destroyDebugUtilsMessengerEXT(instance, m_debug_messenger, nullptr);
-    }
-
-    vkDestroyInstance(instance, nullptr);
-    
-    glfwDestroyWindow(m_window);
-    glfwTerminate();
 }
 
 void Application::populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create_info)
@@ -193,6 +200,11 @@ VKAPI_ATTR VkBool32 VKAPI_CALL Application::debugCallback(VkDebugUtilsMessageSev
 {
     std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
     return VK_FALSE;
+}
+
+void Application::pickPhysicalDevice()
+{
+    
 }
 
 }
