@@ -10,10 +10,11 @@ namespace orl
 
 struct QueueFamilyIndices
 {
-    std::optional<uint32_t> graphicsFamily;
+    std::optional<uint32_t> graphics_family;
+    std::optional<uint32_t> present_family;
 
     bool isComplete() {
-        return graphicsFamily.has_value();
+        return graphics_family.has_value() && present_family.has_value();
     }
 };
 
@@ -40,6 +41,8 @@ private:
     bool checkValidationLayerSupport();
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, VkDebugUtilsMessageTypeFlagsEXT message_type, const VkDebugUtilsMessengerCallbackDataEXT* pcallback_data, void* puser_data);
 
+    void createSurface();
+
     std::vector<const char*> getRequiredExtensions();
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
     bool isDeviceSuitable(VkPhysicalDevice device);
@@ -51,11 +54,13 @@ private:
     GLFWwindow *m_window;
     VkInstance instance;
     VkDebugUtilsMessengerEXT m_debug_messenger;
+    VkSurfaceKHR m_surface;
 
     VkPhysicalDevice m_physical_device = VK_NULL_HANDLE;
     VkDevice m_device;
 
     VkQueue m_graphics_queue;
+    VkQueue m_present_queue;
 
     size_t      m_width;
     size_t      m_height;
