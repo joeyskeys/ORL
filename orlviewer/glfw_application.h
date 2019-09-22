@@ -18,6 +18,12 @@ struct QueueFamilyIndices
     }
 };
 
+struct SwapChainSupportDetails {
+    VkSurfaceCapabilitiesKHR capabilities;
+    std::vector<VkSurfaceFormatKHR> formats;
+    std::vector<VkPresentModeKHR> presentModes;
+};
+
 class Application
 {
 public:
@@ -37,7 +43,6 @@ private:
 
     void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create_info);
     void setupDebugMessenger();
-    std::vector<const char*> getRequiredExtensions();
     bool checkValidationLayerSupport();
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, VkDebugUtilsMessageTypeFlagsEXT message_type, const VkDebugUtilsMessengerCallbackDataEXT* pcallback_data, void* puser_data);
 
@@ -48,6 +53,18 @@ private:
     bool isDeviceSuitable(VkPhysicalDevice device);
     void pickPhysicalDevice();
     void createLogicalDevice();
+
+    VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
+    VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
+    VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
+    SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
+
+    void createSwapChain();
+    void createImageViews();
+    void createRenderPass();
+
+    VkShaderModule createShaderModule(const std::vector<char>& code);
+    void createGraphicsPipeline();
 
 private:
 
@@ -62,8 +79,18 @@ private:
     VkQueue m_graphics_queue;
     VkQueue m_present_queue;
 
-    size_t      m_width;
-    size_t      m_height;
+    VkSwapchainKHR m_swap_chain;
+    std::vector<VkImage> m_swap_chain_images;
+    VkFormat m_swap_chain_image_format;
+    VkExtent2D m_swap_chain_extent;
+    std::vector<VkImageView> m_swap_chain_image_views;
+
+    VkRenderPass m_render_pass;
+    VkPipelineLayout m_pipeline_layout;
+    VkPipeline m_graphics_pipeline;
+
+    uint32_t 	m_width;
+    uint32_t    m_height;
 };
 
 }

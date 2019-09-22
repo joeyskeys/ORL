@@ -32,7 +32,10 @@
 *.app
 
 # Build directory
-build/
+build*
 
 # IDE related
 .vscode
+
+# CMake user cache
+CMakeLists.txt.user
