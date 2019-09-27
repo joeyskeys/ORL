@@ -5,6 +5,8 @@
 
 #include <vector>
 
+#define MAX_FRAMES_IN_FLIGHT 2
+
 namespace orl
 {
 
@@ -37,7 +39,9 @@ private:
     void initWindow(size_t w, size_t h);
     void initVulkan();
     void loop();
+    void cleanupSwapChain();
     void cleanup();
+    void recreateSwapChain();
 
     void createInstance();
 
@@ -66,6 +70,13 @@ private:
     VkShaderModule createShaderModule(const std::vector<char>& code);
     void createGraphicsPipeline();
 
+    void createFramebuffers();
+    void createCommandPool();
+    void createCommandBuffers();
+    void createSyncObjects();
+
+    void drawFrame();
+
 private:
 
     GLFWwindow *m_window;
@@ -84,10 +95,21 @@ private:
     VkFormat m_swap_chain_image_format;
     VkExtent2D m_swap_chain_extent;
     std::vector<VkImageView> m_swap_chain_image_views;
+    std::vector<VkFramebuffer> m_swap_chain_framebuffers;
 
     VkRenderPass m_render_pass;
     VkPipelineLayout m_pipeline_layout;
     VkPipeline m_graphics_pipeline;
+
+    VkCommandPool m_command_pool;
+    std::vector<VkCommandBuffer> m_command_buffers;
+
+    std::vector<VkSemaphore> m_image_available_semaphores;
+    std::vector<VkSemaphore> m_render_finished_semaphores;
+    std::vector<VkFence> m_in_flight_fences;
+    size_t m_current_frame = 0;
+
+    bool m_frame_buffer_resized = false;
 
     uint32_t 	m_width;
     uint32_t    m_height;
