@@ -1,9 +1,14 @@
 #pragma once
 
+#ifdef __linux__
 #define GLFW_INCLUDE_VULKAN
+#else
+#include <vulkan/vulkan.h>
+#endif
 #include <GLFW/glfw3.h>
 
 #include <vector>
+#include <optional>
 
 #define MAX_FRAMES_IN_FLIGHT 2
 
@@ -77,6 +82,10 @@ private:
 
     void drawFrame();
 
+public:
+
+    bool m_frame_buffer_resized = false;
+
 private:
 
     GLFWwindow *m_window;
@@ -108,8 +117,6 @@ private:
     std::vector<VkSemaphore> m_render_finished_semaphores;
     std::vector<VkFence> m_in_flight_fences;
     size_t m_current_frame = 0;
-
-    bool m_frame_buffer_resized = false;
 
     uint32_t 	m_width;
     uint32_t    m_height;

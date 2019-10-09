@@ -11,20 +11,24 @@ endif()
 find_path(GLFW_INCLUDE_DIR GLFW/glfw3.h
     PATHS
         ${GLFW_ROOT}/include
-        /usr/include)
+        /usr/include
+        /usr/local/include)
 
 find_library(GLFW_LIBRARY
     NAMES
         glfw
     PATHS
         ${GLFW_ROOT}/lib
-        /usr/lib)
+        /usr/lib
+        /usr/local/lib)
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(GLFW
     REQUIRED_VARS
         GLFW_INCLUDE_DIR
         GLFW_LIBRARY)
+
+message(WARNING "GLFW lib " ${GLFW_LIBRARY})
 
 if(GLFW_FOUND)
     set(GLFW_INCLUDE_DIRS ${GLFW_INCLUDE_DIR})
