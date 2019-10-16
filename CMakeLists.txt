@@ -25,3 +25,5 @@ if(Vulkan_FOUND)
                         ${GLM_INCLUDE_DIRS})
     add_subdirectory(orlviewer)
 endif()
+
+add_subdirectory(orltest)

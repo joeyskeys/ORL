@@ -56,8 +56,8 @@ IF ( FLEX_EXECUTABLE AND BISON_EXECUTABLE )
         # MESSAGE (STATUS "  flex output ${flexoutputcxx}")
 
         SET ( ${srclist} ${${srclist}} ${bisonoutputcxx} ${flexoutputcxx} )
-        # MESSAGE (STATUS "  src list now ${${srclist}}")
-        # MESSAGE (STATUS "  compiler headers = ${${compiler_headers}}")
+        MESSAGE (STATUS "  src list now ${${srclist}}")
+        MESSAGE (STATUS "  compiler headers = ${${compiler_headers}}")
 
         # Be really sure that we prefer the FlexLexer.h that comes with
         # the flex binary we're using, not some other one in the system.
@@ -72,12 +72,12 @@ IF ( FLEX_EXECUTABLE AND BISON_EXECUTABLE )
         INCLUDE_DIRECTORIES ( ${CMAKE_CURRENT_BINARY_DIR} )
         INCLUDE_DIRECTORIES ( ${CMAKE_CURRENT_SOURCE_DIR} )
         ADD_CUSTOM_COMMAND ( OUTPUT ${bisonoutputcxx} 
-          COMMAND ${BISON_EXECUTABLE} -dv -p ${prefix} -o ${bisonoutputcxx} "${CMAKE_CURRENT_SOURCE_DIR}/${bisonsrc}"
+          COMMAND ${BISON_EXECUTABLE} -dv -p ${prefix} -o ${bisonoutputcxx} "${bisonsrc}"
           MAIN_DEPENDENCY ${bisonsrc}
           DEPENDS ${${compiler_headers}}
           WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} )
         ADD_CUSTOM_COMMAND ( OUTPUT ${flexoutputcxx} 
-          COMMAND ${FLEX_EXECUTABLE} -o ${flexoutputcxx} "${CMAKE_CURRENT_SOURCE_DIR}/${flexsrc}"
+          COMMAND ${FLEX_EXECUTABLE} -d -o ${flexoutputcxx} "${flexsrc}"
           MAIN_DEPENDENCY ${flexsrc}
           DEPENDS ${${compiler_headers}}
           WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} )

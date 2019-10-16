@@ -28,8 +28,6 @@ find_package_handle_standard_args(GLFW
         GLFW_INCLUDE_DIR
         GLFW_LIBRARY)
 
-message(WARNING "GLFW lib " ${GLFW_LIBRARY})
-
 if(GLFW_FOUND)
     set(GLFW_INCLUDE_DIRS ${GLFW_INCLUDE_DIR})
     set(GLFW_LIBRARIES ${GLFW_LIBRARY})

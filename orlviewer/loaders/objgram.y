@@ -1,20 +1,40 @@
 %{
+#define YYDEBUG 1
+%}
+
+%code requires{
 #include "mesh.h"
 
+bool obj_parse_buffer(const std::string obj_buffer, Mesh *m);
+}
+
+%code{
+#include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
 #include <string>
-%}
+#include <iostream>
+
+#undef yylex
+#define yylex objlex
+extern int objlex();
+extern FILE *yyin;
+void yyerror(Mesh *m, const char *s);
+}
 
 %union
 {
-    int             i;
-    float           f;
-    glm::vec2      v2;
-    glm::vec3      v3;
-    glm::vec4      v4;
-    glm::uvec3    uv3;
-    glm::uvec4    uv4;
-    void           *n;
-    const char     *c;
+    int                  i;
+    float                f;
+    float            v2[2];
+    float            v3[3];
+    float            v4[4];
+    unsigned int    uv3[3];
+    unsigned int    uv4[4];
+    void                *n;
+    const char          *c;
 }
 
 %locations
@@ -25,7 +45,9 @@
 %token <s>      IDENTIFIER STRING_LITERAL
 %token <i>      INT_LITERAL
 %token <f>      FLOAT_LITERAL
-%token <i>      VERTEX UV NORMAL FACE
+%token <i>      OBJECT VERTEX UV NORMAL FACE
+%token <i>      MATERIAL USEMAT SMOOTH
+%token <i>      ILLEGAL
 
 // Define the nonterminals.
 %type <n>       obj_file
@@ -71,12 +93,13 @@ data_line
     | uv_line       { $$ = 0; }
     | normal_line   { $$ = 0; }
     | face_line     { $$ = 0; }
+    | LINESEP       { $$ = 0; }
     ;
 
 vertex_line
     : VERTEX vertex_coordinates
         {
-            mesh->addVertex($2);
+            mesh->addVertex(glm::make_vec3($2));
             $$ = 0;
         }
     ;
@@ -84,21 +107,23 @@ vertex_line
 vertex_coordinates
     : coordinate_component coordinate_component coordinate_component optional_coordinate_component
         {
-            $$ = new glm::vec3($1, $2, $3);
+            $$[0] = $1;
+            $$[1] = $2;
+            $$[2] = $3;
         }
     ;
 
 coordinate_component
     : FLOAT_LITERAL
         {
-            $$ = std::stof($1);
+            $$ = $1;
         }
     ;
 
 optional_coordinate_component
     : FLOAT_LITERAL
         {
-            $$ = std::stof($1);
+            $$ = $1;
         }
     |
         {
@@ -116,43 +141,49 @@ uv_line
 uv_coordinates
     : one_component_uv
         {
-            $$ = $1;
+            $$[0] = $1[0];
+            $$[1] = $1[1];
         }
     | two_component_uv
         {
-            $$ = $1;
+            $$[0] = $1[0];
+            $$[1] = $1[1];
         }
     | three_component_uv
         {
-            $$ = $1;
+            $$[0] = $1[0];
+            $$[1] = $1[1];
         }
     ;
 
 one_component_uv
     : coordinate_component
         {
-            $$ = new glm::vec2($1, 0);
+            $$[0] = $1;
+            $$[1] = 0;
         }
     ;
 
 two_component_uv
     : coordinate_component coordinate_component
         {
-            $$ = new glm::vec2($1, $2);
+            $$[0] = $1;
+            $$[1] = $2;
         }
     ;
 
 three_component_uv
     : coordinate_component coordinate_component coordinate_component
         {
-            $$ = new glm::vec2($1, $2);
+            $$[0] = $1;
+            $$[1] = $2;
         }
     ;
 
 normal_line
     : NORMAL normal_coordinates
         {
-            mesh->addNormal($2);
+            mesh->addNormal(glm::make_vec3($2));
             $$ = 0;
         }
     ;
@@ -160,7 +191,9 @@ normal_line
 normal_coordinates
     : coordinate_component coordinate_component coordinate_component
         {
-            $$ = new glm::vec3($1, $2, $3);
+            $$[0] = $1;
+            $$[1] = $2;
+            $$[2] = $3;
         }
     ;
 
@@ -172,10 +205,12 @@ face_index
     : index_component
         {
             mesh->addIndex($1);
+            $$ = 0;
         }
     | index_component '/' extra_component
         {
             mesh->addIndex($1);
+            $$ = 0;
         }
     ;
 
@@ -218,8 +253,14 @@ vert_null_norm_part
 index_component
     : INT_LITERAL
         {
-            $$ = std::stoi($1);
+            $$ = $1;
         }
     ;
 
 %%
+
+void yyerror(Mesh *m, const char *s)
+{
+    std::cout << "Error. " << s << std::endl;
+    exit(-1);
+}
