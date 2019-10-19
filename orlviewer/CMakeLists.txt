@@ -7,10 +7,18 @@ set(viewer_headers
 
 set(viewer_srcs
     glfw_application.cpp
-    mesh.cpp
     main.cpp)
 
-FLEX_BISON(${CMAKE_CURRENT_SOURCE_DIR}/loaders/objlex.l ${CMAKE_CURRENT_SOURCE_DIR}/loaders/objgram.y obj viewer_srcs viewer_headers)
+set(loader_headers
+    mesh.h)
+
+set(loader_srcs)
+
+FLEX_BISON(${CMAKE_CURRENT_SOURCE_DIR}/loaders/objlex.l ${CMAKE_CURRENT_SOURCE_DIR}/loaders/objgram.y obj loader_srcs loader_headers)
+
+add_library(loader
+    ${loader_headers}
+    ${loader_srcs})
 
 add_executable(orlviewer
     ${viewer_headers}
@@ -18,5 +26,6 @@ add_executable(orlviewer
 
 target_link_libraries(orlviewer
     general
+        loader
         ${GLFW_LIBRARIES}
         ${Vulkan_LIBRARIES})

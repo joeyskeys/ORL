@@ -16,12 +16,16 @@ bool obj_parse_buffer(const std::string obj_buffer, Mesh *m);
 
 #include <string>
 #include <iostream>
+#include <vector>
 
 #undef yylex
 #define yylex objlex
 extern int objlex();
 extern FILE *yyin;
 void yyerror(Mesh *m, const char *s);
+
+// Temporary vector to record face index list
+std::vector<unsigned int> face_index_list;
 }
 
 %union
@@ -34,7 +38,7 @@ void yyerror(Mesh *m, const char *s);
     unsigned int    uv3[3];
     unsigned int    uv4[4];
     void                *n;
-    const char          *c;
+    const char          *s;
 }
 
 %locations
@@ -42,11 +46,11 @@ void yyerror(Mesh *m, const char *s);
 %parse-param { Mesh *mesh }
 
 // Define terminal symbols.
-%token <s>      IDENTIFIER STRING_LITERAL
+%token <s>      STRING_LITERAL
 %token <i>      INT_LITERAL
 %token <f>      FLOAT_LITERAL
 %token <i>      OBJECT VERTEX UV NORMAL FACE
-%token <i>      MATERIAL USEMAT SMOOTH
+%token <i>      MATERIAL USEMAT SMOOTH ON OFF
 %token <i>      ILLEGAL
 
 // Define the nonterminals.
@@ -55,26 +59,25 @@ void yyerror(Mesh *m, const char *s);
 %type <n>       data_line
 %type <f>       coordinate_component
 %type <f>       optional_coordinate_component
-%type <n>       vertex_line
 %type <v3>      vertex_coordinates
-%type <n>       uv_line
 %type <v2>      uv_coordinates
 %type <v2>      one_component_uv
 %type <v2>      two_component_uv
 %type <v2>      three_component_uv
-%type <n>       normal_line
 %type <v3>      normal_coordinates
-%type <n>       face_line
-%type <n>       face_index
+%type <n>       face_index_set
+%type <i>       face_index
 %type <i>       index_component
 %type <i>       vert_uv_part
 %type <i>       vert_uv_norm_part
 %type <i>       vert_null_norm_part
 %type <i>       extra_component
+%type <s>       file_name
 
 // Define precedence of operator.
 %right <i>      SEP
 %left  <i>      LINESEP
+%right <i>      '-'
 
 %%
 
@@ -85,21 +88,63 @@ obj_file
 
 data_lines
     : data_line
-    | data_lines LINESEP data_line  { $$ = 0; }
+    | data_lines data_line  { $$ = 0; }
     ;
 
 data_line
-    : vertex_line   { $$ = 0; }
-    | uv_line       { $$ = 0; }
-    | normal_line   { $$ = 0; }
-    | face_line     { $$ = 0; }
-    | LINESEP       { $$ = 0; }
-    ;
-
-vertex_line
-    : VERTEX vertex_coordinates
+    : OBJECT STRING_LITERAL LINESEP
         {
+            // Currently we only handle one mesh situation
+            $$ = 0;
+        }
+    | VERTEX vertex_coordinates LINESEP
+        { 
             mesh->addVertex(glm::make_vec3($2));
+            $$ = 0;
+        }
+    | UV uv_coordinates LINESEP
+        { 
+            $$ = 0;
+        }
+    | NORMAL normal_coordinates LINESEP
+        {
+            mesh->addNormal(glm::make_vec3($2));
+            $$ = 0;
+        }
+    | FACE face_index_set LINESEP
+        {
+            // Split n-gon mesh into trianles if there's any
+            if (face_index_list.size() < 3)
+                // Todo : error handling here
+                ;
+            for (int i = 1, end = face_index_list.size(); i < end - 1; i++)
+                mesh->addIndex(glm::uvec3(face_index_list[0], face_index_list[i], face_index_list[i + 1]));
+            face_index_list.clear();
+            $$ = 0;
+        }
+    | MATERIAL file_name LINESEP
+        {
+            $$ = 0;
+        }
+    | USEMAT STRING_LITERAL LINESEP
+        {
+            $$ = 0;
+        }
+    | SMOOTH ON LINESEP
+        {
+            $$ = 0;
+        }
+    | SMOOTH OFF LINESEP
+        {
+            $$ = 0;
+        }
+    | ILLEGAL LINESEP
+        {
+            // Bypass all illegal input
+            $$ = 0;
+        }
+    | LINESEP
+        {
             $$ = 0;
         }
     ;
@@ -118,6 +163,10 @@ coordinate_component
         {
             $$ = $1;
         }
+    | '-' FLOAT_LITERAL
+        {
+            $$ = -$2;
+        }
     ;
 
 optional_coordinate_component
@@ -125,16 +174,13 @@ optional_coordinate_component
         {
             $$ = $1;
         }
+    | '-' FLOAT_LITERAL
+        {
+            $$ = -$2;
+        }
     |
         {
             $$ = 0.f;
-        }
-    ;
-
-uv_line
-    : UV uv_coordinates
-        {
-            $$ = 0;
         }
     ;
 
@@ -180,14 +226,6 @@ three_component_uv
         }
     ;
 
-normal_line
-    : NORMAL normal_coordinates
-        {
-            mesh->addNormal(glm::make_vec3($2));
-            $$ = 0;
-        }
-    ;
-
 normal_coordinates
     : coordinate_component coordinate_component coordinate_component
         {
@@ -197,20 +235,27 @@ normal_coordinates
         }
     ;
 
-face_line
-    : FACE face_index   { $$ = 0; }
+face_index_set
+    : face_index
+        {
+            face_index_list.emplace_back($1);
+            $$ = 0;
+        }
+    | face_index_set face_index
+        {
+            face_index_list.emplace_back($2);
+            $$ = 0;
+        }
     ;
 
 face_index
     : index_component
         {
-            mesh->addIndex($1);
-            $$ = 0;
+            $$ = $1;
         }
-    | index_component '/' extra_component
+    | index_component SEP extra_component
         {
-            mesh->addIndex($1);
-            $$ = 0;
+            $$ = $1;
         }
     ;
 
@@ -237,14 +282,14 @@ vert_uv_part
     ;
 
 vert_uv_norm_part
-    : index_component '/' index_component
+    : index_component SEP index_component
         {
             $$ = $1;
         }
     ;
 
 vert_null_norm_part
-    : '/' index_component
+    : SEP index_component
         {
             $$ = $2;
         }
@@ -256,6 +301,12 @@ index_component
             $$ = $1;
         }
     ;
+
+file_name
+    : STRING_LITERAL
+        {
+            $$ = std::string($1).c_str();
+        }
 
 %%
 

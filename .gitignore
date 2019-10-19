@@ -39,3 +39,6 @@ build*
 
 # CMake user cache
 CMakeLists.txt.user
+
+# Thirdparty folder
+thirdparty/

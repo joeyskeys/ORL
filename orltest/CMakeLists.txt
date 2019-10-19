@@ -8,7 +8,7 @@ message("include ${CMAKE_BINARY_DIR}/orlviewer")
 
 macro(add_gtest TESTNAME)
     add_executable(${TESTNAME} ${ARGN})
-    target_link_libraries(${TESTNAME} gtest gmock gtest_main)
+    target_link_libraries(${TESTNAME} gtest gmock gtest_main loader)
     add_test(NAME ${TESTNAME} COMMAND ${TESTNAME})
 endmacro()
 
@@ -21,4 +21,5 @@ endmacro()
 #    gtest_main
 #    mesh)
 
-add_gtest(obj_parse_tests vertex_parse.cpp ${CMAKE_BINARY_DIR}/orlviewer/objgram.cpp ${CMAKE_BINARY_DIR}/orlviewer/objlex.cpp)
+add_gtest(obj_parse_tests vertex_parse.cpp)
+

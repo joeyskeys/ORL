@@ -18,10 +18,14 @@ FLT2            {DIGIT}*\.{DIGIT}+{E}?
 FLT3            {DIGIT}+{E}
 FLT             {FLT1}|{FLT2}|{FLT3}
 
-COMMENT         #.*
+STR             ({ALPHA}|[_])({ALPHA}|{DIGIT}|[_.])*
+
+COMMENT         #.*\n
 
 %{
 #include "objgram.hpp"
+
+#include <string>
 
 #define yylval objlval
 #define yylloc objlloc
@@ -36,9 +40,6 @@ COMMENT         #.*
 
 {WHITE}         { }
 
-{FLT}           { SETLINE; return (yylval.i = FLOAT_LITERAL); }
-{INTEGER}       { SETLINE; return (yylval.i = INT_LITERAL); }
-
 "o"             { SETLINE; return (yylval.i = OBJECT); }
 "v"             { SETLINE; return (yylval.i = VERTEX); }
 "vt"            { SETLINE; return (yylval.i = UV); }
@@ -48,13 +49,30 @@ COMMENT         #.*
 "mtllib"        { SETLINE; return (yylval.i = MATERIAL); }
 "usemtl"        { SETLINE; return (yylval.i = USEMAT); }
 "s"             { SETLINE; return (yylval.i = SMOOTH); }
+"on"            { SETLINE; return (yylval.i = ON); }
+"off"           { SETLINE; return (yylval.i = OFF); }
+
+{INTEGER}       { SETLINE;
+                  long long lval = std::stoll(yytext);
+                  // todo : need overflow handling here
+                  yylval.i = static_cast<int>(lval);
+                  return INT_LITERAL; }
+
+{FLT}           { SETLINE;            
+                  yylval.f = std::stof(yytext);
+                  return FLOAT_LITERAL; }
+
+{STR}           { SETLINE;
+                  std::string s(yytext);
+                  yylval.s = s.c_str();
+                  return STRING_LITERAL; }
 
 "/"             { SETLINE; return (yylval.i = SEP); }
 "\\\n"  |
 [\n]            { SETLINE; return (yylval.i = LINESEP); }
 
  /* default rule for other single characters */
-.               { SETLINE; return (yylval.i = ILLEGAL); }
+.               { SETLINE; return (yylval.i = *yytext); }
 
 %%
 
