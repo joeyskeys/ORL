@@ -10,7 +10,7 @@
 TEST(ObjParseTests, VertexParse)
 {
     Mesh m;
-    std::ifstream ifs("/home/joey/Desktop/workspace/repos/self/ORL/orltest/sphere.obj", std::ifstream::in);
+    std::ifstream ifs("@CMAKE_CURRENT_SOURCE_DIR@/sphere.obj", std::ifstream::in);
     std::string obj_buf;
     if (ifs.good())
     {
@@ -21,6 +21,22 @@ TEST(ObjParseTests, VertexParse)
     }
 
     EXPECT_EQ(m.getVertexAt(0).x, 0.f);
+}
+
+TEST(ObjParseTests, IndexParse)
+{
+    Mesh m;
+    std::ifstream ifs("@CMAKE_CURRENT_SOURCE_DIR@/sphere.obj", std::ifstream::in);
+    std::string obj_buf;
+    if (ifs.good())
+    {
+        std::ostringstream ss;
+        ss << ifs.rdbuf();
+        obj_buf = ss.str();
+        obj_parse_buffer(obj_buf, &m);
+    }
+
+    EXPECT_EQ(m.getIndexAt(0).x, 8);
 }
 
 int main(int argc, char **argv)

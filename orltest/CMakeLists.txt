@@ -3,8 +3,7 @@ add_subdirectory("${CMAKE_SOURCE_DIR}/thirdparty/googletest" "${CMAKE_BINARY_DIR
 include_directories(${CMAKE_SOURCE_DIR}/orlviewer)
 include_directories(${CMAKE_BINARY_DIR}/orlviewer)
 
-message("include ${CMAKE_SOURCE_DIR}/orlviewer")
-message("include ${CMAKE_BINARY_DIR}/orlviewer")
+configure_file(vertex_parse.cpp.in vertex_parse.cpp)
 
 macro(add_gtest TESTNAME)
     add_executable(${TESTNAME} ${ARGN})
@@ -21,5 +20,5 @@ endmacro()
 #    gtest_main
 #    mesh)
 
-add_gtest(obj_parse_tests vertex_parse.cpp)
+add_gtest(obj_parse_tests ${CMAKE_CURRENT_BINARY_DIR}/vertex_parse.cpp)
 

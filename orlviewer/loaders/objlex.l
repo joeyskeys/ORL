@@ -79,7 +79,7 @@ COMMENT         #.*\n
 bool obj_parse_buffer(const std::string obj_buffer, Mesh *m)
 {
     extern int objdebug;
-    objdebug = 1;
+    //objdebug = 1;
     obj_switch_to_buffer(obj_scan_string(obj_buffer.c_str()));
     objparse(m);
     bool parse_ret = true;

@@ -77,7 +77,7 @@ IF ( FLEX_EXECUTABLE AND BISON_EXECUTABLE )
           DEPENDS ${${compiler_headers}}
           WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} )
         ADD_CUSTOM_COMMAND ( OUTPUT ${flexoutputcxx} 
-          COMMAND ${FLEX_EXECUTABLE} -d -o ${flexoutputcxx} "${flexsrc}"
+          COMMAND ${FLEX_EXECUTABLE} -o ${flexoutputcxx} "${flexsrc}"
           MAIN_DEPENDENCY ${flexsrc}
           DEPENDS ${${compiler_headers}}
           WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} )

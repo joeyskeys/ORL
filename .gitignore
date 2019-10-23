@@ -38,7 +38,7 @@ build*
 .vscode
 
 # CMake user cache
-CMakeLists.txt.user
+CMakeLists.txt.user*
 
 # Thirdparty folder
 thirdparty/
