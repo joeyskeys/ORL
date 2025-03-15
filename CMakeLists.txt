@@ -7,16 +7,20 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Set the build type")
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
+set(BUILD_TESTS ON)
+
 cmake_policy(SET CMP0074 NEW)
 
-include(flexbison)
+include_directories(src/include)
 
-find_package(GLFW)
-find_package(GLM)
+#include(flexbison)
+
+#find_package(GLFW)
+#find_package(GLM)
 find_package(Vulkan)
 
 if(Vulkan_FOUND)
@@ -26,4 +30,9 @@ if(Vulkan_FOUND)
     add_subdirectory(orlviewer)
 endif()
 
-add_subdirectory(orltest)
+#add_subdirectory(orltest)
+
+find_package(Catch2 3)
+if (Catch2_FOUND AND BUILD_TESTS)
+    add_subdirectory(tests)
+endif()
