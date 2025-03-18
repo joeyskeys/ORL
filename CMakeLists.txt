@@ -21,6 +21,7 @@ include_directories(src/include)
 
 #find_package(GLFW)
 #find_package(GLM)
+find_package(Eigen3 REQUIRED)
 find_package(Vulkan)
 
 if(Vulkan_FOUND)
