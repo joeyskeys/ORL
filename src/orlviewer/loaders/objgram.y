@@ -3,6 +3,10 @@
 %}
 
 %code requires{
+#include <string>
+#include <iostream>
+#include <vector>
+
 #include "mesh.h"
 
 bool obj_parse_buffer(const std::string obj_buffer, Mesh *m);
@@ -13,10 +17,6 @@ bool obj_parse_buffer(const std::string obj_buffer, Mesh *m);
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <glm/gtc/type_ptr.hpp>
-
-#include <string>
-#include <iostream>
-#include <vector>
 
 #undef yylex
 #define yylex objlex

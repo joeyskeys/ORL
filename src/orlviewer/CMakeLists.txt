@@ -27,5 +27,31 @@ add_executable(orlviewer
 target_link_libraries(orlviewer
     general
         loader
-        ${GLFW_LIBRARIES}
-        ${Vulkan_LIBRARIES})
+        glfw
+        Vulkan::Vulkan)
+
+file(GLOB shader_srcs shaders/*)
+set(output_shader_paths "")
+add_custom_target(compile_glsl_shaders VERBATIM)
+set(shader_output_folder "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+if(NOT EXISTS ${shader_output_folder})
+    file(MAKE_DIRECTORY ${shader_output_folder})
+endif()
+
+foreach(shader_file ${shader_srcs})
+    get_filename_component(output_shader_name ${shader_file} NAME_WE)
+    set(output_shader_path "${shader_output_folder}/${output_shader_name}.spv")
+    add_custom_command(
+        TARGET compile_glsl_shaders POST_BUILD
+        COMMAND ${Vulkan_GLSLC_EXECUTABLE} -o ${output_shader_path} ${shader_file} && echo "${output_shader_path}"
+        MAIN_DEPENDECY ${shader_file}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    list(APPEND output_shader_paths ${output_shader_path})
+endforeach()
+
+add_custom_target(compile_shader_target
+    DEPENDS ${output_shader_paths}
+    VERBATIM)
+
+add_dependencies(compile_shader_target compile_glsl_shaders)
+add_dependencies(orlviewer compile_shader_target)

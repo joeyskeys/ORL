@@ -684,8 +684,8 @@ static std::vector<char> readFile(const std::string &filename)
 
 void Application::createGraphicsPipeline()
 {
-    auto vertShaderCode = readFile("shaders/vert.spv");
-    auto fragShaderCode = readFile("shaders/frag.spv");
+    auto vertShaderCode = readFile("../shaders/base_vert.spv");
+    auto fragShaderCode = readFile("../shaders/base_frag.spv");
 
     VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
     VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);

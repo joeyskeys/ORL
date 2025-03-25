@@ -1,7 +1,6 @@
 #pragma once
 
 #include <array>
-#include <iostream>
 
 #include "ORL/mathutils.h"
 

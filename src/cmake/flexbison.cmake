@@ -56,8 +56,6 @@ IF ( FLEX_EXECUTABLE AND BISON_EXECUTABLE )
         # MESSAGE (STATUS "  flex output ${flexoutputcxx}")
 
         SET ( ${srclist} ${${srclist}} ${bisonoutputcxx} ${flexoutputcxx} )
-        MESSAGE (STATUS "  src list now ${${srclist}}")
-        MESSAGE (STATUS "  compiler headers = ${${compiler_headers}}")
 
         # Be really sure that we prefer the FlexLexer.h that comes with
         # the flex binary we're using, not some other one in the system.
@@ -76,8 +74,14 @@ IF ( FLEX_EXECUTABLE AND BISON_EXECUTABLE )
           MAIN_DEPENDENCY ${bisonsrc}
           DEPENDS ${${compiler_headers}}
           WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} )
+
+        SET ( flex_args "" )
+        if (WIN32)
+          SET( flex_args --wincompat)
+        endif ()
+
         ADD_CUSTOM_COMMAND ( OUTPUT ${flexoutputcxx} 
-          COMMAND ${FLEX_EXECUTABLE} -o ${flexoutputcxx} "${flexsrc}"
+          COMMAND ${FLEX_EXECUTABLE} ${flex_args} -o ${flexoutputcxx} "${flexsrc}"
           MAIN_DEPENDENCY ${flexsrc}
           DEPENDS ${${compiler_headers}}
           WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} )
