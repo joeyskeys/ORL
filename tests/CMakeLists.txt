@@ -4,3 +4,5 @@ if (WIN32)
 endif()
 
 add_subdirectory(frame_tests)
+add_subdirectory(lexer_tests)
+add_subdirectory(parser_tests)

@@ -18,10 +18,11 @@ cmake_policy(SET CMP0074 NEW)
 include_directories(src/include)
 
 include(flexbison)
+add_subdirectory(src/orlcomp)
 
 find_package(glfw3)
 find_package(GLM)
-find_package(Eigen3 REQUIRED)
+find_package(Eigen3)
 find_package(Vulkan)
 
 if(Vulkan_FOUND)
