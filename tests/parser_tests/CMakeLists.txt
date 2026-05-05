@@ -5,5 +5,5 @@ add_executable(orl_parser_tests
 target_link_libraries(orl_parser_tests
     PRIVATE
         Catch2::Catch2WithMain
-        orlcomp_lexer
+        orlcomp_parser
 )
