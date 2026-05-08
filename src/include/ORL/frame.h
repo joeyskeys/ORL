@@ -101,7 +101,7 @@ public:
                 const int from_axis = from_axes[j];
                 if ((from_axis & orientation_bits_mask) == (to_axis & orientation_bits_mask)) {
                     Vec4f new_axis = 0;
-                    new_axis[j] = static_cast<Vec3f::ScalarType>(1 - 2 * (from_axis & 1) ^ (to_axis & 1));
+                    new_axis[j] = static_cast<Vec3f::ScalarType>(1 - 2 * static_cast<int>((from_axis & 1) ^ (to_axis & 1)));
                     ret[i] = new_axis;
                     break;
                 }

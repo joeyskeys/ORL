@@ -60,5 +60,16 @@ TEST_CASE("frame tests", "[frame]")
         Mat4f translation_in_to_using_transpose = base_change_matrix * translation_in_from * transpose_base_change_matrix;
         Vec4f new_pt_using_transpose = translation_in_to_using_transpose * pt_in_to;
         REQUIRE(new_pt_using_transpose == translated_pt_in_to);
+
+        Frame another_to = Frame(Frame::dir_right, Frame::dir_in, Frame::dir_up);
+        auto base_change_matrix2 = Frame::get_base_change_matrix(from, another_to);
+        auto inverse_base_change_matrix2 = base_change_matrix2.inverse();
+
+        Vec4f translated_pt_in_to2 = base_change_matrix2 * translation_in_from * pt_in_from;
+        Vec4f pt_in_to2 = base_change_matrix2 * pt_in_from;
+        
+        Mat4f translation_in_to_using_inverse2 = base_change_matrix2 * translation_in_from * inverse_base_change_matrix2;
+        Vec4f new_pt_using_inverse2 = translation_in_to_using_inverse2 * pt_in_to2;
+        REQUIRE(new_pt_using_inverse2 == translated_pt_in_to2);
     }
 }
