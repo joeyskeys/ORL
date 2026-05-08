@@ -1,7 +1,9 @@
 #pragma once
 
+#include "orl_ast.h"
 #include "orl_lexer.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -13,6 +15,7 @@ public:
 
     bool Parse();
     const std::vector<std::string> &Errors() const;
+    const Program *Ast() const;
 
 private:
     const Token &Peek(std::size_t offset = 0);
@@ -45,18 +48,23 @@ private:
     bool ParseUnary();
     bool ParsePostfix();
     bool ParsePrimary();
-    bool ParseArgumentList();
+    bool ParseArgumentList(std::vector<std::unique_ptr<Expression>> *arguments);
 
     bool IsTypeToken(TokenKind kind) const;
+    bool IsUnaryOperator(TokenKind kind) const;
+    UnaryOp UnaryOperatorFromToken(TokenKind kind) const;
+    BinaryOp BinaryOperatorFromToken(TokenKind kind) const;
     void AddError(const Token &token, const std::string &message);
     void Synchronize();
-
-    // Placeholder hooks for future code generation.
-    void EmitPlaceholder(const char *stage);
+    std::unique_ptr<Expression> TakeExpression();
+    std::unique_ptr<Statement> TakeStatement();
 
     Lexer lexer_;
     std::vector<Token> buffered_tokens_;
     std::vector<std::string> errors_;
+    std::unique_ptr<Program> program_;
+    std::unique_ptr<Expression> last_expression_;
+    std::unique_ptr<Statement> last_statement_;
 };
 
 } // namespace orlcomp

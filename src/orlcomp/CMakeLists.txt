@@ -11,6 +11,7 @@ set(ORLCOMP_PARSER_SOURCES
 )
 
 set(ORLCOMP_PARSER_HEADERS
+    orl_ast.h
     orl_parser.h
 )
 
