@@ -15,6 +15,14 @@ set(ORLCOMP_PARSER_HEADERS
     orl_parser.h
 )
 
+set(ORLCOMP_CODEGEN_SOURCES
+    orl_codegen.cpp
+)
+
+set(ORLCOMP_CODEGEN_HEADERS
+    orl_codegen.h
+)
+
 add_library(orlcomp_lexer
     ${ORLCOMP_LEXER_HEADERS}
     ${ORLCOMP_LEXER_SOURCES}
@@ -36,5 +44,33 @@ target_include_directories(orlcomp_parser
 target_link_libraries(orlcomp_parser
     PUBLIC orlcomp_lexer
 )
+
+find_package(LLVM CONFIG QUIET)
+
+if (LLVM_FOUND)
+    if (COMMAND llvm_map_components_to_libnames)
+        llvm_map_components_to_libnames(ORLCOMP_LLVM_LIBS Core Support)
+    else()
+        set(ORLCOMP_LLVM_LIBS LLVM)
+    endif()
+
+    add_library(orlcomp_codegen
+        ${ORLCOMP_CODEGEN_HEADERS}
+        ${ORLCOMP_CODEGEN_SOURCES}
+    )
+
+    target_include_directories(orlcomp_codegen
+        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+        PRIVATE ${LLVM_INCLUDE_DIRS}
+    )
+
+    target_link_libraries(orlcomp_codegen
+        PUBLIC orlcomp_parser
+        PRIVATE ${ORLCOMP_LLVM_LIBS}
+    )
+    message(STATUS "Configured ORL LLVM IR codegen")
+else()
+    message(STATUS "LLVM not found; ORL LLVM IR codegen target disabled")
+endif()
 
 message(STATUS "Configured ORL compiler handwritten lexer and parser")
