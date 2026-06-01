@@ -45,9 +45,24 @@ target_link_libraries(orlcomp_parser
     PUBLIC orlcomp_lexer
 )
 
+# vcpkg LLVM exports reference imported targets from these packages; load them
+# with CONFIG mode before find_package(LLVM) processes LLVMExports.cmake.
+find_package(ZLIB CONFIG QUIET)
+find_package(zstd CONFIG QUIET)
+
 find_package(LLVM CONFIG QUIET)
 
 if (LLVM_FOUND)
+    if (NOT TARGET ZLIB::ZLIB)
+        message(FATAL_ERROR
+            "LLVM was found but ZLIB::ZLIB is unavailable. "
+            "Install zlib via vcpkg and pass -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake")
+    endif()
+    if (NOT TARGET zstd::libzstd_shared)
+        message(FATAL_ERROR
+            "LLVM was found but zstd::libzstd_shared is unavailable. "
+            "Install zstd via vcpkg and pass -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake")
+    endif()
     if (COMMAND llvm_map_components_to_libnames)
         llvm_map_components_to_libnames(ORLCOMP_LLVM_LIBS Core Support)
     else()

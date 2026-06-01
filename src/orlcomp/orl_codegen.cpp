@@ -878,11 +878,14 @@ struct LlvmIrCodegen::Impl {
             cast_arguments.push_back(argument);
         }
 
-        llvm::CallInst *call_inst = builder_.CreateCall(callee, cast_arguments, callee_identifier->name + ".call");
+        llvm::Value *call_result = nullptr;
         if (callee->getReturnType()->isVoidTy()) {
+            call_result = builder_.CreateCall(callee, cast_arguments);
+            (void)call_result;
             return llvm::ConstantInt::get(builder_.getInt64Ty(), 0);
         }
-        return call_inst;
+
+        return builder_.CreateCall(callee, cast_arguments, callee_identifier->name + ".call");
     }
 
     void AddError(const std::string &message) {

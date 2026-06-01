@@ -14,7 +14,7 @@ set(loader_headers
 
 set(loader_srcs)
 
-FLEX_BISON(${CMAKE_CURRENT_SOURCE_DIR}/loaders/objlex.l ${CMAKE_CURRENT_SOURCE_DIR}/loaders/objgram.y obj loader_srcs loader_headers)
+#FLEX_BISON(${CMAKE_CURRENT_SOURCE_DIR}/loaders/objlex.l ${CMAKE_CURRENT_SOURCE_DIR}/loaders/objgram.y obj loader_srcs loader_headers)
 
 add_library(loader
     ${loader_headers}

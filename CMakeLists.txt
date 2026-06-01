@@ -20,20 +20,20 @@ cmake_policy(SET CMP0074 NEW)
 
 include_directories(src/include)
 
-include(flexbison)
+#include(flexbison)
 add_subdirectory(src/orlcomp)
 
 find_package(glfw3)
-find_package(GLM)
+find_package(GLM CONFIG REQUIRED)
 find_package(Eigen3 CONFIG REQUIRED)
-find_package(cglm CONFIG QUIET)
+#find_package(cglm CONFIG QUIET)
 find_package(Vulkan)
 
 if(Vulkan_FOUND)
     include_directories(${GLFW_INCLUDE_DIRS}
                         ${Vulkan_INCLUDE_DIRS}
                         ${GLM_INCLUDE_DIRS})
-    add_subdirectory(src/orlviewer)
+    #add_subdirectory(src/orlviewer)
 endif()
 
 #add_subdirectory(orltest)
