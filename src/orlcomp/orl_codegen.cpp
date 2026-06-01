@@ -919,6 +919,14 @@ const llvm::Module *LlvmIrCodegen::GetModule() const {
     return impl_->module_.get();
 }
 
+std::unique_ptr<llvm::Module> LlvmIrCodegen::ReleaseModule() {
+    return std::move(impl_->module_);
+}
+
+std::unique_ptr<llvm::LLVMContext> LlvmIrCodegen::ReleaseContext() {
+    return std::move(impl_->context_);
+}
+
 } // namespace orlcomp
 
 #else
@@ -960,6 +968,14 @@ std::string LlvmIrCodegen::DumpIR() const {
 }
 
 const llvm::Module *LlvmIrCodegen::GetModule() const {
+    return nullptr;
+}
+
+std::unique_ptr<llvm::Module> LlvmIrCodegen::ReleaseModule() {
+    return nullptr;
+}
+
+std::unique_ptr<llvm::LLVMContext> LlvmIrCodegen::ReleaseContext() {
     return nullptr;
 }
 

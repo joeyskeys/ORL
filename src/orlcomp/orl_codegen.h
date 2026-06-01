@@ -24,6 +24,9 @@ public:
     std::string DumpIR() const;
     const llvm::Module *GetModule() const;
 
+    std::unique_ptr<llvm::Module> ReleaseModule();
+    std::unique_ptr<llvm::LLVMContext> ReleaseContext();
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
