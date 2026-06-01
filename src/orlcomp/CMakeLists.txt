@@ -17,10 +17,15 @@ set(ORLCOMP_PARSER_HEADERS
 
 set(ORLCOMP_CODEGEN_SOURCES
     orl_codegen.cpp
+    orl_optimizer.cpp
+    orl_jit.cpp
 )
 
 set(ORLCOMP_CODEGEN_HEADERS
+    orl_ast.h
     orl_codegen.h
+    orl_optimizer.h
+    orl_jit.h
 )
 
 add_library(orlcomp_lexer
@@ -64,7 +69,12 @@ if (LLVM_FOUND)
             "Install zstd via vcpkg and pass -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake")
     endif()
     if (COMMAND llvm_map_components_to_libnames)
-        llvm_map_components_to_libnames(ORLCOMP_LLVM_LIBS Core Support)
+        llvm_map_components_to_libnames(ORLCOMP_LLVM_LIBS
+            Core Support ExecutionEngine
+            OrcJIT OrcShared OrcTargetProcess
+            Passes Analysis TransformUtils ScalarOpts InstCombine IPO AggressiveInstCombine
+            native
+        )
     else()
         set(ORLCOMP_LLVM_LIBS LLVM)
     endif()
@@ -79,11 +89,13 @@ if (LLVM_FOUND)
         PRIVATE ${LLVM_INCLUDE_DIRS}
     )
 
+    target_compile_definitions(orlcomp_codegen PRIVATE ${LLVM_DEFINITIONS_LIST})
+
     target_link_libraries(orlcomp_codegen
         PUBLIC orlcomp_parser
         PRIVATE ${ORLCOMP_LLVM_LIBS}
     )
-    message(STATUS "Configured ORL LLVM IR codegen")
+    message(STATUS "Configured ORL LLVM IR codegen, optimizer, and JIT")
 else()
     message(STATUS "LLVM not found; ORL LLVM IR codegen target disabled")
 endif()
