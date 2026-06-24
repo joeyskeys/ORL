@@ -6,6 +6,8 @@
 #include "orl_jit.h"
 #include "orl_optimizer.h"
 #include "orl_parser.h"
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
 
 using namespace orlcomp;
 
@@ -112,6 +114,17 @@ TEST_CASE("orl jit executes optimized function", "[orl][jit]") {
     const auto result = jit.InvokeInt64("addloop", 5);
     REQUIRE(result.has_value());
     REQUIRE(*result == 10);
+}
+
+TEST_CASE("orl jit exposes selectable target mode", "[orl][jit]") {
+    OrlJitEngine native_jit(OrlJitTarget::Native);
+    REQUIRE(native_jit.Target() == OrlJitTarget::Native);
+
+    OrlJitEngine cuda_jit(OrlJitTarget::Cuda);
+    REQUIRE(cuda_jit.Target() == OrlJitTarget::Cuda);
+
+    OrlJitEngine rocm_jit(OrlJitTarget::Rocm);
+    REQUIRE(rocm_jit.Target() == OrlJitTarget::Rocm);
 }
 
 #endif

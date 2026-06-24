@@ -19,6 +19,7 @@ set(ORLCOMP_CODEGEN_SOURCES
     orl_codegen.cpp
     orl_optimizer.cpp
     orl_jit.cpp
+    orl_gpu.cpp
 )
 
 set(ORLCOMP_CODEGEN_HEADERS
@@ -26,6 +27,7 @@ set(ORLCOMP_CODEGEN_HEADERS
     orl_codegen.h
     orl_optimizer.h
     orl_jit.h
+    orl_gpu.h
 )
 
 add_library(orlcomp_lexer

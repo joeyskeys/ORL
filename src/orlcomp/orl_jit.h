@@ -15,9 +15,15 @@ class Module;
 
 namespace orlcomp {
 
+enum class OrlJitTarget : std::uint8_t {
+    Native = 0,
+    Cuda = 1,
+    Rocm = 2
+};
+
 class OrlJitEngine {
 public:
-    OrlJitEngine();
+    explicit OrlJitEngine(OrlJitTarget target = OrlJitTarget::Native);
     ~OrlJitEngine();
 
     bool LoadModule(std::unique_ptr<llvm::Module> module, std::unique_ptr<llvm::LLVMContext> context);
@@ -27,6 +33,7 @@ public:
 
     std::optional<int64_t> InvokeInt64(const std::string &name);
     std::optional<int64_t> InvokeInt64(const std::string &name, int64_t arg);
+    OrlJitTarget Target() const;
 
     const std::vector<std::string> &Errors() const;
 

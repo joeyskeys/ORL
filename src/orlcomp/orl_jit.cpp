@@ -25,18 +25,53 @@ std::string FormatLlvmError(const llvm::Error &error) {
     return stream.str();
 }
 
+bool IsGpuTarget(OrlJitTarget target) {
+    return target == OrlJitTarget::Cuda || target == OrlJitTarget::Rocm;
+}
+
+const char *TargetName(OrlJitTarget target) {
+    switch (target) {
+    case OrlJitTarget::Native:
+        return "native";
+    case OrlJitTarget::Cuda:
+        return "cuda";
+    case OrlJitTarget::Rocm:
+        return "rocm";
+    default:
+        return "unknown";
+    }
+}
+
 } // namespace
 
 struct OrlJitEngine::Impl {
-    Impl() {
-        llvm::InitializeNativeTarget();
-        llvm::InitializeNativeTargetAsmPrinter();
-        llvm::InitializeNativeTargetAsmParser();
+    explicit Impl(OrlJitTarget target_kind) : target_kind_(target_kind) {
+        if (target_kind_ == OrlJitTarget::Native) {
+            llvm::InitializeNativeTarget();
+            llvm::InitializeNativeTargetAsmPrinter();
+            llvm::InitializeNativeTargetAsmParser();
+            return;
+        }
+
+        // CUDA/ROCm selection is explicit. Runtime execution is still host-only
+        // because this engine uses LLJIT.
+        llvm::InitializeAllTargetInfos();
+        llvm::InitializeAllTargets();
+        llvm::InitializeAllTargetMCs();
+        llvm::InitializeAllAsmPrinters();
+        llvm::InitializeAllAsmParsers();
     }
 
     bool LoadModule(std::unique_ptr<llvm::Module> module, std::unique_ptr<llvm::LLVMContext> context) {
         errors_.clear();
         jit_.reset();
+
+        if (IsGpuTarget(target_kind_)) {
+            errors_.push_back(
+                std::string("JIT target '") + TargetName(target_kind_) +
+                "' requested, but OrlJitEngine currently executes only native host code via LLJIT");
+            return false;
+        }
 
         auto jit_or_error = llvm::orc::LLJITBuilder().create();
         if (!jit_or_error) {
@@ -67,6 +102,11 @@ struct OrlJitEngine::Impl {
     }
 
     std::optional<int64_t> InvokeInt64(const std::string &name) {
+        if (IsGpuTarget(target_kind_)) {
+            errors_.push_back(std::string("InvokeInt64 is unsupported for JIT target '") +
+                              TargetName(target_kind_) + "'");
+            return std::nullopt;
+        }
         if (jit_ == nullptr) {
             errors_.push_back("JIT engine has no loaded module");
             return std::nullopt;
@@ -79,11 +119,16 @@ struct OrlJitEngine::Impl {
         }
 
         using FunctionType = int64_t (*)();
-        const auto function = reinterpret_cast<FunctionType>(static_cast<uintptr_t>(symbol_or_error->getAddress()));
+        const auto function = symbol_or_error->toPtr<FunctionType>();
         return function();
     }
 
     std::optional<int64_t> InvokeInt64(const std::string &name, int64_t arg) {
+        if (IsGpuTarget(target_kind_)) {
+            errors_.push_back(std::string("InvokeInt64(name, arg) is unsupported for JIT target '") +
+                              TargetName(target_kind_) + "'");
+            return std::nullopt;
+        }
         if (jit_ == nullptr) {
             errors_.push_back("JIT engine has no loaded module");
             return std::nullopt;
@@ -96,15 +141,16 @@ struct OrlJitEngine::Impl {
         }
 
         using FunctionType = int64_t (*)(int64_t);
-        const auto function = reinterpret_cast<FunctionType>(static_cast<uintptr_t>(symbol_or_error->getAddress()));
+        const auto function = symbol_or_error->toPtr<FunctionType>();
         return function(arg);
     }
 
     std::unique_ptr<llvm::orc::LLJIT> jit_;
+    OrlJitTarget target_kind_ = OrlJitTarget::Native;
     std::vector<std::string> errors_;
 };
 
-OrlJitEngine::OrlJitEngine() : impl_(std::make_unique<Impl>()) {}
+OrlJitEngine::OrlJitEngine(OrlJitTarget target) : impl_(std::make_unique<Impl>(target)) {}
 OrlJitEngine::~OrlJitEngine() = default;
 
 bool OrlJitEngine::LoadModule(std::unique_ptr<llvm::Module> module, std::unique_ptr<llvm::LLVMContext> context) {
@@ -125,6 +171,10 @@ std::optional<int64_t> OrlJitEngine::InvokeInt64(const std::string &name, int64_
     return impl_->InvokeInt64(name, arg);
 }
 
+OrlJitTarget OrlJitEngine::Target() const {
+    return impl_->target_kind_;
+}
+
 const std::vector<std::string> &OrlJitEngine::Errors() const {
     return impl_->errors_;
 }
@@ -136,6 +186,8 @@ const std::vector<std::string> &OrlJitEngine::Errors() const {
 namespace orlcomp {
 
 struct OrlJitEngine::Impl {
+    explicit Impl(OrlJitTarget target_kind) : target_kind_(target_kind) {}
+
     bool LoadModule(std::unique_ptr<llvm::Module>, std::unique_ptr<llvm::LLVMContext>) {
         errors_.clear();
         errors_.push_back("LLVM JIT headers are unavailable in this build environment");
@@ -156,10 +208,11 @@ struct OrlJitEngine::Impl {
         return std::nullopt;
     }
 
+    OrlJitTarget target_kind_ = OrlJitTarget::Native;
     std::vector<std::string> errors_;
 };
 
-OrlJitEngine::OrlJitEngine() : impl_(std::make_unique<Impl>()) {}
+OrlJitEngine::OrlJitEngine(OrlJitTarget target) : impl_(std::make_unique<Impl>(target)) {}
 OrlJitEngine::~OrlJitEngine() = default;
 
 bool OrlJitEngine::LoadModule(std::unique_ptr<llvm::Module> module, std::unique_ptr<llvm::LLVMContext> context) {
@@ -178,6 +231,10 @@ std::optional<int64_t> OrlJitEngine::InvokeInt64(const std::string &name) {
 
 std::optional<int64_t> OrlJitEngine::InvokeInt64(const std::string &name, int64_t arg) {
     return impl_->InvokeInt64(name, arg);
+}
+
+OrlJitTarget OrlJitEngine::Target() const {
+    return impl_->target_kind_;
 }
 
 const std::vector<std::string> &OrlJitEngine::Errors() const {
