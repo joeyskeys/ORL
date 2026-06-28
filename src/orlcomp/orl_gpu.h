@@ -36,6 +36,10 @@ public:
                                std::vector<std::int32_t> *values,
                                std::int32_t addend,
                                std::uint32_t threads_per_block = 128);
+    bool RunCudaKernelNoArgs(const std::string &kernel_name,
+                             std::uint32_t blocks = 1,
+                             std::uint32_t threads_per_block = 1);
+    bool ReadCudaGlobalInt32(const std::string &symbol_name, std::int32_t *value);
 
     OrlGpuBackend Backend() const;
     bool IsDriverModuleLoaded() const;

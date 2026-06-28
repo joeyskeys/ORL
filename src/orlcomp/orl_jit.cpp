@@ -13,6 +13,7 @@
 #include <llvm/Support/TargetSelect.h>
 
 #include <utility>
+#include <optional>
 
 namespace orlcomp {
 

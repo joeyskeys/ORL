@@ -60,6 +60,7 @@ find_package(zstd CONFIG QUIET)
 find_package(LLVM CONFIG QUIET)
 
 if (LLVM_FOUND)
+    find_package(CUDAToolkit REQUIRED)
     if (NOT TARGET ZLIB::ZLIB)
         message(FATAL_ERROR
             "LLVM was found but ZLIB::ZLIB is unavailable. "
@@ -75,6 +76,7 @@ if (LLVM_FOUND)
             Core Support ExecutionEngine
             OrcJIT OrcShared OrcTargetProcess
             Passes Analysis TransformUtils ScalarOpts InstCombine IPO AggressiveInstCombine
+            NVPTXCodeGen NVPTXDesc NVPTXInfo
             native
         )
     else()
@@ -89,6 +91,7 @@ if (LLVM_FOUND)
     target_include_directories(orlcomp_codegen
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
         PRIVATE ${LLVM_INCLUDE_DIRS}
+        PRIVATE ${CUDAToolkit_INCLUDE_DIRS}
     )
 
     target_compile_definitions(orlcomp_codegen PRIVATE ${LLVM_DEFINITIONS_LIST})
@@ -96,6 +99,7 @@ if (LLVM_FOUND)
     target_link_libraries(orlcomp_codegen
         PUBLIC orlcomp_parser
         PRIVATE ${ORLCOMP_LLVM_LIBS}
+                CUDA::cudart
     )
     message(STATUS "Configured ORL LLVM IR codegen, optimizer, and JIT")
 else()

@@ -13,12 +13,12 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 
-#if __has_include(<cuda.h>)
+#if !__has_include(<cuda.h>)
+#error "CUDA Toolkit header 'cuda.h' not found. Install CUDA Toolkit and ensure include paths are configured."
+#endif
+
 #define ORL_HAS_CUDA_HEADERS 1
 #include <cuda.h>
-#else
-#define ORL_HAS_CUDA_HEADERS 0
-#endif
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -71,9 +71,7 @@ struct OrlGpuEngine::Impl {
         llvm::InitializeAllAsmParsers();
     }
 
-    ~Impl() {
-        UnloadDriverModule();
-    }
+    ~Impl() = default;
 
     bool CompileModule(std::unique_ptr<llvm::Module> module, std::unique_ptr<llvm::LLVMContext> context) {
         errors_.clear();
@@ -207,6 +205,7 @@ struct OrlGpuEngine::Impl {
     using CuMemFreeFn = CUresult(CUDAAPI *)(CUdeviceptr);
     using CuMemcpyHtoDFn = CUresult(CUDAAPI *)(CUdeviceptr, const void *, size_t);
     using CuMemcpyDtoHFn = CUresult(CUDAAPI *)(void *, CUdeviceptr, size_t);
+    using CuModuleGetGlobalFn = CUresult(CUDAAPI *)(CUdeviceptr *, size_t *, CUmodule, const char *);
     using CuGetErrorNameFn = CUresult(CUDAAPI *)(CUresult, const char **);
     using CuGetErrorStringFn = CUresult(CUDAAPI *)(CUresult, const char **);
 
@@ -295,6 +294,7 @@ struct OrlGpuEngine::Impl {
             !LoadCudaSymbol(cuMemFree_, "cuMemFree_v2") ||
             !LoadCudaSymbol(cuMemcpyHtoD_, "cuMemcpyHtoD_v2") ||
             !LoadCudaSymbol(cuMemcpyDtoH_, "cuMemcpyDtoH_v2") ||
+            !LoadCudaSymbol(cuModuleGetGlobal_, "cuModuleGetGlobal_v2") ||
             !LoadCudaSymbol(cuGetErrorName_, "cuGetErrorName") ||
             !LoadCudaSymbol(cuGetErrorString_, "cuGetErrorString")) {
             CloseCudaLibrary();
@@ -339,8 +339,8 @@ struct OrlGpuEngine::Impl {
 #endif
 
     OrlGpuBackend backend_ = OrlGpuBackend::Cuda;
-    std::unique_ptr<llvm::Module> module_;
     std::unique_ptr<llvm::LLVMContext> context_;
+    std::unique_ptr<llvm::Module> module_;
     std::string device_code_;
     std::vector<std::string> errors_;
 
@@ -363,6 +363,7 @@ struct OrlGpuEngine::Impl {
     CuMemFreeFn cuMemFree_ = nullptr;
     CuMemcpyHtoDFn cuMemcpyHtoD_ = nullptr;
     CuMemcpyDtoHFn cuMemcpyDtoH_ = nullptr;
+    CuModuleGetGlobalFn cuModuleGetGlobal_ = nullptr;
     CuGetErrorNameFn cuGetErrorName_ = nullptr;
     CuGetErrorStringFn cuGetErrorString_ = nullptr;
 #endif
@@ -506,6 +507,104 @@ bool OrlGpuEngine::RunCudaInt32AddKernel(const std::string &kernel_name,
 #endif
 }
 
+bool OrlGpuEngine::RunCudaKernelNoArgs(const std::string &kernel_name,
+                                       std::uint32_t blocks,
+                                       std::uint32_t threads_per_block) {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("RunCudaKernelNoArgs requires CUDA backend");
+        return false;
+    }
+    if (blocks == 0 || threads_per_block == 0) {
+        impl_->errors_.push_back("blocks and threads_per_block must be greater than zero");
+        return false;
+    }
+
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return false;
+    }
+
+    CUfunction kernel = nullptr;
+    CUresult rc = impl_->cuModuleGetFunction_(&kernel, impl_->cuda_module_, kernel_name.c_str());
+    if (rc != CUDA_SUCCESS) {
+        impl_->AddCudaError("cuModuleGetFunction failed", rc);
+        return false;
+    }
+
+    rc = impl_->cuLaunchKernel_(kernel,
+                                blocks,
+                                1,
+                                1,
+                                threads_per_block,
+                                1,
+                                1,
+                                0,
+                                nullptr,
+                                nullptr,
+                                nullptr);
+    if (rc != CUDA_SUCCESS) {
+        impl_->AddCudaError("cuLaunchKernel failed", rc);
+        return false;
+    }
+
+    rc = impl_->cuCtxSynchronize_();
+    if (rc != CUDA_SUCCESS) {
+        impl_->AddCudaError("cuCtxSynchronize failed", rc);
+        return false;
+    }
+
+    return true;
+#else
+    (void)kernel_name;
+    (void)blocks;
+    (void)threads_per_block;
+    impl_->errors_.push_back("CUDA headers not available; cannot run CUDA kernels");
+    return false;
+#endif
+}
+
+bool OrlGpuEngine::ReadCudaGlobalInt32(const std::string &symbol_name, std::int32_t *value) {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("ReadCudaGlobalInt32 requires CUDA backend");
+        return false;
+    }
+    if (value == nullptr) {
+        impl_->errors_.push_back("ReadCudaGlobalInt32 requires non-null output pointer");
+        return false;
+    }
+
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return false;
+    }
+
+    CUdeviceptr device_symbol = 0;
+    std::size_t bytes = 0;
+    CUresult rc = impl_->cuModuleGetGlobal_(&device_symbol, &bytes, impl_->cuda_module_, symbol_name.c_str());
+    if (rc != CUDA_SUCCESS) {
+        impl_->AddCudaError("cuModuleGetGlobal failed", rc);
+        return false;
+    }
+    if (bytes < sizeof(std::int32_t)) {
+        impl_->errors_.push_back("CUDA global symbol '" + symbol_name + "' is smaller than int32");
+        return false;
+    }
+
+    rc = impl_->cuMemcpyDtoH_(value, device_symbol, sizeof(std::int32_t));
+    if (rc != CUDA_SUCCESS) {
+        impl_->AddCudaError("cuMemcpyDtoH failed", rc);
+        return false;
+    }
+    return true;
+#else
+    (void)symbol_name;
+    impl_->errors_.push_back("CUDA headers not available; cannot read CUDA globals");
+    return false;
+#endif
+}
+
 const std::string &OrlGpuEngine::DeviceCode() const {
     return impl_->device_code_;
 }
@@ -588,6 +687,18 @@ bool OrlGpuEngine::RunCudaInt32AddKernel(const std::string &,
                                          std::uint32_t) {
     impl_->errors_.clear();
     impl_->errors_.push_back("CUDA kernel execution unavailable in this build");
+    return false;
+}
+
+bool OrlGpuEngine::RunCudaKernelNoArgs(const std::string &, std::uint32_t, std::uint32_t) {
+    impl_->errors_.clear();
+    impl_->errors_.push_back("CUDA kernel execution unavailable in this build");
+    return false;
+}
+
+bool OrlGpuEngine::ReadCudaGlobalInt32(const std::string &, std::int32_t *) {
+    impl_->errors_.clear();
+    impl_->errors_.push_back("CUDA global read unavailable in this build");
     return false;
 }
 
