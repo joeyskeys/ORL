@@ -1,0 +1,13 @@
+int compute() {
+    // Minimal 1D linear blend skinning for one vertex and two bones.
+    float p = 1.0;
+    float w0 = 0.6;
+    float w1 = 0.4;
+
+    float bone0 = p + 2.0;
+    float bone1 = p - 1.0;
+    float blended = w0 * bone0 + w1 * bone1;
+
+    int scaled(blended * 1000.0);
+    return scaled;
+}
