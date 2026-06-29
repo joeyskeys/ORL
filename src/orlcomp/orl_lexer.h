@@ -15,6 +15,8 @@ enum class TokenKind : std::uint16_t {
     FloatLiteral,
     StringLiteral,
 
+    TypeName,
+
     KwIf,
     KwElse,
     KwFor,

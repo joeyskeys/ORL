@@ -76,8 +76,6 @@ if (LLVM_FOUND)
             Core Support ExecutionEngine
             OrcJIT OrcShared OrcTargetProcess
             Passes Analysis TransformUtils ScalarOpts InstCombine IPO AggressiveInstCombine
-            NVPTXCodeGen NVPTXDesc NVPTXInfo
-            native
         )
     else()
         set(ORLCOMP_LLVM_LIBS LLVM)

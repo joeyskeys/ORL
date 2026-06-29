@@ -589,11 +589,12 @@ bool Parser::ParsePrimary() {
     }
 
     if (kind == TokenKind::Identifier ||
+        IsTypeToken(kind) ||
         kind == TokenKind::IntLiteral ||
         kind == TokenKind::FloatLiteral ||
         kind == TokenKind::StringLiteral) {
         const Token token = Advance();
-        if (token.kind == TokenKind::Identifier) {
+        if (token.kind == TokenKind::Identifier || IsTypeToken(token.kind)) {
             auto identifier = std::make_unique<IdentifierExpression>();
             identifier->name = token.lexeme;
             last_expression_ = std::move(identifier);
@@ -648,7 +649,8 @@ bool Parser::IsTypeToken(TokenKind kind) const {
            kind == TokenKind::KwVector ||
            kind == TokenKind::KwNormal ||
            kind == TokenKind::KwPoint ||
-           kind == TokenKind::KwMatrix;
+           kind == TokenKind::KwMatrix ||
+           kind == TokenKind::TypeName;
 }
 
 bool Parser::IsUnaryOperator(TokenKind kind) const {

@@ -115,3 +115,43 @@ TEST_CASE("parser keeps operator precedence in AST", "[orl][parser][ast]") {
     REQUIRE(mul != nullptr);
     REQUIRE(mul->op == BinaryOp::Multiply);
 }
+
+TEST_CASE("parser accepts GLSL-style vector and matrix type names", "[orl][parser][ast]") {
+    const std::string src =
+        "dvec3 transform(mat4 m, ivec3 index) {\n"
+        "    vec3 p = vec3(1, 2, 3);\n"
+        "    dmat4 dm;\n"
+        "    return dvec3(1, 2, 3);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    const Program *program = parser.Ast();
+    REQUIRE(program != nullptr);
+    REQUIRE(program->items.size() == 1);
+
+    const auto *function = dynamic_cast<const FunctionDefinitionStatement *>(program->items[0].get());
+    REQUIRE(function != nullptr);
+    REQUIRE(function->return_type == "dvec3");
+    REQUIRE(function->parameters.size() == 2);
+    REQUIRE(function->parameters[0].type_name == "mat4");
+    REQUIRE(function->parameters[1].type_name == "ivec3");
+    REQUIRE(function->body != nullptr);
+    REQUIRE(function->body->statements.size() == 3);
+
+    const auto *vec_decl = dynamic_cast<const DeclarationStatement *>(function->body->statements[0].get());
+    REQUIRE(vec_decl != nullptr);
+    REQUIRE(vec_decl->type_name == "vec3");
+    REQUIRE(vec_decl->initializer != nullptr);
+    REQUIRE(dynamic_cast<const CallExpression *>(vec_decl->initializer.get()) != nullptr);
+
+    const auto *mat_decl = dynamic_cast<const DeclarationStatement *>(function->body->statements[1].get());
+    REQUIRE(mat_decl != nullptr);
+    REQUIRE(mat_decl->type_name == "dmat4");
+
+    const auto *ret = dynamic_cast<const ReturnStatement *>(function->body->statements[2].get());
+    REQUIRE(ret != nullptr);
+    REQUIRE(dynamic_cast<const CallExpression *>(ret->value.get()) != nullptr);
+}

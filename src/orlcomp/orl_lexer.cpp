@@ -23,9 +23,42 @@ const std::unordered_map<std::string_view, TokenKind> kKeywords = {
     {"normal", TokenKind::KwNormal},
     {"point", TokenKind::KwPoint},
     {"matrix", TokenKind::KwMatrix},
+    {"bool", TokenKind::TypeName},
     {"int", TokenKind::KwInt},
+    {"uint", TokenKind::TypeName},
     {"float", TokenKind::KwFloat},
+    {"double", TokenKind::TypeName},
     {"string", TokenKind::KwString},
+    {"vec2", TokenKind::TypeName},
+    {"vec3", TokenKind::TypeName},
+    {"vec4", TokenKind::TypeName},
+    {"bvec2", TokenKind::TypeName},
+    {"bvec3", TokenKind::TypeName},
+    {"bvec4", TokenKind::TypeName},
+    {"ivec2", TokenKind::TypeName},
+    {"ivec3", TokenKind::TypeName},
+    {"ivec4", TokenKind::TypeName},
+    {"uvec2", TokenKind::TypeName},
+    {"uvec3", TokenKind::TypeName},
+    {"uvec4", TokenKind::TypeName},
+    {"dvec2", TokenKind::TypeName},
+    {"dvec3", TokenKind::TypeName},
+    {"dvec4", TokenKind::TypeName},
+    {"mat2", TokenKind::TypeName},
+    {"mat3", TokenKind::TypeName},
+    {"mat4", TokenKind::TypeName},
+    {"bmat2", TokenKind::TypeName},
+    {"bmat3", TokenKind::TypeName},
+    {"bmat4", TokenKind::TypeName},
+    {"imat2", TokenKind::TypeName},
+    {"imat3", TokenKind::TypeName},
+    {"imat4", TokenKind::TypeName},
+    {"umat2", TokenKind::TypeName},
+    {"umat3", TokenKind::TypeName},
+    {"umat4", TokenKind::TypeName},
+    {"dmat2", TokenKind::TypeName},
+    {"dmat3", TokenKind::TypeName},
+    {"dmat4", TokenKind::TypeName},
     {"return", TokenKind::KwReturn},
 };
 
@@ -360,6 +393,7 @@ const char *TokenKindName(TokenKind kind) {
     case TokenKind::IntLiteral: return "IntLiteral";
     case TokenKind::FloatLiteral: return "FloatLiteral";
     case TokenKind::StringLiteral: return "StringLiteral";
+    case TokenKind::TypeName: return "TypeName";
     case TokenKind::KwIf: return "KwIf";
     case TokenKind::KwElse: return "KwElse";
     case TokenKind::KwFor: return "KwFor";

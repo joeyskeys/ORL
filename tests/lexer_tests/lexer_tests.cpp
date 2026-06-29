@@ -46,3 +46,17 @@ TEST_CASE("lexer reports malformed token with minimal error info", "[orl][lexer]
     REQUIRE(token.kind == TokenKind::Invalid);
     REQUIRE_FALSE(token.error_message.empty());
 }
+
+TEST_CASE("lexer recognizes GLSL-style vector and matrix type names", "[orl][lexer]") {
+    const std::string src =
+        "vec2 vec3 vec4 "
+        "bvec2 ivec3 uvec4 dvec4 "
+        "mat2 mat3 mat4 "
+        "bmat2 imat3 umat4 dmat4";
+
+    Lexer lexer(src);
+    for (int i = 0; i < 14; ++i) {
+        REQUIRE(lexer.NextToken().kind == TokenKind::TypeName);
+    }
+    REQUIRE(lexer.NextToken().kind == TokenKind::EndOfFile);
+}
