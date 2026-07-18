@@ -34,6 +34,7 @@ enum class TokenKind : std::uint16_t {
     KwInt,
     KwFloat,
     KwString,
+    KwStruct,
     KwReturn,
 
     Plus,

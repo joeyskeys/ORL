@@ -1,0 +1,28 @@
+---
+description: ORL project architecture and current language capabilities
+alwaysApply: false
+---
+# ORL Project Overview
+
+ORL is a C++20 compiler for a rigging and animation calculation language. Its handwritten front end parses ORL into an AST; LLVM lowers that AST to IR for native JIT execution and GPU-oriented PTX generation.
+
+## Layout
+- `src/orlcomp/`: lexer, parser, AST, LLVM codegen, math intrinsics, JIT, and GPU backend.
+- `tests/syntax_tests/`: accepted/rejected language syntax.
+- `tests/parser_tests/`: AST construction tests.
+- `tests/codegen_tests/`: LLVM IR lowering tests.
+- `tests/skinning_tests/`: linear-blend-skinning examples.
+- `tests/gpu_tests/`: ORL → LLVM IR → PTX → CUDA driver execution tests.
+
+## Current language
+- Built-ins: `int`, `float`, `string`, 3D vector aliases (`vector`, `normal`, `point`), `vec4`, `quaternion`, and row-major 4×4 `matrix`.
+- Data-only custom structs are top-level and declaration-before-use. They support positional construction, values, fields, copies, fixed arrays, and buffer parameters. Do not add methods, inheritance, or recursive structs without an explicit design.
+- Fixed arrays use `Type values[N]`; buffer parameters use `Type values[]`; both support indexing.
+- Vector-style members use `.x/.y/.z/.w`. Struct fields also use `.`.
+- Math intrinsics live in `orl_intrinsics.cpp`: `dot`, `cross`, `length`, `normalize`, `clamp`, `mat_identity`, `mat_mul`, and `mat_transpose`. Add target-independent math built-ins there rather than as external calls.
+
+## Codegen conventions
+- Preserve the existing two-pass model: predeclare named types/functions before generating function bodies.
+- Map all language types through `MapTypeName`; aggregate construction and member access must use LLVM aggregate instructions/GEPs.
+- Keep CPU JIT and CUDA/ROCm-compatible LLVM IR in mind. Do not introduce host-only runtime dependencies for language intrinsics.
+- Add syntax and codegen tests for every language feature; build and run the relevant Debug test executables.

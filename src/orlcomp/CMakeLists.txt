@@ -17,6 +17,7 @@ set(ORLCOMP_PARSER_HEADERS
 
 set(ORLCOMP_CODEGEN_SOURCES
     orl_codegen.cpp
+    orl_intrinsics.cpp
     orl_optimizer.cpp
     orl_jit.cpp
     orl_gpu.cpp
@@ -25,6 +26,7 @@ set(ORLCOMP_CODEGEN_SOURCES
 set(ORLCOMP_CODEGEN_HEADERS
     orl_ast.h
     orl_codegen.h
+    orl_intrinsics.h
     orl_optimizer.h
     orl_jit.h
     orl_gpu.h
@@ -76,6 +78,8 @@ if (LLVM_FOUND)
             Core Support ExecutionEngine
             OrcJIT OrcShared OrcTargetProcess
             Passes Analysis TransformUtils ScalarOpts InstCombine IPO AggressiveInstCombine
+            X86CodeGen X86Desc X86Info X86AsmParser
+            NVPTXCodeGen NVPTXDesc NVPTXInfo
         )
     else()
         set(ORLCOMP_LLVM_LIBS LLVM)
@@ -96,8 +100,8 @@ if (LLVM_FOUND)
 
     target_link_libraries(orlcomp_codegen
         PUBLIC orlcomp_parser
-        PRIVATE ${ORLCOMP_LLVM_LIBS}
-                CUDA::cudart
+        PUBLIC ${ORLCOMP_LLVM_LIBS}
+               CUDA::cudart
     )
     message(STATUS "Configured ORL LLVM IR codegen, optimizer, and JIT")
 else()

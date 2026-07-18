@@ -1,5 +1,6 @@
 #include "orl_parser.h"
 
+#include <limits>
 #include <sstream>
 #include <utility>
 
@@ -72,11 +73,64 @@ bool Parser::ParseTopLevel() {
         return false;
     }
 
-    if (IsTypeToken(Peek().kind) && Peek(1).kind == TokenKind::Identifier && Peek(2).kind == TokenKind::LParen) {
+    if (Peek().kind == TokenKind::KwStruct) {
+        return ParseStructDefinition();
+    }
+
+    if (IsTypeName(Peek()) && Peek(1).kind == TokenKind::Identifier && Peek(2).kind == TokenKind::LParen) {
         return ParseFunctionDefinition();
     }
 
     return ParseStatement();
+}
+
+bool Parser::ParseStructDefinition() {
+    Advance();
+    if (Peek().kind != TokenKind::Identifier) {
+        AddError(Peek(), "Expected struct name");
+        return false;
+    }
+    const Token name = Advance();
+    if (struct_names_.find(name.lexeme) != struct_names_.end()) {
+        AddError(name, "Duplicate struct definition: " + name.lexeme);
+        return false;
+    }
+    if (!Expect(TokenKind::LBrace, "Expected '{' after struct name")) {
+        return false;
+    }
+
+    std::vector<StructField> fields;
+    std::unordered_set<std::string> field_names;
+    while (!IsAtEnd() && Peek().kind != TokenKind::RBrace) {
+        const Token field_type = Peek();
+        if (!ParseTypeName()) {
+            return false;
+        }
+        if (Peek().kind != TokenKind::Identifier) {
+            AddError(Peek(), "Expected struct field name");
+            return false;
+        }
+        const Token field_name = Advance();
+        if (!field_names.insert(field_name.lexeme).second) {
+            AddError(field_name, "Duplicate struct field: " + field_name.lexeme);
+            return false;
+        }
+        if (!Expect(TokenKind::Semi, "Expected ';' after struct field")) {
+            return false;
+        }
+        fields.push_back(StructField{field_type.lexeme, field_name.lexeme});
+    }
+    if (!Expect(TokenKind::RBrace, "Expected '}' after struct fields")) {
+        return false;
+    }
+    Match(TokenKind::Semi);
+
+    struct_names_.insert(name.lexeme);
+    auto definition = std::make_unique<StructDefinitionStatement>();
+    definition->name = name.lexeme;
+    definition->fields = std::move(fields);
+    last_statement_ = std::move(definition);
+    return true;
 }
 
 bool Parser::ParseFunctionDefinition() {
@@ -108,7 +162,14 @@ bool Parser::ParseFunctionDefinition() {
             }
 
             const Token parameter_name = Advance();
-            parameters.push_back(Parameter{parameter_type.lexeme, parameter_name.lexeme});
+            bool is_buffer = false;
+            if (Match(TokenKind::LBracket)) {
+                if (!Expect(TokenKind::RBracket, "Expected ']' after buffer parameter name")) {
+                    return false;
+                }
+                is_buffer = true;
+            }
+            parameters.push_back(Parameter{parameter_type.lexeme, parameter_name.lexeme, is_buffer});
         } while (Match(TokenKind::Comma));
     }
 
@@ -136,7 +197,7 @@ bool Parser::ParseFunctionDefinition() {
 }
 
 bool Parser::ParseTypeName() {
-    if (!IsTypeToken(Peek().kind)) {
+    if (!IsTypeName(Peek())) {
         AddError(Peek(), "Expected type name");
         return false;
     }
@@ -192,7 +253,7 @@ bool Parser::ParseStatement() {
         return true;
     }
     default:
-        if (IsTypeToken(Peek().kind)) {
+        if (IsTypeName(Peek())) {
             return ParseDeclarationStatement();
         }
         return ParseExpressionStatement();
@@ -215,7 +276,26 @@ bool Parser::ParseDeclarationStatement() {
     declaration->type_name = type_name.lexeme;
     declaration->variable_name = variable_name.lexeme;
 
-    if (Match(TokenKind::Assign)) {
+    if (Match(TokenKind::LBracket)) {
+        if (Peek().kind != TokenKind::IntLiteral) {
+            AddError(Peek(), "Array size must be an integer literal");
+            return false;
+        }
+        const Token size_token = Advance();
+        if (size_token.int_value <= 0 ||
+            static_cast<std::uint64_t>(size_token.int_value) > std::numeric_limits<std::size_t>::max()) {
+            AddError(size_token, "Array size must be greater than zero");
+            return false;
+        }
+        declaration->array_size = static_cast<std::size_t>(size_token.int_value);
+        if (!Expect(TokenKind::RBracket, "Expected ']' after array size")) {
+            return false;
+        }
+        if (Peek().kind == TokenKind::Assign || Peek().kind == TokenKind::LParen) {
+            AddError(Peek(), "Array declarations cannot use scalar initializers or constructors");
+            return false;
+        }
+    } else if (Match(TokenKind::Assign)) {
         if (!ParseExpression()) {
             return false;
         }
@@ -403,19 +483,43 @@ bool Parser::ParseExpression() {
 }
 
 bool Parser::ParseAssignment() {
-    if (Peek().kind == TokenKind::Identifier && Peek(1).kind == TokenKind::Assign) {
-        const Token identifier = Advance();
-        Advance();
-        if (!ParseAssignment()) {
-            return false;
-        }
+    if (!ParseLogicalOr()) {
+        return false;
+    }
+    auto target = TakeExpression();
+    if (!Match(TokenKind::Assign)) {
+        last_expression_ = std::move(target);
+        return true;
+    }
+
+    if (!ParseAssignment()) {
+        return false;
+    }
+    auto value = TakeExpression();
+    if (const auto *identifier = dynamic_cast<const IdentifierExpression *>(target.get())) {
         auto assignment = std::make_unique<AssignmentExpression>();
-        assignment->target_name = identifier.lexeme;
-        assignment->value = TakeExpression();
+        assignment->target_name = identifier->name;
+        assignment->value = std::move(value);
         last_expression_ = std::move(assignment);
         return true;
     }
-    return ParseLogicalOr();
+    if (auto *index = dynamic_cast<IndexExpression *>(target.get())) {
+        auto assignment = std::make_unique<IndexAssignmentExpression>();
+        assignment->target = std::unique_ptr<IndexExpression>(static_cast<IndexExpression *>(target.release()));
+        assignment->value = std::move(value);
+        last_expression_ = std::move(assignment);
+        return true;
+    }
+    if (auto *component = dynamic_cast<ComponentExpression *>(target.get())) {
+        auto assignment = std::make_unique<MemberAssignmentExpression>();
+        assignment->target = std::unique_ptr<ComponentExpression>(static_cast<ComponentExpression *>(target.release()));
+        assignment->value = std::move(value);
+        last_expression_ = std::move(assignment);
+        return true;
+    }
+
+    AddError(Peek(), "Invalid assignment target");
+    return false;
 }
 
 bool Parser::ParseLogicalOr() {
@@ -562,18 +666,47 @@ bool Parser::ParsePostfix() {
     }
     auto expression = TakeExpression();
 
-    while (Match(TokenKind::LParen)) {
-        std::vector<std::unique_ptr<Expression>> arguments;
-        if (Peek().kind != TokenKind::RParen && !ParseArgumentList(&arguments)) {
-            return false;
+    while (true) {
+        if (Match(TokenKind::LParen)) {
+            std::vector<std::unique_ptr<Expression>> arguments;
+            if (Peek().kind != TokenKind::RParen && !ParseArgumentList(&arguments)) {
+                return false;
+            }
+            if (!Expect(TokenKind::RParen, "Expected ')' after function call arguments")) {
+                return false;
+            }
+            auto call = std::make_unique<CallExpression>();
+            call->callee = std::move(expression);
+            call->arguments = std::move(arguments);
+            expression = std::move(call);
+            continue;
         }
-        if (!Expect(TokenKind::RParen, "Expected ')' after function call arguments")) {
-            return false;
+        if (Match(TokenKind::LBracket)) {
+            if (!ParseExpression()) {
+                return false;
+            }
+            auto index = TakeExpression();
+            if (!Expect(TokenKind::RBracket, "Expected ']' after array index")) {
+                return false;
+            }
+            auto indexed = std::make_unique<IndexExpression>();
+            indexed->base = std::move(expression);
+            indexed->index = std::move(index);
+            expression = std::move(indexed);
+            continue;
         }
-        auto call = std::make_unique<CallExpression>();
-        call->callee = std::move(expression);
-        call->arguments = std::move(arguments);
-        expression = std::move(call);
+        if (Match(TokenKind::Dot)) {
+            if (Peek().kind != TokenKind::Identifier) {
+                AddError(Peek(), "Expected component name after '.'");
+                return false;
+            }
+            auto component = std::make_unique<ComponentExpression>();
+            component->base = std::move(expression);
+            component->component = Advance().lexeme;
+            expression = std::move(component);
+            continue;
+        }
+        break;
     }
 
     last_expression_ = std::move(expression);
@@ -651,6 +784,11 @@ bool Parser::IsTypeToken(TokenKind kind) const {
            kind == TokenKind::KwPoint ||
            kind == TokenKind::KwMatrix ||
            kind == TokenKind::TypeName;
+}
+
+bool Parser::IsTypeName(const Token &token) const {
+    return IsTypeToken(token.kind) ||
+           (token.kind == TokenKind::Identifier && struct_names_.find(token.lexeme) != struct_names_.end());
 }
 
 bool Parser::IsUnaryOperator(TokenKind kind) const {

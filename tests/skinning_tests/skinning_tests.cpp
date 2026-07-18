@@ -18,6 +18,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 using namespace orlcomp;
 
@@ -29,7 +30,7 @@ std::string LoadTextFileOrFail(const std::string &path) {
 
     std::stringstream buffer;
     buffer << in.rdbuf();
-    REQUIRE(in.good() || in.eof());
+    REQUIRE((in.good() || in.eof()));
     return buffer.str();
 }
 
@@ -93,11 +94,55 @@ bool AddKernelWrapperForCompute(llvm::Module *module) {
     return true;
 }
 
-constexpr std::int64_t kExpectedScaledLbsValue = 1800;
+struct Vertex {
+    float x;
+    float y;
+    float z;
+    float bone0_weight;
+    float bone1_weight;
+};
+
+struct Translation {
+    float x;
+    float y;
+    float z;
+};
+
+float ComputeLbsChecksum(const std::vector<Vertex> &vertices,
+                         const Translation &bone0_translation,
+                         const Translation &bone1_translation) {
+    float checksum = 0.0F;
+    for (const Vertex &vertex : vertices) {
+        const float bone0_x = vertex.x + bone0_translation.x;
+        const float bone0_y = vertex.y + bone0_translation.y;
+        const float bone0_z = vertex.z + bone0_translation.z;
+        const float bone1_x = vertex.x + bone1_translation.x;
+        const float bone1_y = vertex.y + bone1_translation.y;
+        const float bone1_z = vertex.z + bone1_translation.z;
+
+        checksum += vertex.bone0_weight * bone0_x + vertex.bone1_weight * bone1_x;
+        checksum += vertex.bone0_weight * bone0_y + vertex.bone1_weight * bone1_y;
+        checksum += vertex.bone0_weight * bone0_z + vertex.bone1_weight * bone1_z;
+    }
+    return checksum;
+}
+
+const std::vector<Vertex> kVertices = {
+    {1.0F, 2.0F, 3.0F, 0.75F, 0.25F},
+    {-2.0F, 1.0F, 0.0F, 0.50F, 0.50F},
+};
+
+constexpr Translation kBone0Translation{2.0F, 0.0F, 0.0F};
+constexpr Translation kBone1Translation{0.0F, 4.0F, 0.0F};
+constexpr float kExpectedLbsChecksum = 10.5F;
+constexpr std::int64_t kExpectedScaledLbsValue =
+    static_cast<std::int64_t>(kExpectedLbsChecksum * 100.0F);
 
 } // namespace
 
-TEST_CASE("linear blend skinning ORL runs on CPU JIT", "[orl][skinning][cpu]") {
+TEST_CASE("linear blend skinning transforms vertices on CPU JIT", "[orl][skinning][cpu]") {
+    REQUIRE(ComputeLbsChecksum(kVertices, kBone0Translation, kBone1Translation) == kExpectedLbsChecksum);
+
     const std::string src = LoadLbsOrlSource();
 
     Parser parser(src);
@@ -120,7 +165,9 @@ TEST_CASE("linear blend skinning ORL runs on CPU JIT", "[orl][skinning][cpu]") {
     REQUIRE(*result == kExpectedScaledLbsValue);
 }
 
-TEST_CASE("linear blend skinning ORL runs on CUDA path", "[orl][skinning][gpu][cuda]") {
+TEST_CASE("linear blend skinning transforms vertices on CUDA path", "[orl][skinning][gpu][cuda]") {
+    REQUIRE(ComputeLbsChecksum(kVertices, kBone0Translation, kBone1Translation) == kExpectedLbsChecksum);
+
     const std::string src = LoadLbsOrlSource();
 
     Parser parser(src);

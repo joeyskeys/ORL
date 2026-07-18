@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <string_view>
 #include <unordered_map>
 
 namespace orlcomp {
@@ -23,12 +24,14 @@ const std::unordered_map<std::string_view, TokenKind> kKeywords = {
     {"normal", TokenKind::KwNormal},
     {"point", TokenKind::KwPoint},
     {"matrix", TokenKind::KwMatrix},
+    {"quaternion", TokenKind::TypeName},
     {"bool", TokenKind::TypeName},
     {"int", TokenKind::KwInt},
     {"uint", TokenKind::TypeName},
     {"float", TokenKind::KwFloat},
     {"double", TokenKind::TypeName},
     {"string", TokenKind::KwString},
+    {"struct", TokenKind::KwStruct},
     {"vec2", TokenKind::TypeName},
     {"vec3", TokenKind::TypeName},
     {"vec4", TokenKind::TypeName},
@@ -411,6 +414,7 @@ const char *TokenKindName(TokenKind kind) {
     case TokenKind::KwInt: return "KwInt";
     case TokenKind::KwFloat: return "KwFloat";
     case TokenKind::KwString: return "KwString";
+    case TokenKind::KwStruct: return "KwStruct";
     case TokenKind::KwReturn: return "KwReturn";
     case TokenKind::Plus: return "Plus";
     case TokenKind::Minus: return "Minus";

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -79,6 +80,26 @@ struct CallExpression final : Expression {
     std::vector<std::unique_ptr<Expression>> arguments;
 };
 
+struct IndexExpression final : Expression {
+    std::unique_ptr<Expression> base;
+    std::unique_ptr<Expression> index;
+};
+
+struct IndexAssignmentExpression final : Expression {
+    std::unique_ptr<IndexExpression> target;
+    std::unique_ptr<Expression> value;
+};
+
+struct ComponentExpression final : Expression {
+    std::unique_ptr<Expression> base;
+    std::string component;
+};
+
+struct MemberAssignmentExpression final : Expression {
+    std::unique_ptr<ComponentExpression> target;
+    std::unique_ptr<Expression> value;
+};
+
 struct BlockStatement final : Statement {
     std::vector<std::unique_ptr<Statement>> statements;
 };
@@ -90,6 +111,7 @@ struct ExpressionStatement final : Statement {
 struct DeclarationStatement final : Statement {
     std::string type_name;
     std::string variable_name;
+    std::size_t array_size = 0;
     std::unique_ptr<Expression> initializer;
     std::vector<std::unique_ptr<Expression>> constructor_arguments;
 };
@@ -133,6 +155,17 @@ struct LoopControlStatement final : Statement {
 struct Parameter {
     std::string type_name;
     std::string name;
+    bool is_buffer = false;
+};
+
+struct StructField {
+    std::string type_name;
+    std::string name;
+};
+
+struct StructDefinitionStatement final : Statement {
+    std::string name;
+    std::vector<StructField> fields;
 };
 
 struct FunctionDefinitionStatement final : Statement {

@@ -57,8 +57,230 @@ TEST_CASE("llvm codegen lowers vector constructor and calls", "[orl][codegen]") 
 
     const std::string ir = codegen.DumpIR();
     REQUIRE(ir.find("<3 x double>") != std::string::npos);
-    REQUIRE(ir.find("@dot(") != std::string::npos);
+    REQUIRE(ir.find("dotmul") != std::string::npos);
     REQUIRE(ir.find("@print(") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen lowers vector math intrinsics", "[orl][codegen][intrinsic]") {
+    const std::string src =
+        "float vector_intrinsics() {\n"
+        "    vector x_axis(1, 0, 0);\n"
+        "    vector y_axis(0, 1, 0);\n"
+        "    vector perpendicular = cross(x_axis, y_axis);\n"
+        "    vector unit = normalize(perpendicular);\n"
+        "    vector limited = clamp(unit, -0.5, 0.5);\n"
+        "    float magnitude = length(limited);\n"
+        "    return dot(limited, x_axis) + clamp(magnitude, 0.0, 1.0);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_vector_intrinsic_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("crossx") != std::string::npos);
+    REQUIRE(ir.find("vecnormalize") != std::string::npos);
+    REQUIRE(ir.find("veclength") != std::string::npos);
+    REQUIRE(ir.find("clamp") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen lowers matrix math intrinsics", "[orl][codegen][intrinsic][matrix]") {
+    const std::string src =
+        "vector matrix_intrinsics() {\n"
+        "    matrix identity = mat_identity();\n"
+        "    matrix translation(1, 0, 0, 2,\n"
+        "                       0, 1, 0, 3,\n"
+        "                       0, 0, 1, 4,\n"
+        "                       0, 0, 0, 1);\n"
+        "    matrix combined = mat_mul(identity, translation);\n"
+        "    matrix transpose = mat_transpose(combined);\n"
+        "    vector position(1, 2, 3);\n"
+        "    return mat_mul(transpose, position);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_matrix_intrinsic_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("[16 x double]") != std::string::npos);
+    REQUIRE(ir.find("matmul") != std::string::npos);
+    REQUIRE(ir.find("mattranspose") != std::string::npos);
+    REQUIRE(ir.find("matvecmul") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen lowers custom structs and struct buffers", "[orl][codegen][struct]") {
+    const std::string src =
+        "struct Vertex {\n"
+        "    point position;\n"
+        "    float weight;\n"
+        "}\n"
+        "Vertex copy_vertex(Vertex source) {\n"
+        "    Vertex copy = source;\n"
+        "    copy.weight = source.weight + 0.25;\n"
+        "    return copy;\n"
+        "}\n"
+        "float update_vertices(Vertex vertices[]) {\n"
+        "    point origin(0, 0, 0);\n"
+        "    Vertex local(origin, 0.5);\n"
+        "    Vertex cache[2];\n"
+        "    cache[0] = local;\n"
+        "    vertices[0].weight = local.weight;\n"
+        "    return cache[0].position.x + vertices[0].position.x;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen("orl_struct_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("Vertex = type") != std::string::npos);
+    REQUIRE(ir.find("structins") != std::string::npos);
+    REQUIRE(ir.find("fieldaddr") != std::string::npos);
+    REQUIRE(ir.find("getelementptr inbounds %Vertex") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen rejects unknown custom struct fields", "[orl][codegen][struct][error]") {
+    const std::string src =
+        "struct Weight {\n"
+        "    float value;\n"
+        "}\n"
+        "float invalid_field() {\n"
+        "    Weight item(0.5);\n"
+        "    return item.missing;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_invalid_struct_module");
+    REQUIRE_FALSE(codegen.Generate(*parser.Ast()));
+    REQUIRE_FALSE(codegen.Errors().empty());
+}
+
+TEST_CASE("llvm codegen lowers fixed arrays and indexed access", "[orl][codegen]") {
+    const std::string src =
+        "int sum_buffer() {\n"
+        "    int values[3];\n"
+        "    values[0] = 4;\n"
+        "    values[1] = 5;\n"
+        "    values[2] = 6;\n"
+        "    int i = 0;\n"
+        "    int sum = 0;\n"
+        "    while (i < 3) {\n"
+        "        sum = sum + values[i];\n"
+        "        i = i + 1;\n"
+        "    }\n"
+        "    return sum;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Ast() != nullptr);
+
+    LlvmIrCodegen codegen("orl_array_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("[3 x i64]") != std::string::npos);
+    REQUIRE(ir.find("getelementptr inbounds") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen lowers typed mesh buffers to pointers", "[orl][codegen][buffer]") {
+    const std::string src =
+        "int deform(point vertices[], matrix bones[], float weights[], int vertex_count) {\n"
+        "    int i = 0;\n"
+        "    while (i < vertex_count) {\n"
+        "        vertices[i] = weights[i] * (bones[0] * vertices[i]);\n"
+        "        i = i + 1;\n"
+        "    }\n"
+        "    return vertex_count;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Ast() != nullptr);
+
+    LlvmIrCodegen codegen("orl_buffer_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("define i64 @deform(ptr %vertices, ptr %bones, ptr %weights, i64 %vertex_count)") !=
+            std::string::npos);
+    REQUIRE(ir.find("getelementptr inbounds <3 x double>") != std::string::npos);
+    REQUIRE(ir.find("getelementptr inbounds [16 x double]") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen lowers vector component access", "[orl][codegen][component]") {
+    const std::string src =
+        "float component_sum() {\n"
+        "    vector direction(1, 2, 3);\n"
+        "    vec4 homogeneous(4, 5, 6, 1);\n"
+        "    return direction.x + direction.y + direction.z + homogeneous.w;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_component_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("<4 x double>") != std::string::npos);
+    REQUIRE(ir.find("extractelement") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen rejects w access on three-component vectors", "[orl][codegen][component]") {
+    const std::string src =
+        "float invalid_component() {\n"
+        "    vector direction(1, 2, 3);\n"
+        "    return direction.w;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_invalid_component_module");
+    REQUIRE_FALSE(codegen.Generate(*parser.Ast()));
+    REQUIRE_FALSE(codegen.Errors().empty());
+}
+
+TEST_CASE("llvm codegen lowers quaternion operations", "[orl][codegen][quaternion]") {
+    const std::string src =
+        "float quaternion_ops() {\n"
+        "    quaternion identity(0, 0, 0, 1);\n"
+        "    quaternion rotation(0, 0.70710678, 0, 0.70710678);\n"
+        "    quaternion combined = quat_normalize(quat_mul(identity, rotation));\n"
+        "    quaternion inverse = quat_conjugate(combined);\n"
+        "    vector direction(1, 0, 0);\n"
+        "    vector restored = quat_rotate(inverse, quat_rotate(combined, direction));\n"
+        "    return restored.x + combined.w;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_quaternion_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("<4 x double>") != std::string::npos);
+    REQUIRE(ir.find("qnormalize") != std::string::npos);
+    REQUIRE(ir.find("quatrot") != std::string::npos);
 }
 
 TEST_CASE("llvm optimizer runs default pipeline", "[orl][optimizer]") {

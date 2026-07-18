@@ -1,4 +1,5 @@
 #include "orl_codegen.h"
+#include "orl_intrinsics.h"
 
 #if __has_include(<llvm/IR/BasicBlock.h>)
 
@@ -7,6 +8,7 @@
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
@@ -54,8 +56,9 @@ std::string UnescapeStringLexeme(const std::string &lexeme) {
 
 struct LlvmIrCodegen::Impl {
     struct VariableInfo {
-        llvm::AllocaInst *slot = nullptr;
+        llvm::Value *slot = nullptr;
         llvm::Type *type = nullptr;
+        bool is_buffer = false;
     };
 
     struct LoopContext {
@@ -74,13 +77,37 @@ struct LlvmIrCodegen::Impl {
         module_ = std::make_unique<llvm::Module>(module_name_, *context_);
         scopes_.clear();
         loops_.clear();
+        struct_types_.clear();
+        struct_field_indices_.clear();
         current_function_ = nullptr;
         current_function_return_type_ = nullptr;
 
         for (const auto &item : program.items) {
+            const auto *struct_definition = dynamic_cast<const StructDefinitionStatement *>(item.get());
+            if (struct_definition == nullptr) {
+                continue;
+            }
+            if (struct_types_.contains(struct_definition->name)) {
+                AddError("Duplicate struct definition: " + struct_definition->name);
+                continue;
+            }
+            struct_types_[struct_definition->name] = llvm::StructType::create(*context_, struct_definition->name);
+        }
+
+        for (const auto &item : program.items) {
+            const auto *struct_definition = dynamic_cast<const StructDefinitionStatement *>(item.get());
+            if (struct_definition == nullptr) {
+                continue;
+            }
+            DefineStruct(*struct_definition);
+        }
+
+        for (const auto &item : program.items) {
             const auto *function = dynamic_cast<const FunctionDefinitionStatement *>(item.get());
             if (function == nullptr) {
-                AddError("Only function definitions are supported at top-level in IR codegen");
+                if (dynamic_cast<const StructDefinitionStatement *>(item.get()) == nullptr) {
+                    AddError("Unsupported top-level statement in IR codegen");
+                }
                 continue;
             }
             PredeclareFunction(*function);
@@ -113,13 +140,49 @@ struct LlvmIrCodegen::Impl {
         if (type_name == "string") {
             return builder_.getPtrTy();
         }
-        if (type_name == "vector" || type_name == "normal" || type_name == "point") {
+        if (type_name == "vector" || type_name == "normal" || type_name == "point" ||
+            type_name == "vec3" || type_name == "dvec3") {
             return llvm::FixedVectorType::get(builder_.getDoubleTy(), 3);
+        }
+        if (type_name == "vec4" || type_name == "dvec4" || type_name == "quaternion") {
+            return llvm::FixedVectorType::get(builder_.getDoubleTy(), 4);
         }
         if (type_name == "matrix") {
             return llvm::ArrayType::get(builder_.getDoubleTy(), 16);
         }
+        const auto custom_type = struct_types_.find(type_name);
+        if (custom_type != struct_types_.end()) {
+            return custom_type->second;
+        }
         return nullptr;
+    }
+
+    bool DefineStruct(const StructDefinitionStatement &definition) {
+        const auto type_it = struct_types_.find(definition.name);
+        if (type_it == struct_types_.end()) {
+            AddError("Internal error: missing struct type " + definition.name);
+            return false;
+        }
+
+        std::vector<llvm::Type *> field_types;
+        field_types.reserve(definition.fields.size());
+        std::unordered_map<std::string, unsigned int> field_indices;
+        for (unsigned int i = 0; i < definition.fields.size(); ++i) {
+            const StructField &field = definition.fields[i];
+            llvm::Type *field_type = MapTypeName(field.type_name);
+            if (field_type == nullptr) {
+                AddError("Unsupported field type '" + field.type_name + "' in struct " + definition.name);
+                return false;
+            }
+            if (!field_indices.emplace(field.name, i).second) {
+                AddError("Duplicate field '" + field.name + "' in struct " + definition.name);
+                return false;
+            }
+            field_types.push_back(field_type);
+        }
+        type_it->second->setBody(field_types, false);
+        struct_field_indices_[definition.name] = std::move(field_indices);
+        return true;
     }
 
     bool IsNumericType(llvm::Type *type) const {
@@ -234,7 +297,7 @@ struct LlvmIrCodegen::Impl {
                 AddError("Unsupported parameter type '" + parameter.type_name + "' in function " + function_definition.name);
                 return;
             }
-            parameter_types.push_back(parameter_type);
+            parameter_types.push_back(parameter.is_buffer ? builder_.getPtrTy() : parameter_type);
         }
 
         auto *function_type = llvm::FunctionType::get(return_type, parameter_types, false);
@@ -261,6 +324,12 @@ struct LlvmIrCodegen::Impl {
         for (auto &argument : function->args()) {
             const auto &parameter_ast = function_definition.parameters[parameter_index++];
             argument.setName(parameter_ast.name);
+            if (parameter_ast.is_buffer) {
+                llvm::Type *element_type = MapTypeName(parameter_ast.type_name);
+                AddVariable(parameter_ast.name,
+                            VariableInfo{&argument, element_type, true});
+                continue;
+            }
             llvm::AllocaInst *slot = CreateEntryAlloca(parameter_ast.name, argument.getType());
             builder_.CreateStore(&argument, slot);
             AddVariable(parameter_ast.name, VariableInfo{slot, argument.getType()});
@@ -334,8 +403,8 @@ struct LlvmIrCodegen::Impl {
     }
 
     bool GenerateDeclaration(const DeclarationStatement &declaration) {
-        llvm::Type *declared_type = MapTypeName(declaration.type_name);
-        if (declared_type == nullptr) {
+        llvm::Type *element_type = MapTypeName(declaration.type_name);
+        if (element_type == nullptr) {
             AddError("Unsupported declaration type: " + declaration.type_name);
             return false;
         }
@@ -344,16 +413,24 @@ struct LlvmIrCodegen::Impl {
             return false;
         }
 
-        llvm::AllocaInst *slot = CreateEntryAlloca(declaration.variable_name, declared_type);
+        if (declaration.array_size != 0) {
+            llvm::Type *array_type = llvm::ArrayType::get(element_type, declaration.array_size);
+            llvm::AllocaInst *slot = CreateEntryAlloca(declaration.variable_name, array_type);
+            builder_.CreateStore(DefaultValueFor(array_type), slot);
+            AddVariable(declaration.variable_name, VariableInfo{slot, array_type});
+            return true;
+        }
+
+        llvm::AllocaInst *slot = CreateEntryAlloca(declaration.variable_name, element_type);
         llvm::Value *value = nullptr;
 
         if (declaration.initializer != nullptr) {
             value = GenerateExpression(*declaration.initializer);
-            value = CastValue(value, declared_type, "declaration initializer");
+            value = CastValue(value, element_type, "declaration initializer");
         } else if (!declaration.constructor_arguments.empty()) {
             value = BuildConstructedValue(declaration);
         } else {
-            value = DefaultValueFor(declared_type);
+            value = DefaultValueFor(element_type);
         }
 
         if (value == nullptr) {
@@ -361,7 +438,7 @@ struct LlvmIrCodegen::Impl {
         }
 
         builder_.CreateStore(value, slot);
-        AddVariable(declaration.variable_name, VariableInfo{slot, declared_type});
+        AddVariable(declaration.variable_name, VariableInfo{slot, element_type});
         return true;
     }
 
@@ -395,6 +472,24 @@ struct LlvmIrCodegen::Impl {
                     return nullptr;
                 }
                 aggregate = builder_.CreateInsertElement(aggregate, component, builder_.getInt32(i), "vecins");
+            }
+            return aggregate;
+        }
+
+        if (auto *struct_type = llvm::dyn_cast<llvm::StructType>(declared_type)) {
+            if (declaration.constructor_arguments.size() != struct_type->getNumElements()) {
+                AddError("Constructor for '" + declaration.type_name + "' expects " +
+                         std::to_string(struct_type->getNumElements()) + " arguments");
+                return nullptr;
+            }
+            llvm::Value *aggregate = llvm::UndefValue::get(struct_type);
+            for (unsigned int i = 0; i < struct_type->getNumElements(); ++i) {
+                llvm::Value *field = GenerateExpression(*declaration.constructor_arguments[i]);
+                field = CastValue(field, struct_type->getElementType(i), "struct constructor argument");
+                if (field == nullptr) {
+                    return nullptr;
+                }
+                aggregate = builder_.CreateInsertValue(aggregate, field, {i}, "structins");
             }
             return aggregate;
         }
@@ -619,6 +714,18 @@ struct LlvmIrCodegen::Impl {
         if (const auto *assignment = dynamic_cast<const AssignmentExpression *>(&expression)) {
             return GenerateAssignment(*assignment);
         }
+        if (const auto *index = dynamic_cast<const IndexExpression *>(&expression)) {
+            return GenerateIndex(*index);
+        }
+        if (const auto *assignment = dynamic_cast<const IndexAssignmentExpression *>(&expression)) {
+            return GenerateIndexAssignment(*assignment);
+        }
+        if (const auto *component = dynamic_cast<const ComponentExpression *>(&expression)) {
+            return GenerateComponent(*component);
+        }
+        if (const auto *assignment = dynamic_cast<const MemberAssignmentExpression *>(&expression)) {
+            return GenerateMemberAssignment(*assignment);
+        }
         if (const auto *call = dynamic_cast<const CallExpression *>(&expression)) {
             return GenerateCall(*call);
         }
@@ -627,10 +734,163 @@ struct LlvmIrCodegen::Impl {
         return nullptr;
     }
 
+    llvm::Value *GenerateIndexAddress(const IndexExpression &index, llvm::Type **element_type) {
+        const auto *base_identifier = dynamic_cast<const IdentifierExpression *>(index.base.get());
+        if (base_identifier == nullptr) {
+            AddError("Array indexing currently requires an array variable");
+            return nullptr;
+        }
+
+        VariableInfo *array_variable = FindVariable(base_identifier->name);
+        if (array_variable == nullptr) {
+            AddError("Undefined array: " + base_identifier->name);
+            return nullptr;
+        }
+        if (array_variable->is_buffer) {
+            llvm::Value *index_value = GenerateExpression(*index.index);
+            index_value = CastValue(index_value, builder_.getInt64Ty(), "buffer index");
+            if (index_value == nullptr) {
+                return nullptr;
+            }
+
+            *element_type = array_variable->type;
+            return builder_.CreateInBoundsGEP(*element_type,
+                                              array_variable->slot,
+                                              index_value,
+                                              base_identifier->name + ".element");
+        }
+
+        auto *array_type = llvm::dyn_cast<llvm::ArrayType>(array_variable->type);
+        if (array_type == nullptr) {
+            AddError("Cannot index non-array variable: " + base_identifier->name);
+            return nullptr;
+        }
+
+        llvm::Value *index_value = GenerateExpression(*index.index);
+        index_value = CastValue(index_value, builder_.getInt64Ty(), "array index");
+        if (index_value == nullptr) {
+            return nullptr;
+        }
+
+        *element_type = array_type->getElementType();
+        return builder_.CreateInBoundsGEP(array_type,
+                                          array_variable->slot,
+                                          {builder_.getInt64(0), index_value},
+                                          base_identifier->name + ".element");
+    }
+
+    llvm::Value *GenerateIndex(const IndexExpression &index) {
+        llvm::Type *element_type = nullptr;
+        llvm::Value *address = GenerateIndexAddress(index, &element_type);
+        if (address == nullptr) {
+            return nullptr;
+        }
+        return builder_.CreateLoad(element_type, address, "arrayload");
+    }
+
+    bool FindStructField(llvm::StructType *struct_type, const std::string &field_name, unsigned int *index) {
+        const auto fields = struct_field_indices_.find(struct_type->getName().str());
+        if (fields == struct_field_indices_.end()) {
+            AddError("Unknown struct type: " + struct_type->getName().str());
+            return false;
+        }
+        const auto field = fields->second.find(field_name);
+        if (field == fields->second.end()) {
+            AddError("Unknown field '" + field_name + "' on struct " + struct_type->getName().str());
+            return false;
+        }
+        *index = field->second;
+        return true;
+    }
+
+    llvm::Value *GenerateAddress(const Expression &expression, llvm::Type **value_type) {
+        if (const auto *identifier = dynamic_cast<const IdentifierExpression *>(&expression)) {
+            VariableInfo *variable = FindVariable(identifier->name);
+            if (variable == nullptr) {
+                AddError("Undefined variable: " + identifier->name);
+                return nullptr;
+            }
+            if (variable->is_buffer) {
+                AddError("Buffer variable must be indexed: " + identifier->name);
+                return nullptr;
+            }
+            *value_type = variable->type;
+            return variable->slot;
+        }
+        if (const auto *index = dynamic_cast<const IndexExpression *>(&expression)) {
+            return GenerateIndexAddress(*index, value_type);
+        }
+        if (const auto *component = dynamic_cast<const ComponentExpression *>(&expression)) {
+            llvm::Type *base_type = nullptr;
+            llvm::Value *base_address = GenerateAddress(*component->base, &base_type);
+            auto *struct_type = llvm::dyn_cast_or_null<llvm::StructType>(base_type);
+            if (base_address == nullptr || struct_type == nullptr) {
+                if (base_address != nullptr) {
+                    AddError("Member assignment requires a struct value");
+                }
+                return nullptr;
+            }
+            unsigned int field_index = 0;
+            if (!FindStructField(struct_type, component->component, &field_index)) {
+                return nullptr;
+            }
+            *value_type = struct_type->getElementType(field_index);
+            return builder_.CreateStructGEP(struct_type, base_address, field_index, "fieldaddr");
+        }
+        AddError("Invalid assignment target");
+        return nullptr;
+    }
+
+    llvm::Value *GenerateComponent(const ComponentExpression &component) {
+        llvm::Value *value = GenerateExpression(*component.base);
+        if (value == nullptr) {
+            return nullptr;
+        }
+
+        if (auto *struct_type = llvm::dyn_cast<llvm::StructType>(value->getType())) {
+            unsigned int field_index = 0;
+            if (!FindStructField(struct_type, component.component, &field_index)) {
+                return nullptr;
+            }
+            return builder_.CreateExtractValue(value, {field_index}, "field");
+        }
+
+        const auto *vector_type = llvm::dyn_cast<llvm::FixedVectorType>(value->getType());
+        if (vector_type == nullptr || !vector_type->getElementType()->isDoubleTy()) {
+            AddError("Member access requires a struct or floating-point vector");
+            return nullptr;
+        }
+
+        unsigned int index = 0;
+        if (component.component == "x") {
+            index = 0;
+        } else if (component.component == "y") {
+            index = 1;
+        } else if (component.component == "z") {
+            index = 2;
+        } else if (component.component == "w") {
+            index = 3;
+        } else {
+            AddError("Unknown vector component: " + component.component);
+            return nullptr;
+        }
+
+        if (index >= vector_type->getNumElements()) {
+            AddError("Vector component '" + component.component + "' is unavailable on a " +
+                     std::to_string(vector_type->getNumElements()) + "-component vector");
+            return nullptr;
+        }
+        return builder_.CreateExtractElement(value, builder_.getInt32(index), "component");
+    }
+
     llvm::Value *GenerateIdentifier(const IdentifierExpression &identifier) {
         VariableInfo *variable = FindVariable(identifier.name);
         if (variable == nullptr) {
             AddError("Undefined variable: " + identifier.name);
+            return nullptr;
+        }
+        if (variable->is_buffer) {
+            AddError("Buffer variable must be indexed: " + identifier.name);
             return nullptr;
         }
         return builder_.CreateLoad(variable->type, variable->slot, identifier.name + ".val");
@@ -669,6 +929,9 @@ struct LlvmIrCodegen::Impl {
             if (operand->getType()->isIntegerTy(64)) {
                 return builder_.CreateNeg(operand, "negtmp");
             }
+            if (operand->getType()->isVectorTy()) {
+                return builder_.CreateFNeg(operand, "vecnegtmp");
+            }
             AddError("Unary '-' requires numeric operand");
             return nullptr;
         case UnaryOp::Not:
@@ -684,10 +947,104 @@ struct LlvmIrCodegen::Impl {
         return nullptr;
     }
 
+    bool IsThreeComponentVector(llvm::Type *type) const {
+        const auto *vector_type = llvm::dyn_cast_or_null<llvm::FixedVectorType>(type);
+        return vector_type != nullptr &&
+               vector_type->getNumElements() == 3 &&
+               vector_type->getElementType()->isDoubleTy();
+    }
+
+    bool IsMatrix4x4(llvm::Type *type) const {
+        const auto *array_type = llvm::dyn_cast_or_null<llvm::ArrayType>(type);
+        return array_type != nullptr &&
+               array_type->getNumElements() == 16 &&
+               array_type->getElementType()->isDoubleTy();
+    }
+
+    llvm::Value *GenerateMatrixVectorMultiply(llvm::Value *matrix, llvm::Value *vector) {
+        if (!IsMatrix4x4(matrix->getType()) || !IsThreeComponentVector(vector->getType())) {
+            AddError("Matrix multiplication requires a matrix and a three-component point/vector");
+            return nullptr;
+        }
+
+        // ORL matrix constructors are row-major. Points/vectors are promoted
+        // to homogeneous (x, y, z, 1) so translation in the final matrix
+        // column affects skinning positions.
+        auto *vector_type = llvm::cast<llvm::FixedVectorType>(vector->getType());
+        llvm::Value *result = llvm::UndefValue::get(vector_type);
+        for (unsigned int row = 0; row < 3; ++row) {
+            llvm::Value *sum = llvm::ConstantFP::get(builder_.getDoubleTy(), 0.0);
+            for (unsigned int column = 0; column < 4; ++column) {
+                llvm::Value *matrix_element =
+                    builder_.CreateExtractValue(matrix, {row * 4 + column}, "matelt");
+                llvm::Value *component = column == 3
+                                             ? llvm::ConstantFP::get(builder_.getDoubleTy(), 1.0)
+                                             : builder_.CreateExtractElement(vector, builder_.getInt32(column), "vecelt");
+                sum = builder_.CreateFAdd(sum, builder_.CreateFMul(matrix_element, component, "matmul"), "matsum");
+            }
+            result = builder_.CreateInsertElement(result, sum, builder_.getInt32(row), "matvec");
+        }
+        return result;
+    }
+
     llvm::Value *GenerateBinary(const BinaryExpression &binary) {
         llvm::Value *left = GenerateExpression(*binary.left);
         llvm::Value *right = GenerateExpression(*binary.right);
         if (left == nullptr || right == nullptr) {
+            return nullptr;
+        }
+
+        const bool left_is_vector = IsThreeComponentVector(left->getType());
+        const bool right_is_vector = IsThreeComponentVector(right->getType());
+        const bool left_is_matrix = IsMatrix4x4(left->getType());
+        const bool right_is_matrix = IsMatrix4x4(right->getType());
+        if (binary.op == BinaryOp::Multiply && left_is_matrix && right_is_vector) {
+            return GenerateMatrixVectorMultiply(left, right);
+        }
+
+        if ((binary.op == BinaryOp::Add || binary.op == BinaryOp::Subtract ||
+             binary.op == BinaryOp::Multiply || binary.op == BinaryOp::Divide) &&
+            (left_is_vector || right_is_vector)) {
+            llvm::Value *vector = left_is_vector ? left : right;
+            llvm::Value *other = left_is_vector ? right : left;
+            if (!IsThreeComponentVector(vector->getType())) {
+                AddError("Vector operation requires three-component vectors");
+                return nullptr;
+            }
+
+            if (IsThreeComponentVector(other->getType())) {
+                if (binary.op == BinaryOp::Add) return builder_.CreateFAdd(left, right, "vecadd");
+                if (binary.op == BinaryOp::Subtract) return builder_.CreateFSub(left, right, "vecsub");
+                if (binary.op == BinaryOp::Multiply) return builder_.CreateFMul(left, right, "vecmul");
+                return builder_.CreateFDiv(left, right, "vecdiv");
+            }
+
+            if (!other->getType()->isDoubleTy() && !other->getType()->isIntegerTy(64)) {
+                AddError("Vector scalar operation requires an int or float scalar");
+                return nullptr;
+            }
+            if (binary.op == BinaryOp::Add || binary.op == BinaryOp::Subtract) {
+                AddError("Vector addition/subtraction requires another vector");
+                return nullptr;
+            }
+            if (binary.op == BinaryOp::Divide && !left_is_vector) {
+                AddError("Scalar divided by vector is unsupported");
+                return nullptr;
+            }
+
+            llvm::Value *scalar = CastValue(other, builder_.getDoubleTy(), "vector scalar operation");
+            if (scalar == nullptr) {
+                return nullptr;
+            }
+            llvm::Value *splat = builder_.CreateVectorSplat(3, scalar, "vecsplat");
+            if (binary.op == BinaryOp::Multiply) {
+                return builder_.CreateFMul(vector, splat, "vecscale");
+            }
+            return builder_.CreateFDiv(vector, splat, "vecscale");
+        }
+
+        if (left_is_matrix || right_is_matrix) {
+            AddError("Supported matrix operation is matrix * point/vector");
             return nullptr;
         }
 
@@ -814,6 +1171,38 @@ struct LlvmIrCodegen::Impl {
         return builder_.CreateLoad(variable->type, variable->slot, assignment.target_name + ".assigned");
     }
 
+    llvm::Value *GenerateIndexAssignment(const IndexAssignmentExpression &assignment) {
+        llvm::Type *element_type = nullptr;
+        llvm::Value *address = GenerateIndexAddress(*assignment.target, &element_type);
+        if (address == nullptr) {
+            return nullptr;
+        }
+
+        llvm::Value *value = GenerateExpression(*assignment.value);
+        value = CastValue(value, element_type, "array element assignment");
+        if (value == nullptr) {
+            return nullptr;
+        }
+
+        builder_.CreateStore(value, address);
+        return value;
+    }
+
+    llvm::Value *GenerateMemberAssignment(const MemberAssignmentExpression &assignment) {
+        llvm::Type *field_type = nullptr;
+        llvm::Value *address = GenerateAddress(*assignment.target, &field_type);
+        if (address == nullptr) {
+            return nullptr;
+        }
+        llvm::Value *value = GenerateExpression(*assignment.value);
+        value = CastValue(value, field_type, "struct field assignment");
+        if (value == nullptr) {
+            return nullptr;
+        }
+        builder_.CreateStore(value, address);
+        return value;
+    }
+
     llvm::Function *GetOrCreateExtern(const std::string &name, const std::vector<llvm::Value *> &args) {
         if (llvm::Function *existing = module_->getFunction(name)) {
             return existing;
@@ -839,6 +1228,144 @@ struct LlvmIrCodegen::Impl {
         return llvm::Function::Create(signature, llvm::Function::ExternalLinkage, name, module_.get());
     }
 
+    bool IsQuaternionType(llvm::Type *type) const {
+        const auto *vector_type = llvm::dyn_cast_or_null<llvm::FixedVectorType>(type);
+        return vector_type != nullptr &&
+               vector_type->getNumElements() == 4 &&
+               vector_type->getElementType()->isDoubleTy();
+    }
+
+    llvm::Value *ExtractVectorElement(llvm::Value *value, unsigned int index, const char *name) {
+        return builder_.CreateExtractElement(value, builder_.getInt32(index), name);
+    }
+
+    llvm::Value *BuildQuaternion(llvm::Value *x, llvm::Value *y, llvm::Value *z, llvm::Value *w) {
+        auto *type = llvm::FixedVectorType::get(builder_.getDoubleTy(), 4);
+        llvm::Value *result = llvm::UndefValue::get(type);
+        result = builder_.CreateInsertElement(result, x, builder_.getInt32(0), "quatx");
+        result = builder_.CreateInsertElement(result, y, builder_.getInt32(1), "quaty");
+        result = builder_.CreateInsertElement(result, z, builder_.getInt32(2), "quatz");
+        return builder_.CreateInsertElement(result, w, builder_.getInt32(3), "quatw");
+    }
+
+    llvm::Value *BuildVector3(llvm::Value *x, llvm::Value *y, llvm::Value *z) {
+        auto *type = llvm::FixedVectorType::get(builder_.getDoubleTy(), 3);
+        llvm::Value *result = llvm::UndefValue::get(type);
+        result = builder_.CreateInsertElement(result, x, builder_.getInt32(0), "vecx");
+        result = builder_.CreateInsertElement(result, y, builder_.getInt32(1), "vecy");
+        return builder_.CreateInsertElement(result, z, builder_.getInt32(2), "vecz");
+    }
+
+    llvm::Value *GenerateQuaternionMultiply(llvm::Value *left, llvm::Value *right) {
+        if (!IsQuaternionType(left->getType()) || !IsQuaternionType(right->getType())) {
+            AddError("quat_mul requires two quaternions");
+            return nullptr;
+        }
+
+        llvm::Value *x1 = ExtractVectorElement(left, 0, "q1x");
+        llvm::Value *y1 = ExtractVectorElement(left, 1, "q1y");
+        llvm::Value *z1 = ExtractVectorElement(left, 2, "q1z");
+        llvm::Value *w1 = ExtractVectorElement(left, 3, "q1w");
+        llvm::Value *x2 = ExtractVectorElement(right, 0, "q2x");
+        llvm::Value *y2 = ExtractVectorElement(right, 1, "q2y");
+        llvm::Value *z2 = ExtractVectorElement(right, 2, "q2z");
+        llvm::Value *w2 = ExtractVectorElement(right, 3, "q2w");
+
+        const auto mul = [this](llvm::Value *a, llvm::Value *b) {
+            return builder_.CreateFMul(a, b, "quatmul");
+        };
+        const auto add = [this](llvm::Value *a, llvm::Value *b) {
+            return builder_.CreateFAdd(a, b, "quatadd");
+        };
+        const auto sub = [this](llvm::Value *a, llvm::Value *b) {
+            return builder_.CreateFSub(a, b, "quatsub");
+        };
+
+        llvm::Value *x = add(add(mul(w1, x2), mul(x1, w2)), sub(mul(y1, z2), mul(z1, y2)));
+        llvm::Value *y = add(add(mul(w1, y2), mul(y1, w2)), sub(mul(z1, x2), mul(x1, z2)));
+        llvm::Value *z = add(add(mul(w1, z2), mul(z1, w2)), sub(mul(x1, y2), mul(y1, x2)));
+        llvm::Value *w = sub(sub(mul(w1, w2), mul(x1, x2)), add(mul(y1, y2), mul(z1, z2)));
+        return BuildQuaternion(x, y, z, w);
+    }
+
+    llvm::Value *GenerateQuaternionConjugate(llvm::Value *quaternion) {
+        if (!IsQuaternionType(quaternion->getType())) {
+            AddError("quat_conjugate requires a quaternion");
+            return nullptr;
+        }
+        return BuildQuaternion(builder_.CreateFNeg(ExtractVectorElement(quaternion, 0, "qx"), "qconjx"),
+                               builder_.CreateFNeg(ExtractVectorElement(quaternion, 1, "qy"), "qconjy"),
+                               builder_.CreateFNeg(ExtractVectorElement(quaternion, 2, "qz"), "qconjz"),
+                               ExtractVectorElement(quaternion, 3, "qw"));
+    }
+
+    llvm::Value *GenerateQuaternionNormalize(llvm::Value *quaternion) {
+        if (!IsQuaternionType(quaternion->getType())) {
+            AddError("quat_normalize requires a quaternion");
+            return nullptr;
+        }
+
+        llvm::Value *length_squared = llvm::ConstantFP::get(builder_.getDoubleTy(), 0.0);
+        for (unsigned int i = 0; i < 4; ++i) {
+            llvm::Value *component = ExtractVectorElement(quaternion, i, "qnormelt");
+            length_squared = builder_.CreateFAdd(length_squared,
+                                                 builder_.CreateFMul(component, component, "qnormmul"),
+                                                 "qnormsum");
+        }
+        llvm::Function *sqrt = llvm::Intrinsic::getDeclaration(module_.get(), llvm::Intrinsic::sqrt, {builder_.getDoubleTy()});
+        llvm::Value *length = builder_.CreateCall(sqrt, {length_squared}, "qnormlength");
+        llvm::Value *splat = builder_.CreateVectorSplat(4, length, "qnormsplat");
+        return builder_.CreateFDiv(quaternion, splat, "qnormalize");
+    }
+
+    llvm::Value *GenerateCrossProduct(llvm::Value *left, llvm::Value *right) {
+        if (!IsThreeComponentVector(left->getType()) || !IsThreeComponentVector(right->getType())) {
+            AddError("cross product requires two three-component vectors");
+            return nullptr;
+        }
+        llvm::Value *x = builder_.CreateFSub(builder_.CreateFMul(ExtractVectorElement(left, 1, "lhs_y"),
+                                                                 ExtractVectorElement(right, 2, "rhs_z")),
+                                             builder_.CreateFMul(ExtractVectorElement(left, 2, "lhs_z"),
+                                                                 ExtractVectorElement(right, 1, "rhs_y")),
+                                             "crossx");
+        llvm::Value *y = builder_.CreateFSub(builder_.CreateFMul(ExtractVectorElement(left, 2, "lhs_z"),
+                                                                 ExtractVectorElement(right, 0, "rhs_x")),
+                                             builder_.CreateFMul(ExtractVectorElement(left, 0, "lhs_x"),
+                                                                 ExtractVectorElement(right, 2, "rhs_z")),
+                                             "crossy");
+        llvm::Value *z = builder_.CreateFSub(builder_.CreateFMul(ExtractVectorElement(left, 0, "lhs_x"),
+                                                                 ExtractVectorElement(right, 1, "rhs_y")),
+                                             builder_.CreateFMul(ExtractVectorElement(left, 1, "lhs_y"),
+                                                                 ExtractVectorElement(right, 0, "rhs_x")),
+                                             "crossz");
+        return BuildVector3(x, y, z);
+    }
+
+    llvm::Value *GenerateQuaternionRotate(llvm::Value *quaternion, llvm::Value *vector) {
+        if (!IsQuaternionType(quaternion->getType()) || !IsThreeComponentVector(vector->getType())) {
+            AddError("quat_rotate requires a quaternion and a three-component vector");
+            return nullptr;
+        }
+
+        llvm::Value *quaternion_vector = BuildVector3(ExtractVectorElement(quaternion, 0, "qx"),
+                                                       ExtractVectorElement(quaternion, 1, "qy"),
+                                                       ExtractVectorElement(quaternion, 2, "qz"));
+        llvm::Value *twice_cross = GenerateCrossProduct(quaternion_vector, vector);
+        if (twice_cross == nullptr) {
+            return nullptr;
+        }
+        twice_cross = builder_.CreateFMul(twice_cross,
+                                          builder_.CreateVectorSplat(3, llvm::ConstantFP::get(builder_.getDoubleTy(), 2.0)),
+                                          "quattrotdouble");
+        llvm::Value *w = ExtractVectorElement(quaternion, 3, "qw");
+        llvm::Value *w_cross = builder_.CreateFMul(twice_cross, builder_.CreateVectorSplat(3, w), "quatrotw");
+        llvm::Value *second_cross = GenerateCrossProduct(quaternion_vector, twice_cross);
+        if (second_cross == nullptr) {
+            return nullptr;
+        }
+        return builder_.CreateFAdd(vector, builder_.CreateFAdd(w_cross, second_cross, "quatrotdelta"), "quatrot");
+    }
+
     llvm::Value *GenerateCall(const CallExpression &call) {
         const auto *callee_identifier = dynamic_cast<const IdentifierExpression *>(call.callee.get());
         if (callee_identifier == nullptr) {
@@ -854,6 +1381,44 @@ struct LlvmIrCodegen::Impl {
                 return nullptr;
             }
             arguments.push_back(value);
+        }
+
+        llvm::Value *intrinsic_result = nullptr;
+        std::string intrinsic_error;
+        if (OrlIntrinsicCodegen::TryGenerate(
+                callee_identifier->name, arguments, builder_, *module_, &intrinsic_result, &intrinsic_error)) {
+            if (intrinsic_result == nullptr) {
+                AddError(intrinsic_error);
+            }
+            return intrinsic_result;
+        }
+        if (callee_identifier->name == "quat_mul") {
+            if (arguments.size() != 2) {
+                AddError("quat_mul requires exactly two arguments");
+                return nullptr;
+            }
+            return GenerateQuaternionMultiply(arguments[0], arguments[1]);
+        }
+        if (callee_identifier->name == "quat_conjugate") {
+            if (arguments.size() != 1) {
+                AddError("quat_conjugate requires exactly one argument");
+                return nullptr;
+            }
+            return GenerateQuaternionConjugate(arguments[0]);
+        }
+        if (callee_identifier->name == "quat_normalize") {
+            if (arguments.size() != 1) {
+                AddError("quat_normalize requires exactly one argument");
+                return nullptr;
+            }
+            return GenerateQuaternionNormalize(arguments[0]);
+        }
+        if (callee_identifier->name == "quat_rotate") {
+            if (arguments.size() != 2) {
+                AddError("quat_rotate requires exactly two arguments");
+                return nullptr;
+            }
+            return GenerateQuaternionRotate(arguments[0], arguments[1]);
         }
 
         llvm::Function *callee = GetOrCreateExtern(callee_identifier->name, arguments);
@@ -898,6 +1463,8 @@ struct LlvmIrCodegen::Impl {
     llvm::IRBuilder<> builder_;
     std::vector<std::unordered_map<std::string, VariableInfo>> scopes_;
     std::vector<LoopContext> loops_;
+    std::unordered_map<std::string, llvm::StructType *> struct_types_;
+    std::unordered_map<std::string, std::unordered_map<std::string, unsigned int>> struct_field_indices_;
     llvm::Function *current_function_ = nullptr;
     llvm::Type *current_function_return_type_ = nullptr;
     std::vector<std::string> errors_;

@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace orlcomp {
@@ -25,6 +26,7 @@ private:
     bool Expect(TokenKind kind, const char *message);
 
     bool ParseTopLevel();
+    bool ParseStructDefinition();
     bool ParseFunctionDefinition();
     bool ParseTypeName();
     bool ParseBlock();
@@ -51,6 +53,7 @@ private:
     bool ParseArgumentList(std::vector<std::unique_ptr<Expression>> *arguments);
 
     bool IsTypeToken(TokenKind kind) const;
+    bool IsTypeName(const Token &token) const;
     bool IsUnaryOperator(TokenKind kind) const;
     UnaryOp UnaryOperatorFromToken(TokenKind kind) const;
     BinaryOp BinaryOperatorFromToken(TokenKind kind) const;
@@ -62,6 +65,7 @@ private:
     Lexer lexer_;
     std::vector<Token> buffered_tokens_;
     std::vector<std::string> errors_;
+    std::unordered_set<std::string> struct_names_;
     std::unique_ptr<Program> program_;
     std::unique_ptr<Expression> last_expression_;
     std::unique_ptr<Statement> last_statement_;

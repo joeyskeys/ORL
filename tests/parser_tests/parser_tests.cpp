@@ -116,6 +116,33 @@ TEST_CASE("parser keeps operator precedence in AST", "[orl][parser][ast]") {
     REQUIRE(mul->op == BinaryOp::Multiply);
 }
 
+TEST_CASE("parser builds fixed arrays and indexed assignments", "[orl][parser][ast]") {
+    const std::string src =
+        "int main() {\n"
+        "    float weights[2];\n"
+        "    weights[0] = 0.25;\n"
+        "    weights[1] = 0.75;\n"
+        "    return int(weights[0] * 100 + weights[1] * 100);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    const auto *function = dynamic_cast<const FunctionDefinitionStatement *>(parser.Ast()->items[0].get());
+    REQUIRE(function != nullptr);
+    REQUIRE(function->body->statements.size() == 4);
+
+    const auto *array_declaration = dynamic_cast<const DeclarationStatement *>(function->body->statements[0].get());
+    REQUIRE(array_declaration != nullptr);
+    REQUIRE(array_declaration->type_name == "float");
+    REQUIRE(array_declaration->array_size == 2);
+
+    const auto *first_assignment = dynamic_cast<const ExpressionStatement *>(function->body->statements[1].get());
+    REQUIRE(first_assignment != nullptr);
+    REQUIRE(dynamic_cast<const IndexAssignmentExpression *>(first_assignment->expression.get()) != nullptr);
+}
+
 TEST_CASE("parser accepts GLSL-style vector and matrix type names", "[orl][parser][ast]") {
     const std::string src =
         "dvec3 transform(mat4 m, ivec3 index) {\n"
