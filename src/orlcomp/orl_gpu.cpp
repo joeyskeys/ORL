@@ -4,9 +4,16 @@
     __has_include(<llvm/Target/TargetMachine.h>) && \
     __has_include(<llvm/Support/CodeGen.h>)
 
+#include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/Constants.h>
+#include <llvm/IR/Function.h>
+#include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Metadata.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/Type.h>
 #include <llvm/MC/TargetRegistry.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/TargetSelect.h>
@@ -73,6 +80,59 @@ struct OrlGpuEngine::Impl {
 
     ~Impl() = default;
 
+    bool CreateCudaEntryKernel(llvm::Module &module) {
+        llvm::Function *compute = module.getFunction("compute");
+        if (compute == nullptr) {
+            errors_.push_back("CUDA compilation requires a zero-argument ORL function named 'compute'");
+            return false;
+        }
+        if (compute->arg_size() != 0) {
+            errors_.push_back("CUDA entry function 'compute' must not have parameters");
+            return false;
+        }
+        if (compute->getReturnType()->isVoidTy()) {
+            errors_.push_back("CUDA entry function 'compute' must return an integer result");
+            return false;
+        }
+        if (module.getFunction(OrlGpuEngine::CudaEntryKernelName) != nullptr ||
+            module.getGlobalVariable(OrlGpuEngine::CudaResultSymbolName) != nullptr) {
+            errors_.push_back("CUDA entry kernel or result symbol already exists in the module");
+            return false;
+        }
+
+        llvm::LLVMContext &context = module.getContext();
+        auto *result_type = llvm::Type::getInt32Ty(context);
+        auto *result_global = new llvm::GlobalVariable(module,
+                                                        result_type,
+                                                        false,
+                                                        llvm::GlobalValue::ExternalLinkage,
+                                                        llvm::ConstantInt::get(result_type, 0),
+                                                        OrlGpuEngine::CudaResultSymbolName);
+
+        auto *kernel_type = llvm::FunctionType::get(llvm::Type::getVoidTy(context), {}, false);
+        llvm::Function *kernel = llvm::Function::Create(kernel_type,
+                                                        llvm::GlobalValue::ExternalLinkage,
+                                                        OrlGpuEngine::CudaEntryKernelName,
+                                                        module);
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(context, "entry", kernel);
+        llvm::IRBuilder<> builder(entry);
+        llvm::Value *result = builder.CreateCall(compute, {}, "compute.call");
+        llvm::Value *result_i32 = result->getType()->isIntegerTy(32)
+                                      ? result
+                                      : builder.CreateTruncOrBitCast(result, result_type, "result.i32");
+        builder.CreateStore(result_i32, result_global);
+        builder.CreateRetVoid();
+
+        llvm::NamedMDNode *annotations = module.getOrInsertNamedMetadata("nvvm.annotations");
+        llvm::Metadata *annotation_ops[] = {
+            llvm::ValueAsMetadata::get(kernel),
+            llvm::MDString::get(context, "kernel"),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(result_type, 1)),
+        };
+        annotations->addOperand(llvm::MDNode::get(context, annotation_ops));
+        return true;
+    }
+
     bool CompileModule(std::unique_ptr<llvm::Module> module, std::unique_ptr<llvm::LLVMContext> context) {
         errors_.clear();
         device_code_.clear();
@@ -80,6 +140,9 @@ struct OrlGpuEngine::Impl {
 
         if (module == nullptr || context == nullptr) {
             errors_.push_back("CompileModule requires non-null LLVM module and context");
+            return false;
+        }
+        if (backend_ == OrlGpuBackend::Cuda && !CreateCudaEntryKernel(*module)) {
             return false;
         }
 

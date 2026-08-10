@@ -21,6 +21,9 @@ enum class OrlGpuBackend : std::uint8_t {
 
 class OrlGpuEngine {
 public:
+    static constexpr const char *CudaEntryKernelName = "orl_cuda_entry";
+    static constexpr const char *CudaResultSymbolName = "orl_cuda_result";
+
     explicit OrlGpuEngine(OrlGpuBackend backend = OrlGpuBackend::Cuda);
     ~OrlGpuEngine();
 

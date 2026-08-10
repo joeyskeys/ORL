@@ -26,22 +26,22 @@ Gaps for a real GPU LBS deformer:
 
 What needs adding for real GPU LBS:
 
-Automatic kernel ABI generation
-The compiler should generate the CUDA entry kernel and nvvm.annotations itself. Tests should not need AddKernelWrapperForCompute.
+~~1. Automatic kernel ABI generation~~
+~~The compiler generates the CUDA entry kernel and nvvm.annotations itself. Tests do not need AddKernelWrapperForCompute.~~
 
-General GPU buffer runtime
+2. General GPU buffer runtime
 OrlGpuEngine needs APIs to allocate device buffers, upload typed data, pass arbitrary buffer/scalar kernel arguments, launch, synchronize, and download output buffers.
 
-Data-parallel lowering
+3. Data-parallel lowering
 A GPU launch needs one work item per vertex. Today there is no language-level representation of “this iteration belongs to this GPU invocation.”
 
-Dispatch setup
+4. Dispatch setup
 The runtime needs to derive the launch size from vertex_count, choose a block size, calculate the grid, and pass required metadata.
 
-GPU-safe buffer/address-space lowering
+5. GPU-safe buffer/address-space lowering
 ORL should keep buffer syntax target-independent, while the CUDA backend assigns the appropriate LLVM/NVPTX address spaces and kernel argument ABI.
 
-NVPTX-capable LLVM/CUDA environment
+6. NVPTX-capable LLVM/CUDA environment
 The installed LLVM must contain the NVPTX target, and the CUDA driver must be available. The current CMake setup now tolerates LLVM builds without NVPTX, but such builds cannot emit PTX.
 
 You do not need to expose raw threadIdx, blockIdx, or CUDA setup to ORL users.
