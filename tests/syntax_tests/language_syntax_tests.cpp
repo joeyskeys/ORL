@@ -97,7 +97,8 @@ TEST_CASE("syntax accepts vector math intrinsic calls", "[orl][syntax][vector][i
         "    vector perpendicular = cross(a, b);\n"
         "    vector unit = normalize(perpendicular);\n"
         "    vector limited = clamp(unit, -0.5, 0.5);\n"
-        "    return clamp(length(limited) + dot(a, b), 0.0, 1.0);\n"
+        "    vector halfway = lerp(a, b, 0.5);\n"
+        "    return lerp(clamp(length(limited) + dot(a, b), 0.0, 1.0), halfway.x, 0.25);\n"
         "}\n";
 
     RequireParses(src);
@@ -113,8 +114,9 @@ TEST_CASE("syntax accepts matrix math intrinsic calls", "[orl][syntax][matrix][i
         "                     0, 0, 0, 1);\n"
         "    matrix combined = mat_mul(identity, transform);\n"
         "    matrix transposed = mat_transpose(combined);\n"
+        "    matrix inverse = mat_inverse(transposed);\n"
         "    point value(1, 2, 3);\n"
-        "    return mat_mul(transposed, value);\n"
+        "    return mat_mul(inverse, value);\n"
         "}\n";
 
     RequireParses(src);

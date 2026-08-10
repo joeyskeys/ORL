@@ -12,6 +12,7 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/TargetSelect.h>
 
+#include <array>
 #include <utility>
 #include <optional>
 
@@ -146,6 +147,30 @@ struct OrlJitEngine::Impl {
         return function(arg);
     }
 
+    std::optional<int64_t> InvokeInt64WithBufferArgs(const std::string &name,
+                                                      const std::array<void *, 5> &buffers,
+                                                      int64_t scalar_arg) {
+        if (IsGpuTarget(target_kind_)) {
+            errors_.push_back(std::string("InvokeInt64WithBufferArgs is unsupported for JIT target '") +
+                              TargetName(target_kind_) + "'");
+            return std::nullopt;
+        }
+        if (jit_ == nullptr) {
+            errors_.push_back("JIT engine has no loaded module");
+            return std::nullopt;
+        }
+
+        auto symbol_or_error = jit_->lookup(name);
+        if (!symbol_or_error) {
+            errors_.push_back("Failed to lookup function '" + name + "': " + FormatLlvmError(symbol_or_error.takeError()));
+            return std::nullopt;
+        }
+
+        using FunctionType = int64_t (*)(void *, void *, void *, void *, void *, int64_t);
+        const auto function = symbol_or_error->toPtr<FunctionType>();
+        return function(buffers[0], buffers[1], buffers[2], buffers[3], buffers[4], scalar_arg);
+    }
+
     std::unique_ptr<llvm::orc::LLJIT> jit_;
     OrlJitTarget target_kind_ = OrlJitTarget::Native;
     std::vector<std::string> errors_;
@@ -170,6 +195,12 @@ std::optional<int64_t> OrlJitEngine::InvokeInt64(const std::string &name) {
 
 std::optional<int64_t> OrlJitEngine::InvokeInt64(const std::string &name, int64_t arg) {
     return impl_->InvokeInt64(name, arg);
+}
+
+std::optional<int64_t> OrlJitEngine::InvokeInt64WithBufferArgs(const std::string &name,
+                                                                const std::array<void *, 5> &buffers,
+                                                                int64_t scalar_arg) {
+    return impl_->InvokeInt64WithBufferArgs(name, buffers, scalar_arg);
 }
 
 OrlJitTarget OrlJitEngine::Target() const {
@@ -209,6 +240,12 @@ struct OrlJitEngine::Impl {
         return std::nullopt;
     }
 
+    std::optional<int64_t> InvokeInt64WithBufferArgs(const std::string &,
+                                                      const std::array<void *, 5> &,
+                                                      int64_t) {
+        return std::nullopt;
+    }
+
     OrlJitTarget target_kind_ = OrlJitTarget::Native;
     std::vector<std::string> errors_;
 };
@@ -232,6 +269,12 @@ std::optional<int64_t> OrlJitEngine::InvokeInt64(const std::string &name) {
 
 std::optional<int64_t> OrlJitEngine::InvokeInt64(const std::string &name, int64_t arg) {
     return impl_->InvokeInt64(name, arg);
+}
+
+std::optional<int64_t> OrlJitEngine::InvokeInt64WithBufferArgs(const std::string &name,
+                                                                const std::array<void *, 5> &buffers,
+                                                                int64_t scalar_arg) {
+    return impl_->InvokeInt64WithBufferArgs(name, buffers, scalar_arg);
 }
 
 OrlJitTarget OrlJitEngine::Target() const {

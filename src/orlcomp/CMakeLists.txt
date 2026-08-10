@@ -74,13 +74,18 @@ if (LLVM_FOUND)
             "Install zstd via vcpkg and pass -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake")
     endif()
     if (COMMAND llvm_map_components_to_libnames)
-        llvm_map_components_to_libnames(ORLCOMP_LLVM_LIBS
+        set(ORLCOMP_LLVM_COMPONENTS
             Core Support ExecutionEngine
             OrcJIT OrcShared OrcTargetProcess
             Passes Analysis TransformUtils ScalarOpts InstCombine IPO AggressiveInstCombine
             X86CodeGen X86Desc X86Info X86AsmParser
-            NVPTXCodeGen NVPTXDesc NVPTXInfo
         )
+        if ("NVPTX" IN_LIST LLVM_TARGETS_TO_BUILD)
+            list(APPEND ORLCOMP_LLVM_COMPONENTS
+                NVPTXCodeGen NVPTXDesc NVPTXInfo
+            )
+        endif()
+        llvm_map_components_to_libnames(ORLCOMP_LLVM_LIBS ${ORLCOMP_LLVM_COMPONENTS})
     else()
         set(ORLCOMP_LLVM_LIBS LLVM)
     endif()

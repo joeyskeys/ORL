@@ -2,6 +2,7 @@
 
 #include "orl_optimizer.h"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -33,6 +34,9 @@ public:
 
     std::optional<int64_t> InvokeInt64(const std::string &name);
     std::optional<int64_t> InvokeInt64(const std::string &name, int64_t arg);
+    std::optional<int64_t> InvokeInt64WithBufferArgs(const std::string &name,
+                                                      const std::array<void *, 5> &buffers,
+                                                      int64_t scalar_arg);
     OrlJitTarget Target() const;
 
     const std::vector<std::string> &Errors() const;

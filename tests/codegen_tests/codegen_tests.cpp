@@ -69,8 +69,9 @@ TEST_CASE("llvm codegen lowers vector math intrinsics", "[orl][codegen][intrinsi
         "    vector perpendicular = cross(x_axis, y_axis);\n"
         "    vector unit = normalize(perpendicular);\n"
         "    vector limited = clamp(unit, -0.5, 0.5);\n"
+        "    vector blended = lerp(x_axis, y_axis, 0.25);\n"
         "    float magnitude = length(limited);\n"
-        "    return dot(limited, x_axis) + clamp(magnitude, 0.0, 1.0);\n"
+        "    return lerp(dot(limited, x_axis) + clamp(magnitude, 0.0, 1.0), blended.x, 0.5);\n"
         "}\n";
 
     Parser parser(src);
@@ -85,6 +86,7 @@ TEST_CASE("llvm codegen lowers vector math intrinsics", "[orl][codegen][intrinsi
     REQUIRE(ir.find("vecnormalize") != std::string::npos);
     REQUIRE(ir.find("veclength") != std::string::npos);
     REQUIRE(ir.find("clamp") != std::string::npos);
+    REQUIRE(ir.find("lerp") != std::string::npos);
 }
 
 TEST_CASE("llvm codegen lowers matrix math intrinsics", "[orl][codegen][intrinsic][matrix]") {
@@ -97,8 +99,9 @@ TEST_CASE("llvm codegen lowers matrix math intrinsics", "[orl][codegen][intrinsi
         "                       0, 0, 0, 1);\n"
         "    matrix combined = mat_mul(identity, translation);\n"
         "    matrix transpose = mat_transpose(combined);\n"
+        "    matrix inverse = mat_inverse(transpose);\n"
         "    vector position(1, 2, 3);\n"
-        "    return mat_mul(transpose, position);\n"
+        "    return mat_mul(inverse, position);\n"
         "}\n";
 
     Parser parser(src);
@@ -112,6 +115,7 @@ TEST_CASE("llvm codegen lowers matrix math intrinsics", "[orl][codegen][intrinsi
     REQUIRE(ir.find("[16 x double]") != std::string::npos);
     REQUIRE(ir.find("matmul") != std::string::npos);
     REQUIRE(ir.find("mattranspose") != std::string::npos);
+    REQUIRE(ir.find("matinverse") != std::string::npos);
     REQUIRE(ir.find("matvecmul") != std::string::npos);
 }
 

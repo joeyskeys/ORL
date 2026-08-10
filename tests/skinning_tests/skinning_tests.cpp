@@ -13,6 +13,7 @@
 #include <llvm/IR/Metadata.h>
 #include <llvm/IR/Module.h>
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -34,14 +35,14 @@ std::string LoadTextFileOrFail(const std::string &path) {
     return buffer.str();
 }
 
-std::string LoadLbsOrlSource() {
+std::string LoadOrlSource(const std::string &filename) {
     namespace fs = std::filesystem;
     const fs::path cwd = fs::current_path();
     const fs::path candidates[] = {
-        cwd / "tests" / "skinning_tests" / "lbs.orl",
-        cwd / ".." / ".." / "tests" / "skinning_tests" / "lbs.orl",
-        cwd / ".." / ".." / ".." / "tests" / "skinning_tests" / "lbs.orl",
-        fs::path("E:/repo/ORL/tests/skinning_tests/lbs.orl"),
+        cwd / "tests" / "skinning_tests" / filename,
+        cwd / ".." / ".." / "tests" / "skinning_tests" / filename,
+        cwd / ".." / ".." / ".." / "tests" / "skinning_tests" / filename,
+        fs::path("E:/repo/ORL/tests/skinning_tests") / filename,
     };
 
     for (const auto &candidate : candidates) {
@@ -50,7 +51,8 @@ std::string LoadLbsOrlSource() {
         }
     }
 
-    FAIL("Unable to locate tests/skinning_tests/lbs.orl from current working directory");
+    FAIL("Unable to locate tests/skinning_tests/" + filename + " from current working directory");
+    return {};
 }
 
 bool AddKernelWrapperForCompute(llvm::Module *module) {
@@ -138,12 +140,27 @@ constexpr float kExpectedLbsChecksum = 10.5F;
 constexpr std::int64_t kExpectedScaledLbsValue =
     static_cast<std::int64_t>(kExpectedLbsChecksum * 100.0F);
 
+struct OrlPoint {
+    double x;
+    double y;
+    double z;
+    // LLVM's <3 x double> has a 32-byte ABI allocation size.
+    double padding;
+};
+
+struct OrlMatrix {
+    double values[16];
+};
+
+static_assert(sizeof(OrlPoint) == sizeof(double) * 4);
+static_assert(sizeof(OrlMatrix) == sizeof(double) * 16);
+
 } // namespace
 
 TEST_CASE("linear blend skinning transforms vertices on CPU JIT", "[orl][skinning][cpu]") {
     REQUIRE(ComputeLbsChecksum(kVertices, kBone0Translation, kBone1Translation) == kExpectedLbsChecksum);
 
-    const std::string src = LoadLbsOrlSource();
+    const std::string src = LoadOrlSource("lbs.orl");
 
     Parser parser(src);
     REQUIRE(parser.Parse());
@@ -168,7 +185,7 @@ TEST_CASE("linear blend skinning transforms vertices on CPU JIT", "[orl][skinnin
 TEST_CASE("linear blend skinning transforms vertices on CUDA path", "[orl][skinning][gpu][cuda]") {
     REQUIRE(ComputeLbsChecksum(kVertices, kBone0Translation, kBone1Translation) == kExpectedLbsChecksum);
 
-    const std::string src = LoadLbsOrlSource();
+    const std::string src = LoadOrlSource("lbs.orl");
 
     Parser parser(src);
     REQUIRE(parser.Parse());
@@ -207,6 +224,61 @@ TEST_CASE("linear blend skinning transforms vertices on CUDA path", "[orl][skinn
     std::int32_t result = 0;
     REQUIRE(gpu.ReadCudaGlobalInt32("orl_skinning_result", &result));
     REQUIRE(result == static_cast<std::int32_t>(kExpectedScaledLbsValue));
+}
+
+TEST_CASE("ORL LBS deformer skins dynamic vertex and influence buffers", "[orl][skinning][cpu][deformer]") {
+    const std::string src = LoadOrlSource("lbs_deform.orl");
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+    REQUIRE(parser.Ast() != nullptr);
+
+    LlvmIrCodegen codegen("orl_lbs_deformer_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    OrlJitEngine jit(OrlJitTarget::Native);
+    REQUIRE(jit.LoadModuleWithOptimization(codegen.ReleaseModule(),
+                                           codegen.ReleaseContext(),
+                                           OrlOptimizationLevel::O2));
+    REQUIRE(jit.Errors().empty());
+
+    OrlPoint input_positions[] = {
+        {1.0, 2.0, 3.0, 0.0},
+        {-2.0, 1.0, 0.0, 0.0},
+    };
+    OrlPoint output_positions[2] = {};
+    OrlMatrix bone_matrices[] = {
+        {{1.0, 0.0, 0.0, 2.0,
+          0.0, 1.0, 0.0, 0.0,
+          0.0, 0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0, 1.0}},
+        {{1.0, 0.0, 0.0, 0.0,
+          0.0, 1.0, 0.0, 4.0,
+          0.0, 0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0, 1.0}},
+    };
+    double weights[] = {0.75, 0.25, 0.50, 0.50};
+    std::int64_t bone_indices[] = {0, 1, 0, 1};
+
+    const std::array<void *, 5> buffers = {
+        input_positions,
+        output_positions,
+        bone_matrices,
+        weights,
+        bone_indices,
+    };
+    const auto processed_vertices = jit.InvokeInt64WithBufferArgs("deform", buffers, 2);
+
+    REQUIRE(processed_vertices.has_value());
+    REQUIRE(*processed_vertices == 2);
+    REQUIRE(output_positions[0].x == Catch::Approx(2.5));
+    REQUIRE(output_positions[0].y == Catch::Approx(3.0));
+    REQUIRE(output_positions[0].z == Catch::Approx(3.0));
+    REQUIRE(output_positions[1].x == Catch::Approx(-1.0));
+    REQUIRE(output_positions[1].y == Catch::Approx(3.0));
+    REQUIRE(output_positions[1].z == Catch::Approx(0.0));
 }
 
 #endif

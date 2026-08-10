@@ -65,6 +65,17 @@ llvm::Value *GenerateLength(llvm::IRBuilder<> &builder, llvm::Module &module, ll
     return builder.CreateCall(sqrt, {GenerateDot(builder, vector, vector)}, "veclength");
 }
 
+llvm::Value *GenerateLerp(llvm::IRBuilder<> &builder,
+                          llvm::Value *start,
+                          llvm::Value *end,
+                          llvm::Value *factor) {
+    return builder.CreateFAdd(start,
+                              builder.CreateFMul(builder.CreateFSub(end, start, "lerpdifference"),
+                                                 factor,
+                                                 "lerpscale"),
+                              "lerp");
+}
+
 llvm::Value *BuildMatrix(llvm::IRBuilder<> &builder, const std::vector<llvm::Value *> &elements, const char *name) {
     auto *type = llvm::ArrayType::get(builder.getDoubleTy(), 16);
     llvm::Value *result = llvm::UndefValue::get(type);
@@ -117,6 +128,73 @@ llvm::Value *GenerateMatrixTranspose(llvm::IRBuilder<> &builder, llvm::Value *ma
         }
     }
     return BuildMatrix(builder, elements, "mattranspose");
+}
+
+llvm::Value *GenerateDeterminant3x3(llvm::IRBuilder<> &builder, const std::vector<llvm::Value *> &values) {
+    const auto mul = [&](unsigned int left, unsigned int right) {
+        return builder.CreateFMul(values[left], values[right], "matinv.mul");
+    };
+    const auto sub = [&](llvm::Value *left, llvm::Value *right) {
+        return builder.CreateFSub(left, right, "matinv.sub");
+    };
+
+    llvm::Value *const cofactor0 = sub(mul(4, 8), mul(5, 7));
+    llvm::Value *const cofactor1 = sub(mul(3, 8), mul(5, 6));
+    llvm::Value *const cofactor2 = sub(mul(3, 7), mul(4, 6));
+
+    llvm::Value *determinant = builder.CreateFMul(values[0], cofactor0, "matinv.term");
+    determinant = builder.CreateFSub(determinant, builder.CreateFMul(values[1], cofactor1, "matinv.term"), "matinv.det");
+    return builder.CreateFAdd(determinant, builder.CreateFMul(values[2], cofactor2, "matinv.term"), "matinv.det");
+}
+
+llvm::Value *GenerateMatrixInverse(llvm::IRBuilder<> &builder, llvm::Value *matrix) {
+    std::vector<llvm::Value *> elements;
+    elements.reserve(16);
+    for (unsigned int index = 0; index < 16; ++index) {
+        elements.push_back(builder.CreateExtractValue(matrix, {index}, "matinv.elt"));
+    }
+
+    std::vector<llvm::Value *> cofactors;
+    cofactors.reserve(16);
+    for (unsigned int excluded_row = 0; excluded_row < 4; ++excluded_row) {
+        for (unsigned int excluded_column = 0; excluded_column < 4; ++excluded_column) {
+            std::vector<llvm::Value *> minor;
+            minor.reserve(9);
+            for (unsigned int row = 0; row < 4; ++row) {
+                if (row == excluded_row) {
+                    continue;
+                }
+                for (unsigned int column = 0; column < 4; ++column) {
+                    if (column != excluded_column) {
+                        minor.push_back(elements[row * 4 + column]);
+                    }
+                }
+            }
+
+            llvm::Value *cofactor = GenerateDeterminant3x3(builder, minor);
+            if ((excluded_row + excluded_column) % 2 != 0) {
+                cofactor = builder.CreateFNeg(cofactor, "matinv.neg");
+            }
+            cofactors.push_back(cofactor);
+        }
+    }
+
+    llvm::Value *determinant = llvm::ConstantFP::get(builder.getDoubleTy(), 0.0);
+    for (unsigned int column = 0; column < 4; ++column) {
+        determinant = builder.CreateFAdd(
+            determinant,
+            builder.CreateFMul(elements[column], cofactors[column], "matinv.detterm"),
+            "matinv.det");
+    }
+
+    std::vector<llvm::Value *> inverse;
+    inverse.reserve(16);
+    for (unsigned int row = 0; row < 4; ++row) {
+        for (unsigned int column = 0; column < 4; ++column) {
+            inverse.push_back(builder.CreateFDiv(cofactors[column * 4 + row], determinant, "matinverse"));
+        }
+    }
+    return BuildMatrix(builder, inverse, "matinverse");
 }
 
 llvm::Value *GenerateMatrixIdentity(llvm::IRBuilder<> &builder) {
@@ -216,6 +294,38 @@ bool OrlIntrinsicCodegen::TryGenerate(const std::string &name,
                                        "clamp");
         return true;
     }
+    if (name == "lerp") {
+        if (arguments.size() != 3) {
+            return fail("lerp requires start, end, and factor arguments");
+        }
+
+        llvm::Value *start = arguments[0];
+        llvm::Value *end = arguments[1];
+        llvm::Value *factor = arguments[2];
+        if (start->getType() != end->getType()) {
+            return fail("lerp start and end arguments must have the same type");
+        }
+        if (start->getType()->isDoubleTy()) {
+            if (!factor->getType()->isDoubleTy()) {
+                return fail("scalar lerp requires a floating-point factor");
+            }
+            *result = GenerateLerp(builder, start, end, factor);
+            return true;
+        }
+        if (!IsFloatingVector(start->getType())) {
+            return fail("lerp requires floating-point scalar or vector arguments");
+        }
+
+        const unsigned int width = llvm::cast<llvm::FixedVectorType>(start->getType())->getNumElements();
+        if (factor->getType()->isDoubleTy()) {
+            factor = builder.CreateVectorSplat(width, factor, "lerpfactorsplat");
+        }
+        if (factor->getType() != start->getType()) {
+            return fail("vector lerp factor must be a scalar or vector of the same size");
+        }
+        *result = GenerateLerp(builder, start, end, factor);
+        return true;
+    }
     if (name == "mat_identity") {
         if (!arguments.empty()) {
             return fail("mat_identity requires no arguments");
@@ -228,6 +338,13 @@ bool OrlIntrinsicCodegen::TryGenerate(const std::string &name,
             return fail("mat_transpose requires exactly one 4x4 matrix");
         }
         *result = GenerateMatrixTranspose(builder, arguments[0]);
+        return true;
+    }
+    if (name == "mat_inverse") {
+        if (arguments.size() != 1 || !IsMatrix4x4(arguments[0]->getType())) {
+            return fail("mat_inverse requires exactly one 4x4 matrix");
+        }
+        *result = GenerateMatrixInverse(builder, arguments[0]);
         return true;
     }
     if (name == "mat_mul") {
