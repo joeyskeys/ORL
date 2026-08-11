@@ -2,8 +2,10 @@
 
 #include "orl_optimizer.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,6 +20,8 @@ enum class OrlGpuBackend : std::uint8_t {
     Cuda = 0,
     Rocm = 1
 };
+
+using OrlGpuBuffer = std::uint64_t;
 
 class OrlGpuEngine {
 public:
@@ -35,6 +39,11 @@ public:
     void SetDeviceCode(std::string device_code);
     bool LoadToDriver();
     void UnloadDriverModule();
+    std::optional<OrlGpuBuffer> AllocateBuffer(std::size_t bytes);
+    bool UploadBuffer(OrlGpuBuffer buffer, const void *source, std::size_t bytes);
+    bool DownloadBuffer(OrlGpuBuffer buffer, void *destination, std::size_t bytes);
+    bool FreeBuffer(OrlGpuBuffer buffer);
+    bool Synchronize();
     bool RunCudaInt32AddKernel(const std::string &kernel_name,
                                std::vector<std::int32_t> *values,
                                std::int32_t addend,

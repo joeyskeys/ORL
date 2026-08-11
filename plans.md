@@ -29,8 +29,8 @@ What needs adding for real GPU LBS:
 ~~1. Automatic kernel ABI generation~~
 ~~The compiler generates the CUDA entry kernel and nvvm.annotations itself. Tests do not need AddKernelWrapperForCompute.~~
 
-2. General GPU buffer runtime
-OrlGpuEngine needs APIs to allocate device buffers, upload typed data, pass arbitrary buffer/scalar kernel arguments, launch, synchronize, and download output buffers.
+~~2. General GPU buffer runtime: allocation, upload/download, release, and synchronization~~
+OrlGpuEngine still needs arbitrary buffer/scalar kernel-argument binding and dispatch through the generated CUDA entry kernel.
 
 3. Data-parallel lowering
 A GPU launch needs one work item per vertex. Today there is no language-level representation of “this iteration belongs to this GPU invocation.”

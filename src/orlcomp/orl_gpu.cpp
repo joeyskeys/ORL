@@ -34,6 +34,7 @@
 #endif
 
 #include <optional>
+#include <unordered_map>
 #include <utility>
 
 namespace orlcomp {
@@ -230,6 +231,8 @@ struct OrlGpuEngine::Impl {
             return;
         }
 
+        ReleaseCudaBuffers();
+
         if (cuda_module_ != nullptr && cuModuleUnload_ != nullptr) {
             cuModuleUnload_(cuda_module_);
         }
@@ -271,6 +274,110 @@ struct OrlGpuEngine::Impl {
     using CuModuleGetGlobalFn = CUresult(CUDAAPI *)(CUdeviceptr *, size_t *, CUmodule, const char *);
     using CuGetErrorNameFn = CUresult(CUDAAPI *)(CUresult, const char **);
     using CuGetErrorStringFn = CUresult(CUDAAPI *)(CUresult, const char **);
+
+    struct CudaBuffer {
+        CUdeviceptr address = 0;
+        std::size_t bytes = 0;
+    };
+
+    std::optional<OrlGpuBuffer> AllocateCudaBuffer(std::size_t bytes) {
+        if (bytes == 0) {
+            errors_.push_back("AllocateBuffer requires a non-zero size");
+            return std::nullopt;
+        }
+
+        CUdeviceptr address = 0;
+        const CUresult rc = cuMemAlloc_(&address, bytes);
+        if (rc != CUDA_SUCCESS) {
+            AddCudaError("cuMemAlloc failed", rc);
+            return std::nullopt;
+        }
+
+        const OrlGpuBuffer handle = next_cuda_buffer_++;
+        cuda_buffers_.emplace(handle, CudaBuffer{address, bytes});
+        return handle;
+    }
+
+    CudaBuffer *FindCudaBuffer(OrlGpuBuffer handle, std::size_t bytes) {
+        const auto buffer = cuda_buffers_.find(handle);
+        if (buffer == cuda_buffers_.end()) {
+            errors_.push_back("Unknown GPU buffer handle");
+            return nullptr;
+        }
+        if (bytes > buffer->second.bytes) {
+            errors_.push_back("GPU buffer transfer exceeds allocation size");
+            return nullptr;
+        }
+        return &buffer->second;
+    }
+
+    bool UploadCudaBuffer(OrlGpuBuffer handle, const void *source, std::size_t bytes) {
+        if (source == nullptr) {
+            errors_.push_back("UploadBuffer requires a non-null source");
+            return false;
+        }
+        CudaBuffer *buffer = FindCudaBuffer(handle, bytes);
+        if (buffer == nullptr) {
+            return false;
+        }
+        const CUresult rc = cuMemcpyHtoD_(buffer->address, source, bytes);
+        if (rc != CUDA_SUCCESS) {
+            AddCudaError("cuMemcpyHtoD failed", rc);
+            return false;
+        }
+        return true;
+    }
+
+    bool DownloadCudaBuffer(OrlGpuBuffer handle, void *destination, std::size_t bytes) {
+        if (destination == nullptr) {
+            errors_.push_back("DownloadBuffer requires a non-null destination");
+            return false;
+        }
+        CudaBuffer *buffer = FindCudaBuffer(handle, bytes);
+        if (buffer == nullptr) {
+            return false;
+        }
+        const CUresult rc = cuMemcpyDtoH_(destination, buffer->address, bytes);
+        if (rc != CUDA_SUCCESS) {
+            AddCudaError("cuMemcpyDtoH failed", rc);
+            return false;
+        }
+        return true;
+    }
+
+    bool FreeCudaBuffer(OrlGpuBuffer handle) {
+        const auto buffer = cuda_buffers_.find(handle);
+        if (buffer == cuda_buffers_.end()) {
+            errors_.push_back("Unknown GPU buffer handle");
+            return false;
+        }
+        const CUresult rc = cuMemFree_(buffer->second.address);
+        if (rc != CUDA_SUCCESS) {
+            AddCudaError("cuMemFree failed", rc);
+            return false;
+        }
+        cuda_buffers_.erase(buffer);
+        return true;
+    }
+
+    bool SynchronizeCudaContext() {
+        const CUresult rc = cuCtxSynchronize_();
+        if (rc != CUDA_SUCCESS) {
+            AddCudaError("cuCtxSynchronize failed", rc);
+            return false;
+        }
+        return true;
+    }
+
+    void ReleaseCudaBuffers() {
+        if (cuMemFree_ != nullptr) {
+            for (const auto &[handle, buffer] : cuda_buffers_) {
+                (void)handle;
+                cuMemFree_(buffer.address);
+            }
+        }
+        cuda_buffers_.clear();
+    }
 
     bool LoadCudaDriverModule() {
         if (!EnsureCudaApiLoaded()) {
@@ -429,6 +536,8 @@ struct OrlGpuEngine::Impl {
     CuModuleGetGlobalFn cuModuleGetGlobal_ = nullptr;
     CuGetErrorNameFn cuGetErrorName_ = nullptr;
     CuGetErrorStringFn cuGetErrorString_ = nullptr;
+    OrlGpuBuffer next_cuda_buffer_ = 1;
+    std::unordered_map<OrlGpuBuffer, CudaBuffer> cuda_buffers_;
 #endif
 };
 
@@ -457,6 +566,100 @@ bool OrlGpuEngine::LoadToDriver() {
 
 void OrlGpuEngine::UnloadDriverModule() {
     impl_->UnloadDriverModule();
+}
+
+std::optional<OrlGpuBuffer> OrlGpuEngine::AllocateBuffer(std::size_t bytes) {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("AllocateBuffer currently requires the CUDA backend");
+        return std::nullopt;
+    }
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return std::nullopt;
+    }
+    return impl_->AllocateCudaBuffer(bytes);
+#else
+    (void)bytes;
+    impl_->errors_.push_back("CUDA headers not available; cannot allocate GPU buffers");
+    return std::nullopt;
+#endif
+}
+
+bool OrlGpuEngine::UploadBuffer(OrlGpuBuffer buffer, const void *source, std::size_t bytes) {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("UploadBuffer currently requires the CUDA backend");
+        return false;
+    }
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return false;
+    }
+    return impl_->UploadCudaBuffer(buffer, source, bytes);
+#else
+    (void)buffer;
+    (void)source;
+    (void)bytes;
+    impl_->errors_.push_back("CUDA headers not available; cannot upload GPU buffers");
+    return false;
+#endif
+}
+
+bool OrlGpuEngine::DownloadBuffer(OrlGpuBuffer buffer, void *destination, std::size_t bytes) {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("DownloadBuffer currently requires the CUDA backend");
+        return false;
+    }
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return false;
+    }
+    return impl_->DownloadCudaBuffer(buffer, destination, bytes);
+#else
+    (void)buffer;
+    (void)destination;
+    (void)bytes;
+    impl_->errors_.push_back("CUDA headers not available; cannot download GPU buffers");
+    return false;
+#endif
+}
+
+bool OrlGpuEngine::FreeBuffer(OrlGpuBuffer buffer) {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("FreeBuffer currently requires the CUDA backend");
+        return false;
+    }
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded()) {
+        impl_->errors_.push_back("CUDA driver module is not loaded");
+        return false;
+    }
+    return impl_->FreeCudaBuffer(buffer);
+#else
+    (void)buffer;
+    impl_->errors_.push_back("CUDA headers not available; cannot free GPU buffers");
+    return false;
+#endif
+}
+
+bool OrlGpuEngine::Synchronize() {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("Synchronize currently requires the CUDA backend");
+        return false;
+    }
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return false;
+    }
+    return impl_->SynchronizeCudaContext();
+#else
+    impl_->errors_.push_back("CUDA headers not available; cannot synchronize GPU work");
+    return false;
+#endif
 }
 
 OrlGpuBackend OrlGpuEngine::Backend() const {
@@ -734,6 +937,36 @@ bool OrlGpuEngine::LoadToDriver() {
 
 void OrlGpuEngine::UnloadDriverModule() {
     impl_->UnloadDriverModule();
+}
+
+std::optional<OrlGpuBuffer> OrlGpuEngine::AllocateBuffer(std::size_t) {
+    impl_->errors_.clear();
+    impl_->errors_.push_back("GPU buffer allocation unavailable in this build");
+    return std::nullopt;
+}
+
+bool OrlGpuEngine::UploadBuffer(OrlGpuBuffer, const void *, std::size_t) {
+    impl_->errors_.clear();
+    impl_->errors_.push_back("GPU buffer upload unavailable in this build");
+    return false;
+}
+
+bool OrlGpuEngine::DownloadBuffer(OrlGpuBuffer, void *, std::size_t) {
+    impl_->errors_.clear();
+    impl_->errors_.push_back("GPU buffer download unavailable in this build");
+    return false;
+}
+
+bool OrlGpuEngine::FreeBuffer(OrlGpuBuffer) {
+    impl_->errors_.clear();
+    impl_->errors_.push_back("GPU buffer release unavailable in this build");
+    return false;
+}
+
+bool OrlGpuEngine::Synchronize() {
+    impl_->errors_.clear();
+    impl_->errors_.push_back("GPU synchronization unavailable in this build");
+    return false;
 }
 
 OrlGpuBackend OrlGpuEngine::Backend() const {
