@@ -225,6 +225,15 @@ bool OrlIntrinsicCodegen::TryGenerate(const std::string &name,
         return IsFloatingVector(value->getType());
     };
 
+    if (name == "global_id") {
+        if (!arguments.empty()) {
+            return fail("global_id requires no arguments");
+        }
+        llvm::FunctionCallee global_id = module.getOrInsertFunction(
+            "__orl_global_id", llvm::FunctionType::get(builder.getInt64Ty(), false));
+        *result = builder.CreateCall(global_id, {}, "global_id");
+        return true;
+    }
     if (name == "dot") {
         if (arguments.size() != 2 || !is_vector_argument(arguments[0]) ||
             arguments[0]->getType() != arguments[1]->getType()) {

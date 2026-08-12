@@ -148,7 +148,7 @@ TEST_CASE("linear blend skinning transforms vertices on CUDA path", "[orl][skinn
     REQUIRE(parser.Errors().empty());
     REQUIRE(parser.Ast() != nullptr);
 
-    LlvmIrCodegen codegen("orl_skinning_cuda_module");
+    LlvmIrCodegen codegen("orl_skinning_cuda_module", OrlCodegenTarget::Cuda);
     REQUIRE(codegen.Generate(*parser.Ast()));
     REQUIRE(codegen.Errors().empty());
 
@@ -228,6 +228,85 @@ TEST_CASE("ORL LBS deformer skins dynamic vertex and influence buffers", "[orl][
 
     REQUIRE(processed_vertices.has_value());
     REQUIRE(*processed_vertices == 2);
+    REQUIRE(output_positions[0].x == Catch::Approx(2.5));
+    REQUIRE(output_positions[0].y == Catch::Approx(3.0));
+    REQUIRE(output_positions[0].z == Catch::Approx(3.0));
+    REQUIRE(output_positions[1].x == Catch::Approx(-1.0));
+    REQUIRE(output_positions[1].y == Catch::Approx(3.0));
+    REQUIRE(output_positions[1].z == Catch::Approx(0.0));
+}
+
+TEST_CASE("ORL LBS deformer skins dynamic buffers on CUDA", "[orl][skinning][gpu][cuda][deformer]") {
+    const std::string src = LoadOrlSource("lbs_deform.orl");
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_lbs_deformer_cuda_module", OrlCodegenTarget::Cuda);
+    REQUIRE(codegen.Generate(*parser.Ast()));
+
+    OrlGpuEngine gpu(OrlGpuBackend::Cuda);
+    gpu.SetCudaEntryFunction("deform");
+    if (!gpu.CompileModule(codegen.ReleaseModule(), codegen.ReleaseContext())) {
+        const auto &errors = gpu.Errors();
+        WARN((errors.empty() ? "CUDA PTX compilation unavailable in this environment" : errors.back()));
+        return;
+    }
+    if (!gpu.LoadToDriver()) {
+        const auto &errors = gpu.Errors();
+        WARN((errors.empty() ? "CUDA driver/module load unavailable in this environment" : errors.back()));
+        return;
+    }
+
+    OrlPoint input_positions[] = {
+        {1.0, 2.0, 3.0, 0.0},
+        {-2.0, 1.0, 0.0, 0.0},
+    };
+    OrlPoint output_positions[2] = {};
+    OrlMatrix bone_matrices[] = {
+        {{1.0, 0.0, 0.0, 2.0,
+          0.0, 1.0, 0.0, 0.0,
+          0.0, 0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0, 1.0}},
+        {{1.0, 0.0, 0.0, 0.0,
+          0.0, 1.0, 0.0, 4.0,
+          0.0, 0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0, 1.0}},
+    };
+    double weights[] = {0.75, 0.25, 0.50, 0.50};
+    std::int64_t bone_indices[] = {0, 1, 0, 1};
+
+    const auto input_buffer = gpu.AllocateBuffer(sizeof(input_positions));
+    const auto output_buffer = gpu.AllocateBuffer(sizeof(output_positions));
+    const auto bone_buffer = gpu.AllocateBuffer(sizeof(bone_matrices));
+    const auto weight_buffer = gpu.AllocateBuffer(sizeof(weights));
+    const auto index_buffer = gpu.AllocateBuffer(sizeof(bone_indices));
+    REQUIRE(input_buffer.has_value());
+    REQUIRE(output_buffer.has_value());
+    REQUIRE(bone_buffer.has_value());
+    REQUIRE(weight_buffer.has_value());
+    REQUIRE(index_buffer.has_value());
+    REQUIRE(gpu.UploadBuffer(*input_buffer, input_positions, sizeof(input_positions)));
+    REQUIRE(gpu.UploadBuffer(*output_buffer, output_positions, sizeof(output_positions)));
+    REQUIRE(gpu.UploadBuffer(*bone_buffer, bone_matrices, sizeof(bone_matrices)));
+    REQUIRE(gpu.UploadBuffer(*weight_buffer, weights, sizeof(weights)));
+    REQUIRE(gpu.UploadBuffer(*index_buffer, bone_indices, sizeof(bone_indices)));
+    REQUIRE(gpu.SetupCudaKernel(OrlGpuEngine::CudaEntryKernelName,
+                                BindGpuBuffer(*input_buffer),
+                                BindGpuBuffer(*output_buffer),
+                                BindGpuBuffer(*bone_buffer),
+                                BindGpuBuffer(*weight_buffer),
+                                BindGpuBuffer(*index_buffer),
+                                std::int64_t{2}));
+    REQUIRE(gpu.LaunchCudaKernelForElements(2));
+    REQUIRE(gpu.Synchronize());
+    REQUIRE(gpu.DownloadBuffer(*output_buffer, output_positions, sizeof(output_positions)));
+    REQUIRE(gpu.FreeBuffer(*input_buffer));
+    REQUIRE(gpu.FreeBuffer(*output_buffer));
+    REQUIRE(gpu.FreeBuffer(*bone_buffer));
+    REQUIRE(gpu.FreeBuffer(*weight_buffer));
+    REQUIRE(gpu.FreeBuffer(*index_buffer));
+
     REQUIRE(output_positions[0].x == Catch::Approx(2.5));
     REQUIRE(output_positions[0].y == Catch::Approx(3.0));
     REQUIRE(output_positions[0].z == Catch::Approx(3.0));

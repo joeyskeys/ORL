@@ -6,9 +6,11 @@
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Metadata.h>
@@ -19,6 +21,7 @@
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
+#include <llvm/Transforms/Utils/Cloning.h>
 
 #if !__has_include(<cuda.h>)
 #error "CUDA Toolkit header 'cuda.h' not found. Install CUDA Toolkit and ensure include paths are configured."
@@ -34,6 +37,7 @@
 #endif
 
 #include <optional>
+#include <cstring>
 #include <unordered_map>
 #include <utility>
 
@@ -81,18 +85,103 @@ struct OrlGpuEngine::Impl {
 
     ~Impl() = default;
 
+    bool LowerCudaGlobalId(llvm::Module &module) {
+        llvm::Function *global_id = module.getFunction("__orl_global_id");
+        if (global_id == nullptr) {
+            return true;
+        }
+
+        std::vector<llvm::CallInst *> calls;
+        for (llvm::User *user : global_id->users()) {
+            auto *call = llvm::dyn_cast<llvm::CallInst>(user);
+            if (call == nullptr || call->getCalledFunction() != global_id || call->arg_size() != 0) {
+                errors_.push_back("Invalid use of global_id builtin");
+                return false;
+            }
+            calls.push_back(call);
+        }
+
+        const auto register_type = llvm::FunctionType::get(llvm::Type::getInt32Ty(module.getContext()), false);
+        llvm::FunctionCallee thread_id = module.getOrInsertFunction("llvm.nvvm.read.ptx.sreg.tid.x", register_type);
+        llvm::FunctionCallee block_id = module.getOrInsertFunction("llvm.nvvm.read.ptx.sreg.ctaid.x", register_type);
+        llvm::FunctionCallee block_size = module.getOrInsertFunction("llvm.nvvm.read.ptx.sreg.ntid.x", register_type);
+        for (llvm::CallInst *call : calls) {
+            llvm::IRBuilder<> builder(call);
+            llvm::Value *thread_id_i64 = builder.CreateZExt(builder.CreateCall(thread_id), builder.getInt64Ty(), "thread_id");
+            llvm::Value *block_id_i64 = builder.CreateZExt(builder.CreateCall(block_id), builder.getInt64Ty(), "block_id");
+            llvm::Value *block_size_i64 = builder.CreateZExt(builder.CreateCall(block_size), builder.getInt64Ty(), "block_size");
+            llvm::Value *global_id_value = builder.CreateAdd(
+                builder.CreateMul(block_id_i64, block_size_i64, "global_id_block_offset"),
+                thread_id_i64,
+                "global_id");
+            call->replaceAllUsesWith(global_id_value);
+            call->eraseFromParent();
+        }
+        global_id->eraseFromParent();
+        return true;
+    }
+
+    bool LowerCudaEntryBufferAddressSpaces(llvm::Module &module) {
+        llvm::Function *entry_function = module.getFunction(cuda_entry_function_);
+        if (entry_function == nullptr) {
+            errors_.push_back("CUDA compilation requires ORL entry function '" + cuda_entry_function_ + "'");
+            return false;
+        }
+
+        std::vector<llvm::Type *> parameter_types;
+        parameter_types.reserve(entry_function->arg_size());
+        bool needs_lowering = false;
+        for (llvm::Argument &argument : entry_function->args()) {
+            llvm::Type *parameter_type = argument.getType();
+            if (parameter_type->isPointerTy() && parameter_type->getPointerAddressSpace() == 0) {
+                parameter_type = llvm::PointerType::get(module.getContext(), 1);
+                needs_lowering = true;
+            }
+            parameter_types.push_back(parameter_type);
+        }
+        if (!needs_lowering) {
+            return true;
+        }
+        if (!entry_function->use_empty()) {
+            errors_.push_back("CUDA entry function buffer lowering requires the entry function to have no callers");
+            return false;
+        }
+
+        const std::string entry_name = entry_function->getName().str();
+        auto *lowered_type = llvm::FunctionType::get(entry_function->getReturnType(), parameter_types, false);
+        llvm::Function *lowered_function = llvm::Function::Create(lowered_type,
+                                                                    entry_function->getLinkage(),
+                                                                    entry_function->getAddressSpace(),
+                                                                    entry_name + ".device",
+                                                                    module);
+        lowered_function->copyAttributesFrom(entry_function);
+
+        llvm::ValueToValueMapTy value_map;
+        auto lowered_argument = lowered_function->arg_begin();
+        for (llvm::Argument &argument : entry_function->args()) {
+            lowered_argument->setName(argument.getName());
+            value_map[&argument] = &*lowered_argument++;
+        }
+        llvm::SmallVector<llvm::ReturnInst *, 4> returns;
+        llvm::CloneFunctionInto(lowered_function,
+                                entry_function,
+                                value_map,
+                                llvm::CloneFunctionChangeType::LocalChangesOnly,
+                                returns);
+        entry_function->eraseFromParent();
+        lowered_function->setName(entry_name);
+        return true;
+    }
+
     bool CreateCudaEntryKernel(llvm::Module &module) {
-        llvm::Function *compute = module.getFunction("compute");
-        if (compute == nullptr) {
-            errors_.push_back("CUDA compilation requires a zero-argument ORL function named 'compute'");
+        cuda_entry_parameters_.clear();
+        llvm::Function *entry_function = module.getFunction(cuda_entry_function_);
+        if (entry_function == nullptr) {
+            errors_.push_back("CUDA compilation requires ORL entry function '" + cuda_entry_function_ + "'");
             return false;
         }
-        if (compute->arg_size() != 0) {
-            errors_.push_back("CUDA entry function 'compute' must not have parameters");
-            return false;
-        }
-        if (compute->getReturnType()->isVoidTy()) {
-            errors_.push_back("CUDA entry function 'compute' must return an integer result");
+        if (!entry_function->getReturnType()->isIntegerTy()) {
+            errors_.push_back("CUDA entry function '" + cuda_entry_function_ + "' must return an integer result");
             return false;
         }
         if (module.getFunction(OrlGpuEngine::CudaEntryKernelName) != nullptr ||
@@ -102,6 +191,26 @@ struct OrlGpuEngine::Impl {
         }
 
         llvm::LLVMContext &context = module.getContext();
+        std::vector<llvm::Type *> parameter_types;
+        parameter_types.reserve(entry_function->arg_size());
+        for (llvm::Argument &argument : entry_function->args()) {
+            OrlGpuKernelParameter parameter;
+            parameter.name = argument.getName().str();
+            if (argument.getType()->isPointerTy()) {
+                parameter.type = OrlGpuKernelParameterType::Buffer;
+            } else if (argument.getType()->isIntegerTy(64)) {
+                parameter.type = OrlGpuKernelParameterType::Int64;
+            } else if (argument.getType()->isDoubleTy()) {
+                parameter.type = OrlGpuKernelParameterType::Float64;
+            } else {
+                parameter.type = OrlGpuKernelParameterType::Unsupported;
+            }
+            cuda_entry_parameters_.push_back(std::move(parameter));
+            parameter_types.push_back(argument.getType()->isPointerTy()
+                                          ? llvm::PointerType::get(context, 1)
+                                          : argument.getType());
+        }
+
         auto *result_type = llvm::Type::getInt32Ty(context);
         auto *result_global = new llvm::GlobalVariable(module,
                                                         result_type,
@@ -110,14 +219,21 @@ struct OrlGpuEngine::Impl {
                                                         llvm::ConstantInt::get(result_type, 0),
                                                         OrlGpuEngine::CudaResultSymbolName);
 
-        auto *kernel_type = llvm::FunctionType::get(llvm::Type::getVoidTy(context), {}, false);
+        auto *kernel_type = llvm::FunctionType::get(llvm::Type::getVoidTy(context), parameter_types, false);
         llvm::Function *kernel = llvm::Function::Create(kernel_type,
                                                         llvm::GlobalValue::ExternalLinkage,
                                                         OrlGpuEngine::CudaEntryKernelName,
                                                         module);
         llvm::BasicBlock *entry = llvm::BasicBlock::Create(context, "entry", kernel);
         llvm::IRBuilder<> builder(entry);
-        llvm::Value *result = builder.CreateCall(compute, {}, "compute.call");
+        std::vector<llvm::Value *> kernel_arguments;
+        kernel_arguments.reserve(kernel->arg_size());
+        auto entry_argument = entry_function->arg_begin();
+        for (llvm::Argument &argument : kernel->args()) {
+            kernel_arguments.push_back(&argument);
+            ++entry_argument;
+        }
+        llvm::Value *result = builder.CreateCall(entry_function, kernel_arguments, "compute.call");
         llvm::Value *result_i32 = result->getType()->isIntegerTy(32)
                                       ? result
                                       : builder.CreateTruncOrBitCast(result, result_type, "result.i32");
@@ -143,7 +259,14 @@ struct OrlGpuEngine::Impl {
             errors_.push_back("CompileModule requires non-null LLVM module and context");
             return false;
         }
-        if (backend_ == OrlGpuBackend::Cuda && !CreateCudaEntryKernel(*module)) {
+        if (backend_ == OrlGpuBackend::Cuda) {
+            if (!LowerCudaGlobalId(*module) ||
+                !LowerCudaEntryBufferAddressSpaces(*module) ||
+                !CreateCudaEntryKernel(*module)) {
+                return false;
+            }
+        } else if (module->getFunction("__orl_global_id") != nullptr) {
+            errors_.push_back("global_id is currently supported only by the CUDA backend");
             return false;
         }
 
@@ -232,6 +355,9 @@ struct OrlGpuEngine::Impl {
         }
 
         ReleaseCudaBuffers();
+        bound_kernel_ = nullptr;
+        bound_argument_values_.clear();
+        bound_argument_pointers_.clear();
 
         if (cuda_module_ != nullptr && cuModuleUnload_ != nullptr) {
             cuModuleUnload_(cuda_module_);
@@ -364,6 +490,97 @@ struct OrlGpuEngine::Impl {
         const CUresult rc = cuCtxSynchronize_();
         if (rc != CUDA_SUCCESS) {
             AddCudaError("cuCtxSynchronize failed", rc);
+            return false;
+        }
+        return true;
+    }
+
+    bool SetupCudaKernelArguments(const std::string &kernel_name,
+                                  const std::vector<OrlGpuKernelArgument> &arguments) {
+        CUfunction kernel = nullptr;
+        const CUresult rc = cuModuleGetFunction_(&kernel, cuda_module_, kernel_name.c_str());
+        if (rc != CUDA_SUCCESS) {
+            AddCudaError("cuModuleGetFunction failed", rc);
+            return false;
+        }
+
+        bound_argument_values_.clear();
+        bound_argument_values_.reserve(arguments.size());
+        for (const OrlGpuKernelArgument &argument : arguments) {
+            if (argument.is_buffer) {
+                const auto buffer = cuda_buffers_.find(argument.buffer);
+                if (buffer == cuda_buffers_.end()) {
+                    errors_.push_back("Unknown GPU buffer handle in CUDA kernel binding");
+                    bound_argument_values_.clear();
+                    return false;
+                }
+
+                std::vector<std::uint8_t> bytes(sizeof(CUdeviceptr));
+                std::memcpy(bytes.data(), &buffer->second.address, sizeof(CUdeviceptr));
+                bound_argument_values_.push_back(std::move(bytes));
+            } else {
+                bound_argument_values_.push_back(argument.scalar_bytes);
+            }
+        }
+
+        bound_argument_pointers_.clear();
+        bound_argument_pointers_.reserve(bound_argument_values_.size());
+        for (auto &argument : bound_argument_values_) {
+            bound_argument_pointers_.push_back(argument.data());
+        }
+        bound_kernel_ = kernel;
+        return true;
+    }
+
+    bool ValidateCudaKernelArguments(const std::string &kernel_name,
+                                     const std::vector<OrlGpuKernelArgument> &arguments) {
+        if (kernel_name != OrlGpuEngine::CudaEntryKernelName) {
+            return true;
+        }
+        if (arguments.size() != cuda_entry_parameters_.size()) {
+            errors_.push_back("CUDA entry kernel expects " + std::to_string(cuda_entry_parameters_.size()) +
+                              " arguments but received " + std::to_string(arguments.size()));
+            return false;
+        }
+
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            const OrlGpuKernelArgument &argument = arguments[i];
+            const OrlGpuKernelParameter &parameter = cuda_entry_parameters_[i];
+            const bool matches = argument.is_buffer
+                                     ? parameter.type == OrlGpuKernelParameterType::Buffer
+                                     : argument.scalar_type == parameter.type;
+            if (!matches) {
+                const std::string name = parameter.name.empty() ? std::to_string(i) : parameter.name;
+                errors_.push_back("CUDA kernel argument type mismatch for parameter '" + name + "'");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool LaunchCudaKernel(std::uint32_t block_count, std::uint32_t threads_per_block) {
+        if (bound_kernel_ == nullptr) {
+            errors_.push_back("No CUDA kernel bindings configured");
+            return false;
+        }
+        if (block_count == 0 || threads_per_block == 0) {
+            errors_.push_back("block_count and threads_per_block must be greater than zero");
+            return false;
+        }
+
+        const CUresult rc = cuLaunchKernel_(bound_kernel_,
+                                            block_count,
+                                            1,
+                                            1,
+                                            threads_per_block,
+                                            1,
+                                            1,
+                                            0,
+                                            nullptr,
+                                            bound_argument_pointers_.empty() ? nullptr : bound_argument_pointers_.data(),
+                                            nullptr);
+        if (rc != CUDA_SUCCESS) {
+            AddCudaError("cuLaunchKernel failed", rc);
             return false;
         }
         return true;
@@ -509,6 +726,9 @@ struct OrlGpuEngine::Impl {
 #endif
 
     OrlGpuBackend backend_ = OrlGpuBackend::Cuda;
+    std::uint32_t default_threads_per_block_ = 128;
+    std::string cuda_entry_function_ = "compute";
+    std::vector<OrlGpuKernelParameter> cuda_entry_parameters_;
     std::unique_ptr<llvm::LLVMContext> context_;
     std::unique_ptr<llvm::Module> module_;
     std::string device_code_;
@@ -519,6 +739,7 @@ struct OrlGpuEngine::Impl {
     bool cuda_loaded_ = false;
     CUcontext cuda_context_ = nullptr;
     CUmodule cuda_module_ = nullptr;
+    CUfunction bound_kernel_ = nullptr;
 
     CuInitFn cuInit_ = nullptr;
     CuDeviceGetFn cuDeviceGet_ = nullptr;
@@ -538,11 +759,17 @@ struct OrlGpuEngine::Impl {
     CuGetErrorStringFn cuGetErrorString_ = nullptr;
     OrlGpuBuffer next_cuda_buffer_ = 1;
     std::unordered_map<OrlGpuBuffer, CudaBuffer> cuda_buffers_;
+    std::vector<std::vector<std::uint8_t>> bound_argument_values_;
+    std::vector<void *> bound_argument_pointers_;
 #endif
 };
 
 OrlGpuEngine::OrlGpuEngine(OrlGpuBackend backend) : impl_(std::make_unique<Impl>(backend)) {}
 OrlGpuEngine::~OrlGpuEngine() = default;
+
+void OrlGpuEngine::SetCudaEntryFunction(std::string function_name) {
+    impl_->cuda_entry_function_ = std::move(function_name);
+}
 
 bool OrlGpuEngine::CompileModule(std::unique_ptr<llvm::Module> module, std::unique_ptr<llvm::LLVMContext> context) {
     return impl_->CompileModule(std::move(module), std::move(context));
@@ -662,6 +889,75 @@ bool OrlGpuEngine::Synchronize() {
 #endif
 }
 
+bool OrlGpuEngine::SetupCudaKernelArguments(const std::string &kernel_name,
+                                            std::vector<OrlGpuKernelArgument> arguments) {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("SetupCudaKernel currently requires the CUDA backend");
+        return false;
+    }
+#if ORL_HAS_CUDA_HEADERS
+    if (!impl_->ValidateCudaKernelArguments(kernel_name, arguments)) {
+        return false;
+    }
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return false;
+    }
+    return impl_->SetupCudaKernelArguments(kernel_name, arguments);
+#else
+    (void)kernel_name;
+    (void)arguments;
+    impl_->errors_.push_back("CUDA headers not available; cannot bind CUDA kernel arguments");
+    return false;
+#endif
+}
+
+bool OrlGpuEngine::LaunchCudaKernel(std::uint32_t block_count, std::uint32_t threads_per_block) {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("LaunchCudaKernel currently requires the CUDA backend");
+        return false;
+    }
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return false;
+    }
+    return impl_->LaunchCudaKernel(block_count, threads_per_block);
+#else
+    (void)block_count;
+    (void)threads_per_block;
+    impl_->errors_.push_back("CUDA headers not available; cannot launch CUDA kernels");
+    return false;
+#endif
+}
+
+bool OrlGpuEngine::SetDefaultThreadsPerBlock(std::uint32_t threads_per_block) {
+    impl_->errors_.clear();
+    if (threads_per_block == 0) {
+        impl_->errors_.push_back("default threads_per_block must be greater than zero");
+        return false;
+    }
+    impl_->default_threads_per_block_ = threads_per_block;
+    return true;
+}
+
+std::uint32_t OrlGpuEngine::DefaultThreadsPerBlock() const {
+    return impl_->default_threads_per_block_;
+}
+
+bool OrlGpuEngine::LaunchCudaKernelForElements(std::uint32_t element_count,
+                                               std::uint32_t suggested_threads_per_block) {
+    impl_->errors_.clear();
+    if (element_count == 0) {
+        impl_->errors_.push_back("element_count must be greater than zero");
+        return false;
+    }
+    const std::uint32_t threads_per_block =
+        suggested_threads_per_block == 0 ? impl_->default_threads_per_block_ : suggested_threads_per_block;
+    const std::uint32_t block_count = (element_count - 1) / threads_per_block + 1;
+    return LaunchCudaKernel(block_count, threads_per_block);
+}
+
 OrlGpuBackend OrlGpuEngine::Backend() const {
     return impl_->backend_;
 }
@@ -673,6 +969,10 @@ bool OrlGpuEngine::IsDriverModuleLoaded() const {
     }
 #endif
     return false;
+}
+
+const std::vector<OrlGpuKernelParameter> &OrlGpuEngine::CudaEntryParameters() const {
+    return impl_->cuda_entry_parameters_;
 }
 
 bool OrlGpuEngine::RunCudaInt32AddKernel(const std::string &kernel_name,
@@ -909,12 +1209,19 @@ struct OrlGpuEngine::Impl {
     void UnloadDriverModule() {}
 
     OrlGpuBackend backend_ = OrlGpuBackend::Cuda;
+    std::uint32_t default_threads_per_block_ = 128;
+    std::string cuda_entry_function_ = "compute";
+    std::vector<OrlGpuKernelParameter> cuda_entry_parameters_;
     std::string device_code_;
     std::vector<std::string> errors_;
 };
 
 OrlGpuEngine::OrlGpuEngine(OrlGpuBackend backend) : impl_(std::make_unique<Impl>(backend)) {}
 OrlGpuEngine::~OrlGpuEngine() = default;
+
+void OrlGpuEngine::SetCudaEntryFunction(std::string function_name) {
+    impl_->cuda_entry_function_ = std::move(function_name);
+}
 
 bool OrlGpuEngine::CompileModule(std::unique_ptr<llvm::Module> module, std::unique_ptr<llvm::LLVMContext> context) {
     return impl_->CompileModule(std::move(module), std::move(context));
@@ -969,12 +1276,56 @@ bool OrlGpuEngine::Synchronize() {
     return false;
 }
 
+bool OrlGpuEngine::SetupCudaKernelArguments(const std::string &,
+                                            std::vector<OrlGpuKernelArgument>) {
+    impl_->errors_.clear();
+    impl_->errors_.push_back("CUDA kernel binding unavailable in this build");
+    return false;
+}
+
+bool OrlGpuEngine::LaunchCudaKernel(std::uint32_t, std::uint32_t) {
+    impl_->errors_.clear();
+    impl_->errors_.push_back("CUDA kernel launch unavailable in this build");
+    return false;
+}
+
+bool OrlGpuEngine::SetDefaultThreadsPerBlock(std::uint32_t threads_per_block) {
+    impl_->errors_.clear();
+    if (threads_per_block == 0) {
+        impl_->errors_.push_back("default threads_per_block must be greater than zero");
+        return false;
+    }
+    impl_->default_threads_per_block_ = threads_per_block;
+    return true;
+}
+
+std::uint32_t OrlGpuEngine::DefaultThreadsPerBlock() const {
+    return impl_->default_threads_per_block_;
+}
+
+bool OrlGpuEngine::LaunchCudaKernelForElements(std::uint32_t element_count,
+                                               std::uint32_t suggested_threads_per_block) {
+    impl_->errors_.clear();
+    if (element_count == 0) {
+        impl_->errors_.push_back("element_count must be greater than zero");
+        return false;
+    }
+    const std::uint32_t threads_per_block =
+        suggested_threads_per_block == 0 ? impl_->default_threads_per_block_ : suggested_threads_per_block;
+    const std::uint32_t block_count = (element_count - 1) / threads_per_block + 1;
+    return LaunchCudaKernel(block_count, threads_per_block);
+}
+
 OrlGpuBackend OrlGpuEngine::Backend() const {
     return impl_->backend_;
 }
 
 bool OrlGpuEngine::IsDriverModuleLoaded() const {
     return false;
+}
+
+const std::vector<OrlGpuKernelParameter> &OrlGpuEngine::CudaEntryParameters() const {
+    return impl_->cuda_entry_parameters_;
 }
 
 bool OrlGpuEngine::RunCudaInt32AddKernel(const std::string &,

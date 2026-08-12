@@ -116,6 +116,41 @@ TEST_CASE("parser keeps operator precedence in AST", "[orl][parser][ast]") {
     REQUIRE(mul->op == BinaryOp::Multiply);
 }
 
+TEST_CASE("parser builds canonical parallel for AST", "[orl][parser][ast][parallel]") {
+    const std::string src =
+        "int update(int count) {\n"
+        "    parallel for (int index = 0; index < count; index = index + 1) {\n"
+        "        print(index);\n"
+        "    }\n"
+        "    return count;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    const auto *function = dynamic_cast<const FunctionDefinitionStatement *>(parser.Ast()->items[0].get());
+    REQUIRE(function != nullptr);
+    const auto *parallel_for = dynamic_cast<const ParallelForStatement *>(function->body->statements[0].get());
+    REQUIRE(parallel_for != nullptr);
+    REQUIRE(parallel_for->index_name == "index");
+    const auto *bound = dynamic_cast<const IdentifierExpression *>(parallel_for->bound.get());
+    REQUIRE(bound != nullptr);
+    REQUIRE(bound->name == "count");
+    REQUIRE(parallel_for->body != nullptr);
+}
+
+TEST_CASE("parser rejects noncanonical parallel for headers", "[orl][parser][parallel]") {
+    const std::string src =
+        "int update(int count) {\n"
+        "    parallel for (int index = 1; index < count; index = index + 1) { }\n"
+        "    return count;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE_FALSE(parser.Parse());
+    REQUIRE_FALSE(parser.Errors().empty());
+}
+
 TEST_CASE("parser builds fixed arrays and indexed assignments", "[orl][parser][ast]") {
     const std::string src =
         "int main() {\n"

@@ -238,6 +238,8 @@ bool Parser::ParseStatement() {
         return ParseWhileStatement();
     case TokenKind::KwDo:
         return ParseDoWhileStatement();
+    case TokenKind::KwParallel:
+        return ParseParallelForStatement();
     case TokenKind::KwFor:
         return ParseForStatement();
     case TokenKind::KwBreak:
@@ -460,6 +462,98 @@ bool Parser::ParseForStatement() {
         return false;
     }
     statement->body = TakeStatement();
+    last_statement_ = std::move(statement);
+    return true;
+}
+
+bool Parser::ParseParallelForStatement() {
+    Advance();
+    if (!Expect(TokenKind::KwFor, "Expected 'for' after 'parallel'") ||
+        !Expect(TokenKind::LParen, "Expected '(' after parallel for")) {
+        return false;
+    }
+    if (!Expect(TokenKind::KwInt, "Parallel for requires an int index declaration")) {
+        return false;
+    }
+    if (Peek().kind != TokenKind::Identifier) {
+        AddError(Peek(), "Expected parallel for index name");
+        return false;
+    }
+    const Token index_name = Advance();
+    if (!Expect(TokenKind::Assign, "Expected '=' after parallel for index") ||
+        Peek().kind != TokenKind::IntLiteral) {
+        if (Peek().kind != TokenKind::IntLiteral) {
+            AddError(Peek(), "Parallel for index must start at zero");
+        }
+        return false;
+    }
+    const Token initial_value = Advance();
+    if (initial_value.int_value != 0) {
+        AddError(initial_value, "Parallel for index must start at zero");
+        return false;
+    }
+    if (!Expect(TokenKind::Semi, "Expected ';' after parallel for init")) {
+        return false;
+    }
+
+    if (Peek().kind != TokenKind::Identifier || Peek().lexeme != index_name.lexeme) {
+        AddError(Peek(), "Parallel for condition must compare its index on the left");
+        return false;
+    }
+    Advance();
+    if (!Expect(TokenKind::Less, "Parallel for condition must use '<'")) {
+        return false;
+    }
+    if (Peek().kind != TokenKind::Identifier) {
+        AddError(Peek(), "Parallel for bound must be an identifier");
+        return false;
+    }
+    const Token bound = Advance();
+    if (!Expect(TokenKind::Semi, "Expected ';' after parallel for condition")) {
+        return false;
+    }
+
+    if (Peek().kind != TokenKind::Identifier || Peek().lexeme != index_name.lexeme) {
+        AddError(Peek(), "Parallel for increment must assign its index");
+        return false;
+    }
+    Advance();
+    if (!Expect(TokenKind::Assign, "Expected '=' in parallel for increment") ||
+        Peek().kind != TokenKind::Identifier || Peek().lexeme != index_name.lexeme) {
+        if (Peek().kind != TokenKind::Identifier || Peek().lexeme != index_name.lexeme) {
+            AddError(Peek(), "Parallel for increment must read its index");
+        }
+        return false;
+    }
+    Advance();
+    if (!Expect(TokenKind::Plus, "Parallel for increment must add one") ||
+        Peek().kind != TokenKind::IntLiteral) {
+        if (Peek().kind != TokenKind::IntLiteral) {
+            AddError(Peek(), "Parallel for increment must add one");
+        }
+        return false;
+    }
+    const Token increment = Advance();
+    if (increment.int_value != 1) {
+        AddError(increment, "Parallel for increment must add one");
+        return false;
+    }
+    if (!Expect(TokenKind::RParen, "Expected ')' after parallel for clauses")) {
+        return false;
+    }
+    if (Peek().kind != TokenKind::LBrace || !ParseBlock()) {
+        if (Peek().kind != TokenKind::LBrace) {
+            AddError(Peek(), "Parallel for body must be a block");
+        }
+        return false;
+    }
+
+    auto statement = std::make_unique<ParallelForStatement>();
+    statement->index_name = index_name.lexeme;
+    auto bound_expression = std::make_unique<IdentifierExpression>();
+    bound_expression->name = bound.lexeme;
+    statement->bound = std::move(bound_expression);
+    statement->body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement *>(TakeStatement().release()));
     last_statement_ = std::move(statement);
     return true;
 }

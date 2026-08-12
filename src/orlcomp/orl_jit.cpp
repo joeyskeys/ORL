@@ -1,10 +1,13 @@
 #include "orl_jit.h"
 
 #include "orl_optimizer.h"
+#include "orl_parallel_runtime.h"
 
 #if __has_include(<llvm/ExecutionEngine/Orc/LLJIT.h>)
 
+#include <llvm/ExecutionEngine/Orc/Core.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/Mangling.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
@@ -82,6 +85,17 @@ struct OrlJitEngine::Impl {
         }
 
         jit_ = std::move(*jit_or_error);
+        llvm::orc::MangleAndInterner mangle(jit_->getExecutionSession(), jit_->getDataLayout());
+        llvm::orc::SymbolMap runtime_symbols;
+        runtime_symbols[mangle("__orl_parallel_for")] = {
+            llvm::orc::ExecutorAddr::fromPtr(&__orl_parallel_for),
+            llvm::JITSymbolFlags::Exported,
+        };
+        if (auto error = jit_->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(runtime_symbols)))) {
+            errors_.push_back("Failed to register ORL parallel runtime: " + FormatLlvmError(std::move(error)));
+            jit_.reset();
+            return false;
+        }
         llvm::orc::ThreadSafeModule thread_safe_module(std::move(module), std::move(context));
         if (auto error = jit_->addIRModule(std::move(thread_safe_module))) {
             errors_.push_back("Failed to add IR module to JIT: " + FormatLlvmError(std::move(error)));

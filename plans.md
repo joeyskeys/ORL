@@ -30,16 +30,20 @@ What needs adding for real GPU LBS:
 ~~The compiler generates the CUDA entry kernel and nvvm.annotations itself. Tests do not need AddKernelWrapperForCompute.~~
 
 ~~2. General GPU buffer runtime: allocation, upload/download, release, and synchronization~~
-OrlGpuEngine still needs arbitrary buffer/scalar kernel-argument binding and dispatch through the generated CUDA entry kernel.
+~~OrlGpuEngine supports typed scalar/buffer argument binding and explicit block/thread launch configuration.~~
+~~The generated CUDA entry reflects the selected ORL function's buffer/scalar parameter ABI and validates runtime bindings.~~
+Automatic dispatch selection remains.
 
 3. Data-parallel lowering
-A GPU launch needs one work item per vertex. Today there is no language-level representation of “this iteration belongs to this GPU invocation.”
+~~`global_id()` provides the CUDA 1D work-item index, so a bounds-checked ORL function can process one element per GPU invocation.~~
+~~Portable `parallel for` lowers to a sequential CPU loop or a bounds-checked CUDA work-item body.~~
 
 4. Dispatch setup
-The runtime needs to derive the launch size from vertex_count, choose a block size, calculate the grid, and pass required metadata.
+~~The runtime derives grid size from an element count and uses configurable default/suggested threads per block.~~
+`LaunchCudaKernelForElements(vertex_count)` supplies the matching CUDA work-item count.
 
 5. GPU-safe buffer/address-space lowering
-ORL should keep buffer syntax target-independent, while the CUDA backend assigns the appropriate LLVM/NVPTX address spaces and kernel argument ABI.
+~~ORL keeps buffer syntax target-independent while the CUDA backend lowers entry-function buffers and kernel ABI parameters to NVPTX global address space.~~
 
 6. NVPTX-capable LLVM/CUDA environment
 The installed LLVM must contain the NVPTX target, and the CUDA driver must be available. The current CMake setup now tolerates LLVM builds without NVPTX, but such builds cannot emit PTX.

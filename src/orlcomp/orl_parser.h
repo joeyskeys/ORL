@@ -37,6 +37,7 @@ private:
     bool ParseWhileStatement();
     bool ParseDoWhileStatement();
     bool ParseForStatement();
+    bool ParseParallelForStatement();
 
     bool ParseExpressionStatement();
     bool ParseExpression();

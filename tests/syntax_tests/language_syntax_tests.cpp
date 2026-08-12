@@ -196,6 +196,24 @@ TEST_CASE("syntax accepts if else and all loop forms", "[orl][syntax][control-fl
     RequireParses(src);
 }
 
+TEST_CASE("syntax accepts canonical parallel for", "[orl][syntax][parallel]") {
+    RequireParses(
+        "int transform(int values[], int count) {\n"
+        "    parallel for (int index = 0; index < count; index = index + 1) {\n"
+        "        values[index] = values[index] + index;\n"
+        "    }\n"
+        "    return count;\n"
+        "}\n");
+}
+
+TEST_CASE("syntax rejects noncanonical parallel for", "[orl][syntax][parallel][error]") {
+    RequireRejects(
+        "int transform(int values[], int count) {\n"
+        "    parallel for (int index = 0; index <= count; index = index + 1) { }\n"
+        "    return count;\n"
+        "}\n");
+}
+
 TEST_CASE("syntax rejects incomplete declarations and control flow", "[orl][syntax][error]") {
     const std::string missing_initializer =
         "int invalid() {\n"

@@ -60,3 +60,11 @@ TEST_CASE("lexer recognizes GLSL-style vector and matrix type names", "[orl][lex
     }
     REQUIRE(lexer.NextToken().kind == TokenKind::EndOfFile);
 }
+
+TEST_CASE("lexer recognizes parallel for keyword", "[orl][lexer]") {
+    Lexer lexer("parallel for");
+
+    REQUIRE(lexer.NextToken().kind == TokenKind::KwParallel);
+    REQUIRE(lexer.NextToken().kind == TokenKind::KwFor);
+    REQUIRE(lexer.NextToken().kind == TokenKind::EndOfFile);
+}

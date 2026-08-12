@@ -66,8 +66,9 @@ struct LlvmIrCodegen::Impl {
         llvm::BasicBlock *continue_target = nullptr;
     };
 
-    explicit Impl(std::string module_name)
+    explicit Impl(std::string module_name, OrlCodegenTarget target)
         : module_name_(std::move(module_name)),
+          target_(target),
           context_(std::make_unique<llvm::LLVMContext>()),
           module_(std::make_unique<llvm::Module>(module_name_, *context_)),
           builder_(*context_) {}
@@ -81,6 +82,9 @@ struct LlvmIrCodegen::Impl {
         struct_field_indices_.clear();
         current_function_ = nullptr;
         current_function_return_type_ = nullptr;
+        current_function_definition_ = nullptr;
+        parallel_body_counter_ = 0;
+        generating_parallel_body_ = false;
 
         for (const auto &item : program.items) {
             const auto *struct_definition = dynamic_cast<const StructDefinitionStatement *>(item.get());
@@ -318,6 +322,7 @@ struct LlvmIrCodegen::Impl {
         builder_.SetInsertPoint(entry_block);
         current_function_ = function;
         current_function_return_type_ = function->getReturnType();
+        current_function_definition_ = &function_definition;
         EnterScope();
 
         std::size_t parameter_index = 0;
@@ -347,6 +352,7 @@ struct LlvmIrCodegen::Impl {
         LeaveScope();
         current_function_ = nullptr;
         current_function_return_type_ = nullptr;
+        current_function_definition_ = nullptr;
 
         if (llvm::verifyFunction(*function, &llvm::errs())) {
             AddError("LLVM verifier failed for function: " + function_definition.name);
@@ -393,6 +399,13 @@ struct LlvmIrCodegen::Impl {
         }
         if (const auto *for_statement = dynamic_cast<const ForStatement *>(&statement)) {
             return GenerateFor(*for_statement);
+        }
+        if (const auto *parallel_for = dynamic_cast<const ParallelForStatement *>(&statement)) {
+            if (generating_parallel_body_) {
+                AddError("Nested parallel for is not supported on the host target");
+                return false;
+            }
+            return GenerateParallelFor(*parallel_for);
         }
         if (const auto *loop_control = dynamic_cast<const LoopControlStatement *>(&statement)) {
             return GenerateLoopControl(*loop_control);
@@ -681,7 +694,166 @@ struct LlvmIrCodegen::Impl {
         return true;
     }
 
+    llvm::Value *EmitParallelIndex() {
+        llvm::FunctionCallee global_id = module_->getOrInsertFunction(
+            "__orl_global_id", llvm::FunctionType::get(builder_.getInt64Ty(), false));
+        return builder_.CreateCall(global_id, {}, "parallel_index");
+    }
+
+    bool GenerateHostParallelFor(const ParallelForStatement &parallel_for, llvm::Value *bound) {
+        if (current_function_definition_ == nullptr) {
+            AddError("Parallel for must be generated inside an ORL function");
+            return false;
+        }
+        const auto *bound_identifier = dynamic_cast<const IdentifierExpression *>(parallel_for.bound.get());
+        const auto is_function_parameter = [&](const std::string &name) {
+            for (const Parameter &parameter : current_function_definition_->parameters) {
+                if (parameter.name == name) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (bound_identifier == nullptr || !is_function_parameter(bound_identifier->name)) {
+            AddError("Parallel for bound must be a function parameter on the host target");
+            return false;
+        }
+
+        llvm::Function *outer_function = current_function_;
+        llvm::Type *outer_return_type = current_function_return_type_;
+        const FunctionDefinitionStatement *outer_definition = current_function_definition_;
+        llvm::BasicBlock *outer_block = builder_.GetInsertBlock();
+        const std::uint32_t body_id = parallel_body_counter_++;
+
+        std::vector<llvm::Type *> capture_types;
+        capture_types.reserve(outer_function->arg_size());
+        for (llvm::Argument &argument : outer_function->args()) {
+            capture_types.push_back(argument.getType());
+        }
+        llvm::StructType *context_type = llvm::StructType::create(
+            *context_, capture_types, "orl.parallel.context." + std::to_string(body_id));
+        llvm::AllocaInst *context_slot = CreateEntryAlloca("parallel.context", context_type);
+        for (std::size_t index = 0; index < outer_definition->parameters.size(); ++index) {
+            const Parameter &parameter = outer_definition->parameters[index];
+            VariableInfo *variable = FindVariable(parameter.name);
+            if (variable == nullptr) {
+                AddError("Parallel for cannot capture missing function parameter: " + parameter.name);
+                return false;
+            }
+            llvm::Value *value = parameter.is_buffer
+                                     ? variable->slot
+                                     : builder_.CreateLoad(variable->type, variable->slot, parameter.name + ".capture");
+            llvm::Value *field = builder_.CreateStructGEP(context_type, context_slot, index, parameter.name + ".capture.field");
+            builder_.CreateStore(value, field);
+        }
+
+        auto *body_type = llvm::FunctionType::get(
+            builder_.getVoidTy(), {builder_.getPtrTy(), builder_.getInt64Ty()}, false);
+        llvm::Function *body_function = llvm::Function::Create(
+            body_type,
+            llvm::GlobalValue::InternalLinkage,
+            "orl.parallel.body." + std::to_string(body_id),
+            module_.get());
+        auto body_argument = body_function->arg_begin();
+        body_argument->setName("context");
+        llvm::Value *body_context = &*body_argument++;
+        body_argument->setName(parallel_for.index_name);
+
+        auto outer_scopes = std::move(scopes_);
+        const bool outer_generating_parallel_body = generating_parallel_body_;
+        current_function_ = body_function;
+        current_function_return_type_ = body_function->getReturnType();
+        scopes_.clear();
+        generating_parallel_body_ = true;
+        auto *entry_block = llvm::BasicBlock::Create(*context_, "entry", body_function);
+        builder_.SetInsertPoint(entry_block);
+        EnterScope();
+        llvm::AllocaInst *index_slot = CreateEntryAlloca(parallel_for.index_name, builder_.getInt64Ty());
+        builder_.CreateStore(&*body_argument, index_slot);
+        AddVariable(parallel_for.index_name, VariableInfo{index_slot, builder_.getInt64Ty()});
+
+        for (std::size_t index = 0; index < outer_definition->parameters.size(); ++index) {
+            const Parameter &parameter = outer_definition->parameters[index];
+            llvm::Value *field = builder_.CreateStructGEP(context_type, body_context, index, parameter.name + ".field");
+            llvm::Type *field_type = capture_types[index];
+            llvm::Value *value = builder_.CreateLoad(field_type, field, parameter.name + ".capture");
+            if (parameter.is_buffer) {
+                llvm::Type *element_type = MapTypeName(parameter.type_name);
+                AddVariable(parameter.name, VariableInfo{value, element_type, true});
+            } else {
+                llvm::AllocaInst *slot = CreateEntryAlloca(parameter.name, field_type);
+                builder_.CreateStore(value, slot);
+                AddVariable(parameter.name, VariableInfo{slot, field_type});
+            }
+        }
+
+        const bool generated_body = GenerateStatement(*parallel_for.body);
+        if (generated_body && builder_.GetInsertBlock()->getTerminator() == nullptr) {
+            builder_.CreateRetVoid();
+        }
+        LeaveScope();
+        scopes_ = std::move(outer_scopes);
+        generating_parallel_body_ = outer_generating_parallel_body;
+        current_function_ = outer_function;
+        current_function_return_type_ = outer_return_type;
+        current_function_definition_ = outer_definition;
+        builder_.SetInsertPoint(outer_block);
+        if (!generated_body) {
+            return false;
+        }
+
+        llvm::FunctionCallee runtime = module_->getOrInsertFunction(
+            "__orl_parallel_for",
+            llvm::FunctionType::get(
+                builder_.getVoidTy(),
+                {builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getPtrTy(), builder_.getPtrTy()},
+                false));
+        builder_.CreateCall(runtime,
+                            {builder_.getInt64(0), bound, body_function, context_slot},
+                            "parallel.for");
+        return true;
+    }
+
+    bool GenerateParallelFor(const ParallelForStatement &parallel_for) {
+        llvm::Function *function = builder_.GetInsertBlock()->getParent();
+        llvm::Value *bound = GenerateExpression(*parallel_for.bound);
+        bound = CastValue(bound, builder_.getInt64Ty(), "parallel for bound");
+        if (bound == nullptr) {
+            return false;
+        }
+        if (target_ == OrlCodegenTarget::Host) {
+            return GenerateHostParallelFor(parallel_for, bound);
+        }
+
+        EnterScope();
+        llvm::AllocaInst *index_slot = CreateEntryAlloca(parallel_for.index_name, builder_.getInt64Ty());
+        llvm::Value *index_value = EmitParallelIndex();
+        builder_.CreateStore(index_value, index_slot);
+        AddVariable(parallel_for.index_name, VariableInfo{index_slot, builder_.getInt64Ty()});
+
+        auto *body_block = llvm::BasicBlock::Create(*context_, "parallel.body", function);
+        auto *after_block = llvm::BasicBlock::Create(*context_, "parallel.end", function);
+        llvm::Value *condition = builder_.CreateICmpSLT(index_value, bound, "parallel.condition");
+        builder_.CreateCondBr(condition, body_block, after_block);
+
+        builder_.SetInsertPoint(body_block);
+        if (!GenerateStatement(*parallel_for.body)) {
+            LeaveScope();
+            return false;
+        }
+        if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+            builder_.CreateBr(after_block);
+        }
+        builder_.SetInsertPoint(after_block);
+        LeaveScope();
+        return true;
+    }
+
     bool GenerateLoopControl(const LoopControlStatement &loop_control) {
+        if (generating_parallel_body_) {
+            AddError("break and continue are not supported inside host parallel for");
+            return false;
+        }
         if (loops_.empty()) {
             AddError(loop_control.kind == LoopControlKind::Break
                          ? "break statement is not inside a loop"
@@ -1458,6 +1630,7 @@ struct LlvmIrCodegen::Impl {
     }
 
     std::string module_name_;
+    OrlCodegenTarget target_ = OrlCodegenTarget::Host;
     std::unique_ptr<llvm::LLVMContext> context_;
     std::unique_ptr<llvm::Module> module_;
     llvm::IRBuilder<> builder_;
@@ -1467,10 +1640,14 @@ struct LlvmIrCodegen::Impl {
     std::unordered_map<std::string, std::unordered_map<std::string, unsigned int>> struct_field_indices_;
     llvm::Function *current_function_ = nullptr;
     llvm::Type *current_function_return_type_ = nullptr;
+    const FunctionDefinitionStatement *current_function_definition_ = nullptr;
+    std::uint32_t parallel_body_counter_ = 0;
+    bool generating_parallel_body_ = false;
     std::vector<std::string> errors_;
 };
 
-LlvmIrCodegen::LlvmIrCodegen(std::string module_name) : impl_(std::make_unique<Impl>(std::move(module_name))) {}
+LlvmIrCodegen::LlvmIrCodegen(std::string module_name, OrlCodegenTarget target)
+    : impl_(std::make_unique<Impl>(std::move(module_name), target)) {}
 LlvmIrCodegen::~LlvmIrCodegen() = default;
 
 bool LlvmIrCodegen::Generate(const Program &program) {
@@ -1506,7 +1683,7 @@ std::unique_ptr<llvm::LLVMContext> LlvmIrCodegen::ReleaseContext() {
 namespace orlcomp {
 
 struct LlvmIrCodegen::Impl {
-    explicit Impl(std::string module_name) : module_name_(std::move(module_name)) {}
+    explicit Impl(std::string module_name, OrlCodegenTarget) : module_name_(std::move(module_name)) {}
 
     bool Generate(const Program &) {
         errors_.clear();
@@ -1522,7 +1699,8 @@ struct LlvmIrCodegen::Impl {
     std::vector<std::string> errors_;
 };
 
-LlvmIrCodegen::LlvmIrCodegen(std::string module_name) : impl_(std::make_unique<Impl>(std::move(module_name))) {}
+LlvmIrCodegen::LlvmIrCodegen(std::string module_name, OrlCodegenTarget target)
+    : impl_(std::make_unique<Impl>(std::move(module_name), target)) {}
 LlvmIrCodegen::~LlvmIrCodegen() = default;
 
 bool LlvmIrCodegen::Generate(const Program &program) {

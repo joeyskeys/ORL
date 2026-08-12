@@ -89,6 +89,66 @@ TEST_CASE("llvm codegen lowers vector math intrinsics", "[orl][codegen][intrinsi
     REQUIRE(ir.find("lerp") != std::string::npos);
 }
 
+TEST_CASE("llvm codegen preserves global_id for GPU lowering", "[orl][codegen][intrinsic][gpu]") {
+    const std::string src =
+        "int work_item() {\n"
+        "    return global_id();\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_global_id_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("call i64 @__orl_global_id()") != std::string::npos);
+    REQUIRE(ir.find("declare i64 @__orl_global_id()") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen rejects global_id arguments", "[orl][codegen][intrinsic][gpu]") {
+    const std::string src =
+        "int invalid_work_item() {\n"
+        "    return global_id(1);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_invalid_global_id_module");
+    REQUIRE_FALSE(codegen.Generate(*parser.Ast()));
+    REQUIRE_FALSE(codegen.Errors().empty());
+}
+
+TEST_CASE("llvm codegen lowers parallel for for host and CUDA targets", "[orl][codegen][parallel]") {
+    const std::string src =
+        "int transform(int values[], int count) {\n"
+        "    parallel for (int index = 0; index < count; index = index + 1) {\n"
+        "        values[index] = values[index] + index;\n"
+        "    }\n"
+        "    return count;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen host_codegen("orl_parallel_host_module");
+    REQUIRE(host_codegen.Generate(*parser.Ast()));
+    const std::string host_ir = host_codegen.DumpIR();
+    REQUIRE(host_ir.find("@__orl_parallel_for") != std::string::npos);
+    REQUIRE(host_ir.find("@orl.parallel.body.0") != std::string::npos);
+    REQUIRE(host_ir.find("parallel.for.inc") == std::string::npos);
+    REQUIRE(host_ir.find("__orl_global_id") == std::string::npos);
+
+    LlvmIrCodegen cuda_codegen("orl_parallel_cuda_module", OrlCodegenTarget::Cuda);
+    REQUIRE(cuda_codegen.Generate(*parser.Ast()));
+    const std::string cuda_ir = cuda_codegen.DumpIR();
+    REQUIRE(cuda_ir.find("@__orl_global_id") != std::string::npos);
+    REQUIRE(cuda_ir.find("parallel.for.inc") == std::string::npos);
+    REQUIRE(cuda_ir.find("parallel.body") != std::string::npos);
+}
+
 TEST_CASE("llvm codegen lowers matrix math intrinsics", "[orl][codegen][intrinsic][matrix]") {
     const std::string src =
         "vector matrix_intrinsics() {\n"
@@ -340,6 +400,37 @@ TEST_CASE("orl jit executes optimized function", "[orl][jit]") {
     const auto result = jit.InvokeInt64("addloop", 5);
     REQUIRE(result.has_value());
     REQUIRE(*result == 10);
+}
+
+TEST_CASE("orl jit executes oneTBB-backed parallel for", "[orl][jit][parallel]") {
+    const std::string src =
+        "int transform(int values[], int unused0[], int unused1[], int unused2[], int unused3[], int count) {\n"
+        "    parallel for (int index = 0; index < count; index = index + 1) {\n"
+        "        values[index] = values[index] + index;\n"
+        "    }\n"
+        "    return count;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_tbb_parallel_jit_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+
+    std::int64_t values[] = {3, 7, 11};
+    std::int64_t unused[1] = {};
+    const std::array<void *, 5> buffers = {values, unused, unused, unused, unused};
+
+    OrlJitEngine jit;
+    REQUIRE(jit.LoadModuleWithOptimization(codegen.ReleaseModule(),
+                                           codegen.ReleaseContext(),
+                                           OrlOptimizationLevel::O2));
+    const auto result = jit.InvokeInt64WithBufferArgs("transform", buffers, 3);
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 3);
+    REQUIRE(values[0] == 3);
+    REQUIRE(values[1] == 8);
+    REQUIRE(values[2] == 13);
 }
 
 TEST_CASE("orl jit exposes selectable target mode", "[orl][jit]") {

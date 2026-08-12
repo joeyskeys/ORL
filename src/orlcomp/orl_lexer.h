@@ -19,6 +19,7 @@ enum class TokenKind : std::uint16_t {
 
     KwIf,
     KwElse,
+    KwParallel,
     KwFor,
     KwWhile,
     KwDo,

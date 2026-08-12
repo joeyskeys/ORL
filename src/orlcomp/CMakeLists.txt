@@ -21,6 +21,7 @@ set(ORLCOMP_CODEGEN_SOURCES
     orl_optimizer.cpp
     orl_jit.cpp
     orl_gpu.cpp
+    orl_parallel_runtime.cpp
 )
 
 set(ORLCOMP_CODEGEN_HEADERS
@@ -30,6 +31,7 @@ set(ORLCOMP_CODEGEN_HEADERS
     orl_optimizer.h
     orl_jit.h
     orl_gpu.h
+    orl_parallel_runtime.h
 )
 
 add_library(orlcomp_lexer
@@ -63,6 +65,7 @@ find_package(LLVM CONFIG QUIET)
 
 if (LLVM_FOUND)
     find_package(CUDAToolkit REQUIRED)
+    find_package(TBB CONFIG REQUIRED)
     if (NOT TARGET ZLIB::ZLIB)
         message(FATAL_ERROR
             "LLVM was found but ZLIB::ZLIB is unavailable. "
@@ -107,6 +110,7 @@ if (LLVM_FOUND)
         PUBLIC orlcomp_parser
         PUBLIC ${ORLCOMP_LLVM_LIBS}
                CUDA::cudart
+        PRIVATE TBB::tbb
     )
     message(STATUS "Configured ORL LLVM IR codegen, optimizer, and JIT")
 else()

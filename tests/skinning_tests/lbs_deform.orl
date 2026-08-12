@@ -9,8 +9,7 @@ int deform(point input_positions[],
            float weights[],
            int bone_indices[],
            int vertex_count) {
-    int vertex = 0;
-    while (vertex < vertex_count) {
+    parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
         int influence = vertex * 2;
         int bone0 = bone_indices[influence];
         int bone1 = bone_indices[influence + 1];
@@ -21,8 +20,7 @@ int deform(point input_positions[],
         point transformed0 = bone_matrices[bone0] * bind_position;
         point transformed1 = bone_matrices[bone1] * bind_position;
         output_positions[vertex] = weight0 * transformed0 + weight1 * transformed1;
-
-        vertex = vertex + 1;
     }
+
     return vertex_count;
 }

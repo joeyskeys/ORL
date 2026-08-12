@@ -12,6 +12,7 @@ namespace {
 const std::unordered_map<std::string_view, TokenKind> kKeywords = {
     {"if", TokenKind::KwIf},
     {"else", TokenKind::KwElse},
+    {"parallel", TokenKind::KwParallel},
     {"for", TokenKind::KwFor},
     {"while", TokenKind::KwWhile},
     {"do", TokenKind::KwDo},
@@ -399,6 +400,7 @@ const char *TokenKindName(TokenKind kind) {
     case TokenKind::TypeName: return "TypeName";
     case TokenKind::KwIf: return "KwIf";
     case TokenKind::KwElse: return "KwElse";
+    case TokenKind::KwParallel: return "KwParallel";
     case TokenKind::KwFor: return "KwFor";
     case TokenKind::KwWhile: return "KwWhile";
     case TokenKind::KwDo: return "KwDo";

@@ -143,6 +143,12 @@ struct ForStatement final : Statement {
     std::unique_ptr<Statement> body;
 };
 
+struct ParallelForStatement final : Statement {
+    std::string index_name;
+    std::unique_ptr<Expression> bound;
+    std::unique_ptr<BlockStatement> body;
+};
+
 enum class LoopControlKind : std::uint8_t {
     Break,
     Continue
