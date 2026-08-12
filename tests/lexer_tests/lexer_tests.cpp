@@ -52,10 +52,11 @@ TEST_CASE("lexer recognizes GLSL-style vector and matrix type names", "[orl][lex
         "vec2 vec3 vec4 "
         "bvec2 ivec3 uvec4 dvec4 "
         "mat2 mat3 mat4 "
-        "bmat2 imat3 umat4 dmat4";
+        "bmat2 imat3 umat4 dmat4 "
+        "quat";
 
     Lexer lexer(src);
-    for (int i = 0; i < 14; ++i) {
+    for (int i = 0; i < 15; ++i) {
         REQUIRE(lexer.NextToken().kind == TokenKind::TypeName);
     }
     REQUIRE(lexer.NextToken().kind == TokenKind::EndOfFile);

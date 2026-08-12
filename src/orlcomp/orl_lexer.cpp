@@ -25,7 +25,7 @@ const std::unordered_map<std::string_view, TokenKind> kKeywords = {
     {"normal", TokenKind::KwNormal},
     {"point", TokenKind::KwPoint},
     {"matrix", TokenKind::KwMatrix},
-    {"quaternion", TokenKind::TypeName},
+    {"quat", TokenKind::TypeName},
     {"bool", TokenKind::TypeName},
     {"int", TokenKind::KwInt},
     {"uint", TokenKind::TypeName},

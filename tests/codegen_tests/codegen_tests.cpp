@@ -325,10 +325,10 @@ TEST_CASE("llvm codegen rejects w access on three-component vectors", "[orl][cod
 TEST_CASE("llvm codegen lowers quaternion operations", "[orl][codegen][quaternion]") {
     const std::string src =
         "float quaternion_ops() {\n"
-        "    quaternion identity(0, 0, 0, 1);\n"
-        "    quaternion rotation(0, 0.70710678, 0, 0.70710678);\n"
-        "    quaternion combined = quat_normalize(quat_mul(identity, rotation));\n"
-        "    quaternion inverse = quat_conjugate(combined);\n"
+        "    quat identity(0, 0, 0, 1);\n"
+        "    quat rotation(0, 0.70710678, 0, 0.70710678);\n"
+        "    quat combined = quat_normalize(quat_mul(identity, rotation));\n"
+        "    quat inverse = quat_conjugate(combined);\n"
         "    vector direction(1, 0, 0);\n"
         "    vector restored = quat_rotate(inverse, quat_rotate(combined, direction));\n"
         "    return restored.x + combined.w;\n"

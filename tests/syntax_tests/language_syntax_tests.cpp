@@ -78,10 +78,10 @@ TEST_CASE("syntax accepts vector component access", "[orl][syntax][component]") 
 TEST_CASE("syntax accepts quaternion construction and operations", "[orl][syntax][quaternion]") {
     const std::string src =
         "vector rotate_direction() {\n"
-        "    quaternion bind_rotation(0, 0, 0, 1);\n"
-        "    quaternion pose_rotation(0, 0.70710678, 0, 0.70710678);\n"
-        "    quaternion combined = quat_normalize(quat_mul(bind_rotation, pose_rotation));\n"
-        "    quaternion inverse = quat_conjugate(combined);\n"
+        "    quat bind_rotation(0, 0, 0, 1);\n"
+        "    quat pose_rotation(0, 0.70710678, 0, 0.70710678);\n"
+        "    quat combined = quat_normalize(quat_mul(bind_rotation, pose_rotation));\n"
+        "    quat inverse = quat_conjugate(combined);\n"
         "    vector direction(1, 0, 0);\n"
         "    return quat_rotate(inverse, quat_rotate(combined, direction));\n"
         "}\n";
@@ -211,6 +211,14 @@ TEST_CASE("syntax rejects noncanonical parallel for", "[orl][syntax][parallel][e
         "int transform(int values[], int count) {\n"
         "    parallel for (int index = 0; index <= count; index = index + 1) { }\n"
         "    return count;\n"
+        "}\n");
+}
+
+TEST_CASE("syntax reserves quat as the quaternion type name", "[orl][syntax][quaternion][error]") {
+    RequireRejects(
+        "int legacy_quaternion_name() {\n"
+        "    quaternion rotation(0, 0, 0, 1);\n"
+        "    return 0;\n"
         "}\n");
 }
 

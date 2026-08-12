@@ -148,7 +148,7 @@ struct LlvmIrCodegen::Impl {
             type_name == "vec3" || type_name == "dvec3") {
             return llvm::FixedVectorType::get(builder_.getDoubleTy(), 3);
         }
-        if (type_name == "vec4" || type_name == "dvec4" || type_name == "quaternion") {
+        if (type_name == "vec4" || type_name == "dvec4" || type_name == "quat") {
             return llvm::FixedVectorType::get(builder_.getDoubleTy(), 4);
         }
         if (type_name == "matrix") {
