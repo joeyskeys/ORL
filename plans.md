@@ -73,3 +73,51 @@ CUDA: lower each logical vertex iteration to one GPU work item.
 Runtime: infer dispatch size from vertex_count, allocate/copy buffers, launch, synchronize, and copy back output.
 ORL authors only work with vertex; they never manage GPU thread IDs.
 This gives you a portable high-level deformer model while making CUDA thread/grid setup an implementation detail. The next concrete implementation step should be a parallel for AST/parser construct plus automatic CUDA kernel-wrapper generation.
+
+Current conclusion: remaining work for a general rigging tool and animation runtime
+
+The compiler now has a portable `parallel for`, typed buffer parameters, structs, matrix/vector math, `quat` utilities, CPU JIT, CUDA kernel generation, GPU buffers, automatic dispatch, and CUDA global-memory buffer lowering. The remaining work is primarily a runtime and rigging-system layer rather than basic LBS compilation.
+
+1. Complete and validate execution backends
+- Install/configure oneTBB and finish testing CPU `parallel for` through the JIT runtime.
+- Test CUDA PTX generation and GPU LBS execution on an LLVM build containing NVPTX plus a CUDA driver.
+- Add ROCm lowering, runtime loading, and backend parity if AMD GPUs are a target.
+- Add reliable runtime diagnostics for failed JIT, device compilation, kernel launch, and asynchronous GPU work.
+
+2. Generalize deformation data
+- Support variable-length/sparse influences through offset/count buffers or compressed sparse row layouts.
+- Add normalized weight handling, zero-weight behavior, influence limits, and validation utilities.
+- Add production deformation operations: blend shapes, dual-quaternion skinning, pose-space deformation, corrective shapes, normals/tangents, and bounds updates.
+- Define stable packed buffer layouts, alignment rules, and serialization for points, matrices, `quat`, vertices, influences, and poses.
+
+3. Build a rigging model above ORL
+- Define first-class skeleton assets: joints, parent hierarchy, rest pose, inverse bind matrices, constraints, and metadata.
+- Add rig graph nodes for local/world transforms, parent constraints, IK, aim/orient constraints, blend constraints, retargeting, and custom ORL deformers.
+- Add dependency analysis, dirty propagation, cycle detection, deterministic evaluation order, and explicit space conversions.
+- Add authoring APIs and a serialization format for rigs, graphs, bindings, and deformer settings.
+
+4. Build the animation runtime
+- Represent clips, tracks, keyframes, interpolation modes, events, looping, layers, masks, blend trees, state machines, and timelines.
+- Sample and blend translation/rotation/scale using quaternion-safe interpolation such as normalized linear interpolation and slerp.
+- Evaluate animation poses, apply constraints, produce skinning matrices, dispatch deformers, and publish render-ready buffers each frame.
+- Add time control, seeking, deterministic fixed-step evaluation, caching, and multithreaded frame scheduling.
+
+5. Improve ORL language/runtime ergonomics
+- Add first-class kernel/deformer declarations and runtime metadata instead of selecting entry functions only by string.
+- Infer and validate dispatch count from the declared `parallel for` bound where possible.
+- Support reductions and well-defined synchronization/atomic operations for parallel algorithms that require shared results.
+- Extend diagnostics, source locations, reflection, debug IR/PTX dumps, profiling markers, and reproducible test fixtures.
+- Define a stable host API for compiling, caching, binding, evaluating, and hot-reloading ORL programs.
+
+6. Production tooling and interoperability
+- Import/export common mesh, skeleton, and animation formats such as glTF; add adapters for host DCC tools as needed.
+- Provide rig/deformer inspection, pose and weight debugging, GPU buffer inspection, and CPU/GPU result comparison tools.
+- Add benchmark scenes and regression tests for correctness, determinism, memory use, compile latency, and frame time.
+- Version assets and runtime ABI so rigs and compiled programs remain compatible across releases.
+
+Suggested delivery order:
+1. Finish oneTBB and NVPTX environment validation.
+2. Implement sparse influences and production LBS/DQS buffers.
+3. Add skeleton/pose assets and clip sampling.
+4. Add rig graph constraints and frame evaluation.
+5. Add authoring, serialization, interchange, debugging, and performance tooling.
