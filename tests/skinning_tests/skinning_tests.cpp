@@ -247,7 +247,11 @@ TEST_CASE("ORL LBS deformer skins dynamic buffers on CUDA", "[orl][skinning][gpu
 
     OrlGpuEngine gpu(OrlGpuBackend::Cuda);
     gpu.SetCudaEntryFunction("deform");
-    if (!gpu.CompileModule(codegen.ReleaseModule(), codegen.ReleaseContext())) {
+    std::unique_ptr<llvm::Module> module = codegen.ReleaseModule();
+    std::unique_ptr<llvm::LLVMContext> context = codegen.ReleaseContext();
+    REQUIRE(module != nullptr);
+    REQUIRE(context != nullptr);
+    if (!gpu.CompileModule(std::move(module), std::move(context))) {
         const auto &errors = gpu.Errors();
         WARN((errors.empty() ? "CUDA PTX compilation unavailable in this environment" : errors.back()));
         return;

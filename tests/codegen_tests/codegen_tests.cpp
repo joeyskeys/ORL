@@ -38,6 +38,53 @@ TEST_CASE("llvm codegen emits IR for arithmetic and control flow", "[orl][codege
     REQUIRE(ir.find("ret i64") != std::string::npos);
 }
 
+TEST_CASE("llvm CUDA codegen lowers parallel for", "[orl][codegen][cuda][parallel]") {
+    const std::string src =
+        "int deform(int values[], int count) {\n"
+        "    parallel for (int index = 0; index < count; index = index + 1) {\n"
+        "        values[index] = values[index] + 1;\n"
+        "    }\n"
+        "    return count;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_cuda_parallel_module", OrlCodegenTarget::Cuda);
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("__orl_global_id") != std::string::npos);
+    REQUIRE(ir.find("parallel.body") != std::string::npos);
+}
+
+TEST_CASE("llvm CUDA codegen lowers skinning parallel for", "[orl][codegen][cuda][parallel][skinning]") {
+    const std::string src =
+        "int deform(point input_positions[], point output_positions[], matrix bone_matrices[], "
+        "float weights[], int bone_indices[], int vertex_count) {\n"
+        "    parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {\n"
+        "        int influence = vertex * 2;\n"
+        "        int bone0 = bone_indices[influence];\n"
+        "        int bone1 = bone_indices[influence + 1];\n"
+        "        float weight0 = weights[influence];\n"
+        "        float weight1 = weights[influence + 1];\n"
+        "        point bind_position = input_positions[vertex];\n"
+        "        point transformed0 = bone_matrices[bone0] * bind_position;\n"
+        "        point transformed1 = bone_matrices[bone1] * bind_position;\n"
+        "        output_positions[vertex] = weight0 * transformed0 + weight1 * transformed1;\n"
+        "    }\n"
+        "    return vertex_count;\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_lbs_deformer_cuda_module", OrlCodegenTarget::Cuda);
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+}
+
 TEST_CASE("llvm codegen lowers vector constructor and calls", "[orl][codegen]") {
     const std::string src =
         "float main() {\n"

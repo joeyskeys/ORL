@@ -127,49 +127,11 @@ struct OrlGpuEngine::Impl {
             errors_.push_back("CUDA compilation requires ORL entry function '" + cuda_entry_function_ + "'");
             return false;
         }
-
-        std::vector<llvm::Type *> parameter_types;
-        parameter_types.reserve(entry_function->arg_size());
-        bool needs_lowering = false;
-        for (llvm::Argument &argument : entry_function->args()) {
-            llvm::Type *parameter_type = argument.getType();
-            if (parameter_type->isPointerTy() && parameter_type->getPointerAddressSpace() == 0) {
-                parameter_type = llvm::PointerType::get(module.getContext(), 1);
-                needs_lowering = true;
-            }
-            parameter_types.push_back(parameter_type);
-        }
-        if (!needs_lowering) {
-            return true;
-        }
-        if (!entry_function->use_empty()) {
-            errors_.push_back("CUDA entry function buffer lowering requires the entry function to have no callers");
-            return false;
-        }
-
-        const std::string entry_name = entry_function->getName().str();
-        auto *lowered_type = llvm::FunctionType::get(entry_function->getReturnType(), parameter_types, false);
-        llvm::Function *lowered_function = llvm::Function::Create(lowered_type,
-                                                                    entry_function->getLinkage(),
-                                                                    entry_function->getAddressSpace(),
-                                                                    entry_name + ".device",
-                                                                    module);
-        lowered_function->copyAttributesFrom(entry_function);
-
-        llvm::ValueToValueMapTy value_map;
-        auto lowered_argument = lowered_function->arg_begin();
-        for (llvm::Argument &argument : entry_function->args()) {
-            lowered_argument->setName(argument.getName());
-            value_map[&argument] = &*lowered_argument++;
-        }
-        llvm::SmallVector<llvm::ReturnInst *, 4> returns;
-        llvm::CloneFunctionInto(lowered_function,
-                                entry_function,
-                                value_map,
-                                llvm::CloneFunctionChangeType::LocalChangesOnly,
-                                returns);
-        entry_function->eraseFromParent();
-        lowered_function->setName(entry_name);
+        // NVPTX accepts generic pointers in kernel parameters. Rebuilding the
+        // entry function with address-space-one pointers leaves cloned uses
+        // with incompatible opaque-pointer types and corrupts the module.
+        // Keep the ABI pointer types unchanged until a complete address-space
+        // cast lowering pass is implemented.
         return true;
     }
 
@@ -206,9 +168,7 @@ struct OrlGpuEngine::Impl {
                 parameter.type = OrlGpuKernelParameterType::Unsupported;
             }
             cuda_entry_parameters_.push_back(std::move(parameter));
-            parameter_types.push_back(argument.getType()->isPointerTy()
-                                          ? llvm::PointerType::get(context, 1)
-                                          : argument.getType());
+            parameter_types.push_back(argument.getType());
         }
 
         auto *result_type = llvm::Type::getInt32Ty(context);
@@ -223,7 +183,7 @@ struct OrlGpuEngine::Impl {
         llvm::Function *kernel = llvm::Function::Create(kernel_type,
                                                         llvm::GlobalValue::ExternalLinkage,
                                                         OrlGpuEngine::CudaEntryKernelName,
-                                                        module);
+                                                        &module);
         llvm::BasicBlock *entry = llvm::BasicBlock::Create(context, "entry", kernel);
         llvm::IRBuilder<> builder(entry);
         std::vector<llvm::Value *> kernel_arguments;
@@ -250,24 +210,35 @@ struct OrlGpuEngine::Impl {
         return true;
     }
 
-    bool CompileModule(std::unique_ptr<llvm::Module> module, std::unique_ptr<llvm::LLVMContext> context) {
+    bool CompileModule(std::unique_ptr<llvm::Module> incoming_module,
+                       std::unique_ptr<llvm::LLVMContext> incoming_context) {
+        // LLVM modules retain references to their owning context. Keep the
+        // context declared before the module so the module is always destroyed
+        // first, including every early-return path below.
+        std::unique_ptr<llvm::LLVMContext> context = std::move(incoming_context);
+        std::unique_ptr<llvm::Module> module = std::move(incoming_module);
         errors_.clear();
         device_code_.clear();
         UnloadDriverModule();
 
+        const auto fail = [&]() {
+            module.reset();
+            context.reset();
+            return false;
+        };
         if (module == nullptr || context == nullptr) {
             errors_.push_back("CompileModule requires non-null LLVM module and context");
-            return false;
+            return fail();
         }
         if (backend_ == OrlGpuBackend::Cuda) {
             if (!LowerCudaGlobalId(*module) ||
                 !LowerCudaEntryBufferAddressSpaces(*module) ||
                 !CreateCudaEntryKernel(*module)) {
-                return false;
+                return fail();
             }
         } else if (module->getFunction("__orl_global_id") != nullptr) {
             errors_.push_back("global_id is currently supported only by the CUDA backend");
-            return false;
+            return fail();
         }
 
         std::string target_error;
@@ -276,7 +247,7 @@ struct OrlGpuEngine::Impl {
         const llvm::Target *target = llvm::TargetRegistry::lookupTarget(target_triple, target_error);
         if (target == nullptr) {
             errors_.push_back("Failed to find LLVM target for " + std::string(BackendName(backend_)) + ": " + target_error);
-            return false;
+            return fail();
         }
 
         const llvm::TargetOptions options;
@@ -285,7 +256,7 @@ struct OrlGpuEngine::Impl {
                                         llvm::CodeGenOptLevel::Aggressive));
         if (!target_machine) {
             errors_.push_back("Failed to create target machine for backend " + std::string(BackendName(backend_)));
-            return false;
+            return fail();
         }
 
         module->setTargetTriple(target_triple);
@@ -300,7 +271,7 @@ struct OrlGpuEngine::Impl {
 
         if (target_machine->addPassesToEmitFile(pass_manager, output_stream, nullptr, file_type)) {
             errors_.push_back("LLVM target backend cannot emit requested device file type");
-            return false;
+            return fail();
         }
 
         pass_manager.run(*module);
@@ -311,19 +282,26 @@ struct OrlGpuEngine::Impl {
         return true;
     }
 
-    bool CompileModuleWithOptimization(std::unique_ptr<llvm::Module> module,
-                                       std::unique_ptr<llvm::LLVMContext> context,
+    bool CompileModuleWithOptimization(std::unique_ptr<llvm::Module> incoming_module,
+                                       std::unique_ptr<llvm::LLVMContext> incoming_context,
                                        OrlOptimizationLevel level) {
+        std::unique_ptr<llvm::LLVMContext> context = std::move(incoming_context);
+        std::unique_ptr<llvm::Module> module = std::move(incoming_module);
         errors_.clear();
+        const auto fail = [&]() {
+            module.reset();
+            context.reset();
+            return false;
+        };
         if (module == nullptr || context == nullptr) {
             errors_.push_back("CompileModuleWithOptimization requires non-null LLVM module and context");
-            return false;
+            return fail();
         }
 
         LlvmOptimizer optimizer(level);
         if (!optimizer.Optimize(*module)) {
             errors_ = optimizer.Errors();
-            return false;
+            return fail();
         }
 
         return CompileModule(std::move(module), std::move(context));

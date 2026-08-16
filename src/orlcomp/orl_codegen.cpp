@@ -809,8 +809,7 @@ struct LlvmIrCodegen::Impl {
                 {builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getPtrTy(), builder_.getPtrTy()},
                 false));
         builder_.CreateCall(runtime,
-                            {builder_.getInt64(0), bound, body_function, context_slot},
-                            "parallel.for");
+                            {builder_.getInt64(0), bound, body_function, context_slot});
         return true;
     }
 
