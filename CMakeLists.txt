@@ -15,6 +15,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/src/cmake)
 
 set(BUILD_TESTS ON)
+option(ORL_BUILD_VIEWER "Build the Vulkan ORL viewport" ON)
 
 cmake_policy(SET CMP0074 NEW)
 
@@ -33,7 +34,11 @@ if(Vulkan_FOUND)
     include_directories(${GLFW_INCLUDE_DIRS}
                         ${Vulkan_INCLUDE_DIRS}
                         ${GLM_INCLUDE_DIRS})
-    #add_subdirectory(src/orlviewer)
+    if(ORL_BUILD_VIEWER)
+        set(VKKK_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "Build vkkk Python bindings" FORCE)
+        add_subdirectory(thirdparty/vkkk EXCLUDE_FROM_ALL)
+        add_subdirectory(src/orlviewer)
+    endif()
 endif()
 
 #add_subdirectory(orltest)
