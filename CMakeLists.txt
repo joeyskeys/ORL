@@ -28,17 +28,13 @@ find_package(glfw3)
 find_package(GLM CONFIG REQUIRED)
 find_package(Eigen3 CONFIG REQUIRED)
 #find_package(cglm CONFIG QUIET)
-find_package(Vulkan)
 
-if(Vulkan_FOUND)
-    include_directories(${GLFW_INCLUDE_DIRS}
-                        ${Vulkan_INCLUDE_DIRS}
-                        ${GLM_INCLUDE_DIRS})
-    if(ORL_BUILD_VIEWER)
-        set(VKKK_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "Build vkkk Python bindings" FORCE)
-        add_subdirectory(thirdparty/vkkk EXCLUDE_FROM_ALL)
-        add_subdirectory(src/orlviewer)
-    endif()
+if(ORL_BUILD_VIEWER)
+    set(VKKK_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "Build vkkk Python bindings" FORCE)
+    set(VKKK_VCPKG_INSTALLED_DIR "${CMAKE_SOURCE_DIR}/../vcpkg/installed/x64-windows"
+        CACHE PATH "Path to vcpkg installed triplet directory" FORCE)
+    add_subdirectory(thirdparty/vkkk EXCLUDE_FROM_ALL)
+    add_subdirectory(src/orlviewer)
 endif()
 
 #add_subdirectory(orltest)
