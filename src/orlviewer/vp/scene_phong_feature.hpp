@@ -13,8 +13,9 @@ namespace ORL
 
 class ScenePhongFeature final : public vkkk::vp::ViewportFeature<vkkk::vp::ViewportPhase::Scene> {
 public:
-    explicit ScenePhongFeature(vkkk::Scene& scene)
+    explicit ScenePhongFeature(vkkk::Scene& scene, bool right_handed)
         : scene(scene)
+        , right_handed(right_handed)
     {
     }
 
@@ -50,7 +51,7 @@ public:
 private:
     static constexpr const char* kPipelineName = "orl_scene_phong";
 
-    static bool create_pipeline(vkkk::Context& context) {
+    bool create_pipeline(vkkk::Context& context) {
         if (context.pipelines.contains(kPipelineName)) {
             return true;
         }
@@ -72,13 +73,18 @@ private:
         vkkk::PipelineOption option;
         option.setup_input_assembly(vk::PrimitiveTopology::eTriangleList, false);
         option.setup_multisampling(false, vk::SampleCountFlagBits::e1);
+        // World-CCW triangles: lookAtLH + Vulkan Y-flip keeps CCW in the
+        // framebuffer; lookAtRH + Y-flip turns them CW.
         option.setup_rasterizer(false, false, vk::PolygonMode::eFill, 1.0f,
-            vk::CullModeFlagBits::eNone, vk::FrontFace::eCounterClockwise, false);
+            vk::CullModeFlagBits::eBack,
+            right_handed ? vk::FrontFace::eClockwise : vk::FrontFace::eCounterClockwise,
+            false);
         option.setup_depth_stencil(true, true, vk::CompareOp::eLessOrEqual, false, false);
         return context.create_pipeline(kPipelineName, pack, option, {vkkk::VERTEX, vkkk::NORMAL});
     }
 
     vkkk::Scene& scene;
+    bool right_handed = true;
     vkkk::PhongInstanceAttrs material{
         .model = glm::mat4{1.0f},
         .ambient = glm::vec4{0.08f, 0.08f, 0.08f, 1.0f},

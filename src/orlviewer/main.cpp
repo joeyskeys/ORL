@@ -191,12 +191,12 @@ int main() {
     const std::filesystem::path font_path =
         std::filesystem::path{ORL_VKKK_SOURCE_DIR} / "resource/font/Roboto-Light.ttf";
     const auto grid_handle = viewport.add_feature<vkkk::vp::GridFeature>(camera);
-    viewport.add_feature<ORL::ScenePhongFeature>(scene);
+    viewport.add_feature<ORL::ScenePhongFeature>(scene, viewport_frame.right_handed);
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
         camera, font_path, make_coordinate_system(viewport_frame));
 
     CameraNavigator navigator(camera, viewport_frame.right_handed);
-    ORL::LoadModelOp load_model(scene, context, window);
+    ORL::LoadModelOp load_model(scene, context, window, world_frame);
     ORL::ControlMap controls;
     controls.bind_op("toggle_grid", [&](const ORL::InputEvent&) {
         if (auto* grid = viewport.find_feature(grid_handle)) {
