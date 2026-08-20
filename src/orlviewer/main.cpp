@@ -1,9 +1,12 @@
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <iostream>
 
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include <GLFW/glfw3.h>
 
@@ -11,6 +14,7 @@
 
 #include "asset_mgr/scene.h"
 #include "concepts/camera.h"
+#include "control_map.hpp"
 #include "vp/frame_axis.hpp"
 #include "vp/grid.hpp"
 #include "vp/viewport.hpp"
@@ -50,19 +54,25 @@ struct ViewportFrame {
 };
 
 ViewportFrame make_viewport_frame(const ORL::Frame& frame) {
-    ViewportFrame viewport_frame;
-    viewport_frame.axes[0] = direction_from_frame_axis(ORL::Frame::get_axis_x_index(frame.flag));
-    viewport_frame.axes[1] = direction_from_frame_axis(ORL::Frame::get_axis_y_index(frame.flag));
-    viewport_frame.axes[2] = direction_from_frame_axis(ORL::Frame::get_axis_z_index(frame.flag));
-    viewport_frame.right_handed =
-        glm::dot(glm::cross(viewport_frame.axes[0], viewport_frame.axes[1]),
-                 viewport_frame.axes[2]) > 0.0f;
+    // Handedness is measured in the shared semantic space (right/up/in).
+    // The viewport itself uses the Frame's local XYZ, so the gizmo axes stay
+    // +X/+Y/+Z of that Frame and the camera sits in its +++ octant. Embedding
+    // dir_out as (0,0,-1) *and* moving the camera to that flipped octant
+    // cancels, so a left-handed Frame still looks right-handed on screen.
+    const glm::vec3 semantic_x = direction_from_frame_axis(ORL::Frame::get_axis_x_index(frame.flag));
+    const glm::vec3 semantic_y = direction_from_frame_axis(ORL::Frame::get_axis_y_index(frame.flag));
+    const glm::vec3 semantic_z = direction_from_frame_axis(ORL::Frame::get_axis_z_index(frame.flag));
 
-    // 3/4 view from the Frame's +++ octant, looking at the origin, Y as up.
-    viewport_frame.camera_pos =
-        3.0f * (viewport_frame.axes[0] + viewport_frame.axes[1] + viewport_frame.axes[2]);
+    ViewportFrame viewport_frame;
+    viewport_frame.axes = {
+        glm::vec3{1.0f, 0.0f, 0.0f},
+        glm::vec3{0.0f, 1.0f, 0.0f},
+        glm::vec3{0.0f, 0.0f, 1.0f},
+    };
+    viewport_frame.right_handed = glm::dot(glm::cross(semantic_x, semantic_y), semantic_z) > 0.0f;
+    viewport_frame.camera_pos = glm::vec3{3.0f, 3.0f, 3.0f};
     viewport_frame.camera_front = glm::normalize(-viewport_frame.camera_pos);
-    viewport_frame.camera_up = viewport_frame.axes[1];
+    viewport_frame.camera_up = glm::vec3{0.0f, 1.0f, 0.0f};
     return viewport_frame;
 }
 
@@ -87,6 +97,55 @@ void update_camera_ubo(vkkk::Camera& camera, bool right_handed) {
     proj[1][1] *= -1.0f;
     camera.ubo_data.proj = proj;
 }
+
+struct CameraNavigator {
+    CameraNavigator(vkkk::Camera& camera, bool right_handed)
+        : camera(camera)
+        , target(camera.pos + camera.front * glm::length(camera.pos))
+        , right_handed(right_handed)
+    {
+    }
+
+    // glm::cross / angleAxis are right-handed in world space. lookAtLH only
+    // mirrors screen X (camera-right = up × front). Horizontal mouse motion
+    // must flip; pitch stays around world front × up so vertical does not.
+    float screen_x_sign() const {
+        return right_handed ? 1.0f : -1.0f;
+    }
+
+    glm::vec3 world_right() const {
+        return glm::normalize(glm::cross(camera.front, camera.up));
+    }
+
+    void orbit(float dx, float dy) {
+        const glm::vec3 offset = camera.pos - target;
+        const glm::quat yaw = glm::angleAxis(-dx * 0.005f * screen_x_sign(), camera.up);
+        const glm::quat pitch = glm::angleAxis(-dy * 0.005f, world_right());
+        camera.pos = target + pitch * yaw * offset;
+        camera.front = glm::normalize(target - camera.pos);
+    }
+
+    void pan(float dx, float dy) {
+        const float distance = glm::length(camera.pos - target);
+        const glm::vec3 right = world_right();
+        const glm::vec3 up = glm::normalize(glm::cross(right, camera.front));
+        const glm::vec3 translation =
+            (-right * dx * screen_x_sign() + up * dy) * distance * 0.002f;
+        camera.pos += translation;
+        target += translation;
+    }
+
+    void zoom(float amount) {
+        const glm::vec3 offset = camera.pos - target;
+        const float distance = std::max(0.1f, glm::length(offset) * (1.0f - amount * 0.1f));
+        camera.pos = target + glm::normalize(offset) * distance;
+        camera.front = glm::normalize(target - camera.pos);
+    }
+
+    vkkk::Camera& camera;
+    glm::vec3 target{0.0f};
+    bool right_handed = true;
+};
 
 } // namespace
 
@@ -126,12 +185,45 @@ int main() {
     Viewport viewport(context);
     const std::filesystem::path font_path =
         std::filesystem::path{ORL_VKKK_SOURCE_DIR} / "resource/font/Roboto-Light.ttf";
-    viewport.add_feature<vkkk::vp::GridFeature>(camera);
-    viewport.add_feature<vkkk::vp::FrameAxisFeature>(
+    const auto grid_handle = viewport.add_feature<vkkk::vp::GridFeature>(camera);
+    const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
         camera, font_path, make_coordinate_system(viewport_frame));
+
+    CameraNavigator navigator(camera, viewport_frame.right_handed);
+    ORL::ControlMap controls;
+    controls.bind_op("toggle_grid", [&](const ORL::InputEvent&) {
+        if (auto* grid = viewport.find_feature(grid_handle)) {
+            grid->visible = !grid->visible;
+        }
+    });
+    controls.bind_op("toggle_frame_axis", [&](const ORL::InputEvent&) {
+        if (auto* axes = viewport.find_feature(axis_handle)) {
+            axes->visible = !axes->visible;
+        }
+    });
+    controls.bind_op("camera_orbit", [&](const ORL::InputEvent& event) {
+        navigator.orbit(static_cast<float>(event.dx), static_cast<float>(event.dy));
+    });
+    controls.bind_op("camera_pan", [&](const ORL::InputEvent& event) {
+        navigator.pan(static_cast<float>(event.dx), static_cast<float>(event.dy));
+    });
+    controls.bind_op("camera_zoom", [&](const ORL::InputEvent& event) {
+        navigator.zoom(static_cast<float>(event.scroll_y));
+    });
+
+    try {
+        controls.load_config(
+            std::filesystem::path{ORL_RESOURCE_DIR} / "config" / "control_map.json");
+    }
+    catch (const std::exception& error) {
+        std::cerr << "Failed to load control map: " << error.what() << '\n';
+        return 1;
+    }
+    controls.attach(window);
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+        controls.poll();
 
         vkkk::Context::Frame frame{};
         if (!viewport.begin_frame(frame)) {
@@ -149,6 +241,7 @@ int main() {
     }
 
     context.wait_idle();
+    controls.detach();
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;

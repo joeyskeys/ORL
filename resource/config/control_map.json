@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "bindings": [
+    {
+      "op": "toggle_grid",
+      "input": {
+        "type": "key",
+        "key": "G",
+        "action": "press"
+      }
+    },
+    {
+      "op": "toggle_frame_axis",
+      "input": {
+        "type": "key",
+        "key": "F",
+        "action": "press"
+      }
+    },
+    {
+      "op": "camera_orbit",
+      "input": {
+        "type": "mouse_drag",
+        "button": "middle"
+      }
+    },
+    {
+      "op": "camera_pan",
+      "input": {
+        "type": "mouse_drag",
+        "button": "middle",
+        "mods": ["shift"]
+      }
+    },
+    {
+      "op": "camera_zoom",
+      "input": {
+        "type": "scroll"
+      }
+    }
+  ]
+}
