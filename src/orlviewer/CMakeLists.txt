@@ -1,6 +1,7 @@
 add_executable(orl_viewer
     main.cpp
     control_map.cpp
+    ops/load_model_op.cpp
 )
 
 if(VKKK_VCPKG_INSTALLED_DIR)
@@ -14,9 +15,14 @@ target_link_libraries(orl_viewer
         Eigen3::Eigen
         RapidJSON
 )
+if(WIN32)
+    target_link_libraries(orl_viewer PRIVATE comdlg32)
+    target_compile_definitions(orl_viewer PRIVATE NOMINMAX)
+endif()
 
 target_include_directories(orl_viewer
     PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_SOURCE_DIR}/src/include"
         "${CMAKE_SOURCE_DIR}/thirdparty/vkkk/src"
 )

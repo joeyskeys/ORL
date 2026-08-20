@@ -78,6 +78,16 @@ public:
     GLFWwindow* window() const { return window_; }
 
     void bind_op(std::string op, OpHandler handler);
+
+    // Bind any viewport operation that exposes eval(const InputEvent&),
+    // including VpOperation<Derived> CRTP types.
+    template <typename Op>
+    void bind_op(std::string op, Op& operation) {
+        bind_op(std::move(op), [&operation](const InputEvent& event) {
+            operation.eval(event);
+        });
+    }
+
     void unbind_op(std::string_view op);
     bool has_op(std::string_view op) const;
 

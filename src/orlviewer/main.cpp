@@ -15,8 +15,10 @@
 #include "asset_mgr/scene.h"
 #include "concepts/camera.h"
 #include "control_map.hpp"
+#include "ops/load_model_op.hpp"
 #include "vp/frame_axis.hpp"
 #include "vp/grid.hpp"
+#include "vp/scene_phong_feature.hpp"
 #include "vp/viewport.hpp"
 
 namespace {
@@ -181,15 +183,20 @@ int main() {
     vkkk::Scene scene;
     scene.camera = &camera;
 
-    using Viewport = vkkk::vp::Viewport<vkkk::vp::GridFeature, vkkk::vp::FrameAxisFeature>;
+    using Viewport = vkkk::vp::Viewport<
+        vkkk::vp::GridFeature,
+        ORL::ScenePhongFeature,
+        vkkk::vp::FrameAxisFeature>;
     Viewport viewport(context);
     const std::filesystem::path font_path =
         std::filesystem::path{ORL_VKKK_SOURCE_DIR} / "resource/font/Roboto-Light.ttf";
     const auto grid_handle = viewport.add_feature<vkkk::vp::GridFeature>(camera);
+    viewport.add_feature<ORL::ScenePhongFeature>(scene);
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
         camera, font_path, make_coordinate_system(viewport_frame));
 
     CameraNavigator navigator(camera, viewport_frame.right_handed);
+    ORL::LoadModelOp load_model(scene, context, window);
     ORL::ControlMap controls;
     controls.bind_op("toggle_grid", [&](const ORL::InputEvent&) {
         if (auto* grid = viewport.find_feature(grid_handle)) {
@@ -210,6 +217,7 @@ int main() {
     controls.bind_op("camera_zoom", [&](const ORL::InputEvent& event) {
         navigator.zoom(static_cast<float>(event.scroll_y));
     });
+    controls.bind_op("load_model", load_model);
 
     try {
         controls.load_config(

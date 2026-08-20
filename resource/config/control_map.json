@@ -37,6 +37,15 @@
       "input": {
         "type": "scroll"
       }
+    },
+    {
+      "op": "load_model",
+      "input": {
+        "type": "key",
+        "key": "O",
+        "action": "press",
+        "mods": ["ctrl"]
+      }
     }
   ]
 }
