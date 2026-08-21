@@ -124,6 +124,15 @@ struct LlvmIrCodegen::Impl {
             }
         }
 
+        if (target_ == OrlCodegenTarget::Host) {
+            for (const auto &item : program.items) {
+                const auto *function = dynamic_cast<const FunctionDefinitionStatement *>(item.get());
+                if (function != nullptr) {
+                    GenerateHostEntryWrapper(*function);
+                }
+            }
+        }
+
         return errors_.empty();
     }
 
@@ -359,6 +368,77 @@ struct LlvmIrCodegen::Impl {
             return false;
         }
         return true;
+    }
+
+    // ORL functions use their natural typed ABI internally. The integration
+    // runtime needs one stable, dynamic call shape, so generate a thin wrapper
+    // for int-returning functions whose parameters are runtime-supported
+    // buffers, ints, and floats.
+    void GenerateHostEntryWrapper(const FunctionDefinitionStatement &definition) {
+        llvm::Function *target = module_->getFunction(definition.name);
+        if (target == nullptr || !target->getReturnType()->isIntegerTy(64)) {
+            return;
+        }
+
+        std::vector<llvm::Type *> parameter_types = {
+            builder_.getPtrTy(), // void* const* buffers
+            builder_.getPtrTy(), // const int64_t* integers
+            builder_.getPtrTy(), // const double* floats
+        };
+        const std::string wrapper_name = "__orl_host_entry_" + definition.name;
+        if (module_->getFunction(wrapper_name) != nullptr) {
+            return;
+        }
+
+        std::size_t buffer_index = 0;
+        std::size_t int_index = 0;
+        std::size_t float_index = 0;
+        for (const Parameter &parameter : definition.parameters) {
+            if (parameter.is_buffer) {
+                ++buffer_index;
+            } else if (parameter.type_name == "int") {
+                ++int_index;
+            } else if (parameter.type_name == "float") {
+                ++float_index;
+            } else {
+                return;
+            }
+        }
+
+        llvm::Function *wrapper = llvm::Function::Create(
+            llvm::FunctionType::get(builder_.getInt64Ty(), parameter_types, false),
+            llvm::Function::ExternalLinkage, wrapper_name, module_.get());
+        auto argument = wrapper->arg_begin();
+        llvm::Value *buffers = &*argument++;
+        llvm::Value *integers = &*argument++;
+        llvm::Value *floats = &*argument++;
+
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(*context_, "entry", wrapper);
+        llvm::IRBuilder<> wrapper_builder(entry);
+        std::vector<llvm::Value *> call_arguments;
+        call_arguments.reserve(definition.parameters.size());
+        buffer_index = 0;
+        int_index = 0;
+        float_index = 0;
+
+        for (const Parameter &parameter : definition.parameters) {
+            if (parameter.is_buffer) {
+                llvm::Value *slot = wrapper_builder.CreateInBoundsGEP(
+                    builder_.getPtrTy(), buffers, wrapper_builder.getInt64(buffer_index++));
+                call_arguments.push_back(wrapper_builder.CreateLoad(builder_.getPtrTy(), slot));
+            } else if (parameter.type_name == "int") {
+                llvm::Value *slot = wrapper_builder.CreateInBoundsGEP(
+                    builder_.getInt64Ty(), integers, wrapper_builder.getInt64(int_index++));
+                call_arguments.push_back(wrapper_builder.CreateLoad(builder_.getInt64Ty(), slot));
+            } else {
+                llvm::Value *slot = wrapper_builder.CreateInBoundsGEP(
+                    builder_.getDoubleTy(), floats, wrapper_builder.getInt64(float_index++));
+                call_arguments.push_back(wrapper_builder.CreateLoad(builder_.getDoubleTy(), slot));
+            }
+        }
+
+        llvm::Value *result = wrapper_builder.CreateCall(target, call_arguments, "orl.exec.result");
+        wrapper_builder.CreateRet(result);
     }
 
     bool GenerateBlock(const BlockStatement &block) {

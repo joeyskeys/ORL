@@ -32,6 +32,7 @@ set(ORLCOMP_CODEGEN_HEADERS
     orl_jit.h
     orl_gpu.h
     orl_parallel_runtime.h
+    orl_runtime_signature.h
 )
 
 add_library(orlcomp_lexer

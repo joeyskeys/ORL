@@ -23,6 +23,7 @@ include_directories(src/include)
 
 #include(flexbison)
 add_subdirectory(src/orlcomp)
+add_subdirectory(src/orlexec)
 
 find_package(glfw3)
 find_package(GLM CONFIG REQUIRED)

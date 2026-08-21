@@ -37,6 +37,13 @@ public:
     std::optional<int64_t> InvokeInt64WithBufferArgs(const std::string &name,
                                                       const std::array<void *, 5> &buffers,
                                                       int64_t scalar_arg);
+    // Calls the canonical wrapper emitted by codegen for application-facing
+    // execution: int64_t(void* const* buffers, const int64_t* integers,
+    //                     const double* floats).
+    std::optional<int64_t> InvokeInt64WithRuntimeArgs(const std::string &name,
+                                                       void *const *buffers,
+                                                       const int64_t *integers,
+                                                       const double *floats);
     OrlJitTarget Target() const;
 
     const std::vector<std::string> &Errors() const;

@@ -81,6 +81,10 @@ public:
         (arguments.push_back(MakeKernelArgument(args)), ...);
         return SetupCudaKernelArguments(kernel_name, std::move(arguments));
     }
+    // Runtime integrations that bind arguments by parameter name can construct
+    // the reflected argument list dynamically rather than at a call site.
+    bool SetupCudaKernelArguments(const std::string &kernel_name,
+                                  std::vector<OrlGpuKernelArgument> arguments);
     bool LaunchCudaKernel(std::uint32_t block_count, std::uint32_t threads_per_block);
     bool SetDefaultThreadsPerBlock(std::uint32_t threads_per_block);
     std::uint32_t DefaultThreadsPerBlock() const;
@@ -124,9 +128,6 @@ private:
         std::memcpy(argument.scalar_bytes.data(), &value, sizeof(T));
         return argument;
     }
-
-    bool SetupCudaKernelArguments(const std::string &kernel_name,
-                                  std::vector<OrlGpuKernelArgument> arguments);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
