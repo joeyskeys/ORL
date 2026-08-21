@@ -46,6 +46,22 @@
         "action": "press",
         "mods": ["ctrl"]
       }
+    },
+    {
+      "op": "display_mode_switch",
+      "input": {
+        "type": "key",
+        "key": "1",
+        "action": "press"
+      }
+    },
+    {
+      "op": "display_mode_switch",
+      "input": {
+        "type": "key",
+        "key": "2",
+        "action": "press"
+      }
     }
   ]
 }

@@ -15,10 +15,11 @@
 #include "asset_mgr/scene.h"
 #include "concepts/camera.h"
 #include "control_map.hpp"
+#include "ops/display_mode_switch.hpp"
 #include "ops/load_model_op.hpp"
 #include "vp/frame_axis.hpp"
 #include "vp/grid.hpp"
-#include "vp/scene_phong_feature.hpp"
+#include "vp/scene_mesh_feature.hpp"
 #include "vp/viewport.hpp"
 
 namespace {
@@ -185,18 +186,31 @@ int main() {
 
     using Viewport = vkkk::vp::Viewport<
         vkkk::vp::GridFeature,
-        ORL::ScenePhongFeature,
+        ORL::SceneMeshFeature,
         vkkk::vp::FrameAxisFeature>;
     Viewport viewport(context);
     const std::filesystem::path font_path =
         std::filesystem::path{ORL_VKKK_SOURCE_DIR} / "resource/font/Roboto-Light.ttf";
     const auto grid_handle = viewport.add_feature<vkkk::vp::GridFeature>(camera);
-    viewport.add_feature<ORL::ScenePhongFeature>(scene, viewport_frame.right_handed);
+    const auto mesh_handle = viewport.add_feature<ORL::SceneMeshFeature>(
+        scene, viewport_frame.right_handed,
+        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
         camera, font_path, make_coordinate_system(viewport_frame));
 
     CameraNavigator navigator(camera, viewport_frame.right_handed);
     ORL::LoadModelOp load_model(scene, context, window, world_frame);
+    ORL::DisplayModeSwitch display_mode;
+    display_mode.register_mode("phong", [&] {
+        if (auto* mesh = viewport.find_feature(mesh_handle)) {
+            mesh->set_display_mode("phong");
+        }
+    });
+    display_mode.register_mode("xray", [&] {
+        if (auto* mesh = viewport.find_feature(mesh_handle)) {
+            mesh->set_display_mode("xray");
+        }
+    });
     ORL::ControlMap controls;
     controls.bind_op("toggle_grid", [&](const ORL::InputEvent&) {
         if (auto* grid = viewport.find_feature(grid_handle)) {
@@ -218,6 +232,7 @@ int main() {
         navigator.zoom(static_cast<float>(event.scroll_y));
     });
     controls.bind_op("load_model", load_model);
+    controls.bind_op("display_mode_switch", display_mode);
 
     try {
         controls.load_config(
