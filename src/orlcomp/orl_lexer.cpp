@@ -33,6 +33,7 @@ const std::unordered_map<std::string_view, TokenKind> kKeywords = {
     {"double", TokenKind::TypeName},
     {"string", TokenKind::KwString},
     {"struct", TokenKind::KwStruct},
+    {"use", TokenKind::KwUse},
     {"vec2", TokenKind::TypeName},
     {"vec3", TokenKind::TypeName},
     {"vec4", TokenKind::TypeName},
@@ -417,6 +418,7 @@ const char *TokenKindName(TokenKind kind) {
     case TokenKind::KwFloat: return "KwFloat";
     case TokenKind::KwString: return "KwString";
     case TokenKind::KwStruct: return "KwStruct";
+    case TokenKind::KwUse: return "KwUse";
     case TokenKind::KwReturn: return "KwReturn";
     case TokenKind::Plus: return "Plus";
     case TokenKind::Minus: return "Minus";

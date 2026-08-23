@@ -69,3 +69,12 @@ TEST_CASE("lexer recognizes parallel for keyword", "[orl][lexer]") {
     REQUIRE(lexer.NextToken().kind == TokenKind::KwFor);
     REQUIRE(lexer.NextToken().kind == TokenKind::EndOfFile);
 }
+
+TEST_CASE("lexer recognizes use keyword", "[orl][lexer]") {
+    Lexer lexer("use joint;");
+
+    REQUIRE(lexer.NextToken().kind == TokenKind::KwUse);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Identifier);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Semi);
+    REQUIRE(lexer.NextToken().kind == TokenKind::EndOfFile);
+}

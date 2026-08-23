@@ -35,6 +35,10 @@ std::size_t element_stride_for(std::string_view type_name) {
     if (type_name == "matrix") {
         return sizeof(double) * 16;
     }
+    if (type_name == "Joint") {
+        // Matches orlviewer::kJointStride and the unpacked LLVM Joint ABI.
+        return 128;
+    }
     return 0;
 }
 

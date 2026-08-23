@@ -1,16 +1,60 @@
 #include "orl_parser.h"
+#include "orl_preprocessor.h"
 
+#include <filesystem>
 #include <limits>
 #include <sstream>
 #include <utility>
 
 namespace orlcomp {
 
-Parser::Parser(std::string source) : lexer_(std::move(source)) {}
+namespace {
+
+void AddDefaultStdlibPaths(Preprocessor *preprocessor) {
+#ifdef ORL_STDLIB_DIR
+    preprocessor->AddIncludePath(ORL_STDLIB_DIR);
+#endif
+    namespace fs = std::filesystem;
+    const fs::path cwd = fs::current_path();
+    const fs::path candidates[] = {
+        cwd / "resource" / "stdlib",
+        cwd / ".." / ".." / "resource" / "stdlib",
+        cwd / ".." / ".." / ".." / "resource" / "stdlib",
+    };
+    for (const fs::path &candidate : candidates) {
+        if (fs::exists(candidate / "joint.orl")) {
+            preprocessor->AddIncludePath(candidate.string());
+        }
+    }
+}
+
+} // namespace
+
+Parser::Parser(std::string source) : source_(std::move(source)), lexer_("") {}
+
+void Parser::AddIncludePath(std::string path) {
+    if (!path.empty()) {
+        include_paths_.push_back(std::move(path));
+    }
+}
 
 bool Parser::Parse() {
     errors_.clear();
+    struct_names_.clear();
+    buffered_tokens_.clear();
     program_ = std::make_unique<Program>();
+
+    Preprocessor preprocessor;
+    AddDefaultStdlibPaths(&preprocessor);
+    for (const std::string &path : include_paths_) {
+        preprocessor.AddIncludePath(path);
+    }
+    std::string expanded;
+    if (!preprocessor.Process(source_, &expanded)) {
+        errors_ = preprocessor.Errors();
+        return false;
+    }
+    lexer_ = Lexer(std::move(expanded));
 
     bool ok = true;
     while (!IsAtEnd()) {

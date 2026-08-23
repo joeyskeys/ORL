@@ -8,11 +8,13 @@ set(ORLCOMP_LEXER_HEADERS
 
 set(ORLCOMP_PARSER_SOURCES
     orl_parser.cpp
+    orl_preprocessor.cpp
 )
 
 set(ORLCOMP_PARSER_HEADERS
     orl_ast.h
     orl_parser.h
+    orl_preprocessor.h
 )
 
 set(ORLCOMP_CODEGEN_SOURCES
@@ -49,8 +51,12 @@ add_library(orlcomp_parser
     ${ORLCOMP_PARSER_SOURCES}
 )
 
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/resource/stdlib" ORL_STDLIB_DIR)
 target_include_directories(orlcomp_parser
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_definitions(orlcomp_parser
+    PUBLIC "ORL_STDLIB_DIR=\"${ORL_STDLIB_DIR}\""
 )
 
 target_link_libraries(orlcomp_parser

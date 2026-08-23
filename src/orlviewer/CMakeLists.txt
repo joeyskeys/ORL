@@ -1,8 +1,11 @@
 add_executable(orl_viewer
     main.cpp
     control_map.cpp
+    comps/joint.hpp
+    comps/joint.glsl
     ops/load_model_op.cpp
 )
+set_source_files_properties(comps/joint.hpp comps/joint.glsl PROPERTIES HEADER_FILE_ONLY TRUE)
 
 if(VKKK_VCPKG_INSTALLED_DIR)
     list(PREPEND CMAKE_PREFIX_PATH "${VKKK_VCPKG_INSTALLED_DIR}")

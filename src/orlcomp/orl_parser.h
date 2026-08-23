@@ -14,6 +14,7 @@ class Parser {
 public:
     explicit Parser(std::string source);
 
+    void AddIncludePath(std::string path);
     bool Parse();
     const std::vector<std::string> &Errors() const;
     const Program *Ast() const;
@@ -63,6 +64,8 @@ private:
     std::unique_ptr<Expression> TakeExpression();
     std::unique_ptr<Statement> TakeStatement();
 
+    std::string source_;
+    std::vector<std::string> include_paths_;
     Lexer lexer_;
     std::vector<Token> buffered_tokens_;
     std::vector<std::string> errors_;

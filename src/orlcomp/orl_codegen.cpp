@@ -1141,8 +1141,7 @@ struct LlvmIrCodegen::Impl {
             return nullptr;
         }
         if (variable->is_buffer) {
-            AddError("Buffer variable must be indexed: " + identifier.name);
-            return nullptr;
+            return variable->slot;
         }
         return builder_.CreateLoad(variable->type, variable->slot, identifier.name + ".val");
     }

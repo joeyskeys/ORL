@@ -261,6 +261,29 @@ TEST_CASE("llvm codegen lowers custom structs and struct buffers", "[orl][codege
     REQUIRE(ir.find("getelementptr inbounds %Vertex") != std::string::npos);
 }
 
+TEST_CASE("llvm codegen lowers stdlib joint helpers", "[orl][codegen][stdlib][joint]") {
+    const std::string src =
+        "use joint;\n"
+        "matrix skin_from_joints(Joint joints[], matrix inverse_binds[], int index) {\n"
+        "    matrix world = joint_world_matrix(joints, index);\n"
+        "    return joint_skin_matrix(world, inverse_binds[index]);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen("orl_stdlib_joint_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("Joint = type") != std::string::npos);
+    REQUIRE(ir.find("define [16 x double] @joint_local_matrix") != std::string::npos);
+    REQUIRE(ir.find("define [16 x double] @joint_world_matrix") != std::string::npos);
+    REQUIRE(ir.find("define [16 x double] @joint_skin_matrix") != std::string::npos);
+}
+
 TEST_CASE("llvm codegen rejects unknown custom struct fields", "[orl][codegen][struct][error]") {
     const std::string src =
         "struct Weight {\n"

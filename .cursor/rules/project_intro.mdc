@@ -8,11 +8,18 @@ ORL is a C++20 compiler for a rigging and animation calculation language. Its ha
 
 ## Layout
 - `src/orlcomp/`: lexer, parser, AST, LLVM codegen, math intrinsics, JIT, and GPU backend.
+- `src/orlviewer/comps/`: viewer data components. These are storage structs shared by CPU, GPU draw, and ORL buffers.
+- `resource/stdlib/`: ORL-authored helpers such as `joint`.
 - `tests/syntax_tests/`: accepted/rejected language syntax.
 - `tests/parser_tests/`: AST construction tests.
 - `tests/codegen_tests/`: LLVM IR lowering tests.
 - `tests/skinning_tests/`: linear-blend-skinning examples.
 - `tests/gpu_tests/`: ORL → LLVM IR → PTX → CUDA driver execution tests.
+
+## Shared GPU buffers
+- Viewer components and ORL stdlib types that describe the same asset must use one packed layout.
+- Bind that buffer to ORL for GPU computation, then draw it from the same device memory. Do not read back to the CPU just to feed the viewer.
+- User-defined ORL structs are imported by copying their core fields into the component layout. For joints that core is parent plus location.
 
 ## Current language
 - Built-ins: `int`, `float`, `string`, 3D vector aliases (`vector`, `normal`, `point`), `vec4`, `quaternion`, and row-major 4×4 `matrix`.
@@ -20,6 +27,8 @@ ORL is a C++20 compiler for a rigging and animation calculation language. Its ha
 - Fixed arrays use `Type values[N]`; buffer parameters use `Type values[]`; both support indexing.
 - Vector-style members use `.x/.y/.z/.w`. Struct fields also use `.`.
 - Math intrinsics live in `orl_intrinsics.cpp`: `dot`, `cross`, `length`, `normalize`, `clamp`, `mat_identity`, `mat_mul`, and `mat_transpose`. Add target-independent math built-ins there rather than as external calls.
+- Rigging helpers that are not core types live in `resource/stdlib` as ORL source. Users pull them in with `use name;` (for example `use joint;`), which is syntax sugar for inserting that stdlib file. Do not promote `Joint` into the language.
+- Viewer `comps/Joint` is the storage counterpart of the stdlib `Joint`. Keep the 128-byte ABI (parent at 0, translation at 32, rotation at 64, scale at 96).
 
 ## Codegen conventions
 - Preserve the existing two-pass model: predeclare named types/functions before generating function bodies.

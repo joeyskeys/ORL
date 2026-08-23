@@ -222,6 +222,21 @@ TEST_CASE("syntax reserves quat as the quaternion type name", "[orl][syntax][qua
         "}\n");
 }
 
+TEST_CASE("syntax includes stdlib joint definitions", "[orl][syntax][stdlib][joint]") {
+    const std::string src =
+        "use joint;\n"
+        "matrix bind_joint() {\n"
+        "    Joint root = joint_identity();\n"
+        "    return joint_local_matrix(root);\n"
+        "}\n";
+
+    RequireParses(src);
+}
+
+TEST_CASE("syntax rejects unknown stdlib includes", "[orl][syntax][stdlib][error]") {
+    RequireRejects("use missing_stdlib_module;\n");
+}
+
 TEST_CASE("syntax rejects incomplete declarations and control flow", "[orl][syntax][error]") {
     const std::string missing_initializer =
         "int invalid() {\n"
