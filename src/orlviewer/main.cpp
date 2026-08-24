@@ -13,12 +13,15 @@
 #include "ORL/frame.h"
 
 #include "asset_mgr/scene.h"
+#include "component_manager.hpp"
 #include "concepts/camera.h"
 #include "control_map.hpp"
+#include "ops/create_joint_op.hpp"
 #include "ops/display_mode_switch.hpp"
 #include "ops/load_model_op.hpp"
 #include "vp/frame_axis.hpp"
 #include "vp/grid.hpp"
+#include "vp/joint_feature.hpp"
 #include "vp/scene_mesh_feature.hpp"
 #include "vp/viewport.hpp"
 
@@ -183,10 +186,12 @@ int main() {
 
     vkkk::Scene scene;
     scene.camera = &camera;
+    ORL::ComponentManager components;
 
     using Viewport = vkkk::vp::Viewport<
         vkkk::vp::GridFeature,
         ORL::SceneMeshFeature,
+        ORL::JointFeature,
         vkkk::vp::FrameAxisFeature>;
     Viewport viewport(context);
     const std::filesystem::path font_path =
@@ -195,11 +200,14 @@ int main() {
     const auto mesh_handle = viewport.add_feature<ORL::SceneMeshFeature>(
         scene, viewport_frame.right_handed,
         std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    viewport.add_feature<ORL::JointFeature>(
+        components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
         camera, font_path, make_coordinate_system(viewport_frame));
 
     CameraNavigator navigator(camera, viewport_frame.right_handed);
     ORL::LoadModelOp load_model(scene, context, window, world_frame);
+    ORL::CreateJointOp create_joint(components, camera, navigator.target, window);
     ORL::DisplayModeSwitch display_mode;
     display_mode.register_mode("phong", [&] {
         if (auto* mesh = viewport.find_feature(mesh_handle)) {
@@ -232,6 +240,7 @@ int main() {
         navigator.zoom(static_cast<float>(event.scroll_y));
     });
     controls.bind_op("load_model", load_model);
+    controls.bind_op("create_joint", create_joint);
     controls.bind_op("display_mode_switch", display_mode);
 
     try {

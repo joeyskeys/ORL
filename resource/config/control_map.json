@@ -62,6 +62,30 @@
         "key": "2",
         "action": "press"
       }
+    },
+    {
+      "op": "create_joint",
+      "input": {
+        "type": "key",
+        "key": "J",
+        "action": "press"
+      }
+    },
+    {
+      "op": "create_joint",
+      "input": {
+        "type": "mouse_button",
+        "button": "left",
+        "action": "press"
+      }
+    },
+    {
+      "op": "create_joint",
+      "input": {
+        "type": "key",
+        "key": "enter",
+        "action": "press"
+      }
     }
   ]
 }

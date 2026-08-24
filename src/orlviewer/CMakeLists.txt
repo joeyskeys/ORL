@@ -1,9 +1,11 @@
 add_executable(orl_viewer
     main.cpp
     control_map.cpp
+    component_manager.cpp
     comps/joint.hpp
     comps/joint.glsl
     ops/load_model_op.cpp
+    ops/create_joint_op.cpp
 )
 set_source_files_properties(comps/joint.hpp comps/joint.glsl PROPERTIES HEADER_FILE_ONLY TRUE)
 
