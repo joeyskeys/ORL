@@ -24,6 +24,7 @@
 #include "vp/frame_axis.hpp"
 #include "vp/grid.hpp"
 #include "vp/joint_feature.hpp"
+#include "vp/ortho_grid_feature.hpp"
 #include "vp/scene_mesh_feature.hpp"
 #include "vp/viewport.hpp"
 
@@ -127,6 +128,7 @@ int main() {
 
     using Viewport = vkkk::vp::Viewport<
         vkkk::vp::GridFeature,
+        ORL::OrthoGridFeature,
         ORL::SceneMeshFeature,
         ORL::JointFeature,
         vkkk::vp::FrameAxisFeature>;
@@ -144,6 +146,9 @@ int main() {
 
     ORL::CameraNavigator navigator(camera, world_frame, viewport_frame.right_handed);
     navigator.update_ubo();
+    bool show_grid = true;
+    const auto ortho_grid_handle = viewport.add_feature<ORL::OrthoGridFeature>(
+        navigator, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     ORL::LoadModelOp load_model(scene, context, window, world_frame);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, window);
     ORL::CameraSwitchOp camera_switch(navigator);
@@ -160,8 +165,9 @@ int main() {
     });
     ORL::ControlMap controls;
     controls.bind_op("toggle_grid", [&](const ORL::InputEvent&) {
-        if (auto* grid = viewport.find_feature(grid_handle)) {
-            grid->visible = !grid->visible;
+        show_grid = !show_grid;
+        if (auto* ortho_grid = viewport.find_feature(ortho_grid_handle)) {
+            ortho_grid->visible = show_grid;
         }
     });
     controls.bind_op("toggle_frame_axis", [&](const ORL::InputEvent&) {
@@ -206,6 +212,9 @@ int main() {
         camera.ratio = static_cast<float>(extent.width) /
                        static_cast<float>(extent.height == 0 ? 1 : extent.height);
         navigator.update_ubo();
+        if (auto* grid = viewport.find_feature(grid_handle)) {
+            grid->visible = show_grid && !navigator.orthographic;
+        }
 
         viewport.update(frame);
         viewport.record_frame(frame);
