@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 
+#include <glm/ext/matrix_clip_space.hpp>
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -45,12 +46,22 @@ struct CameraNavigator {
         : camera(camera)
         , target(camera.pos + camera.front * glm::length(camera.pos))
         , right_handed(right_handed)
-        , perspective_fov(camera.fov)
         , semantic_right(frame_world_direction(frame, Frame::dir_right))
         , semantic_up(frame_world_direction(frame, Frame::dir_up))
         , semantic_in(frame_world_direction(frame, Frame::dir_in))
     {
+        store_persp();
     }
+
+    enum class OrthoView { None, Front, Right, Top };
+
+    struct ViewState {
+        glm::vec3 pos{0.0f};
+        glm::vec3 front{0.0f, 0.0f, 1.0f};
+        glm::vec3 up{0.0f, 1.0f, 0.0f};
+        glm::vec3 target{0.0f};
+        float fov = 45.0f;
+    };
 
     float screen_x_sign() const {
         return right_handed ? 1.0f : -1.0f;
@@ -72,19 +83,31 @@ struct CameraNavigator {
         return std::max(50.0f, camera.far * 0.5f);
     }
 
+    void store_persp() {
+        persp.pos = camera.pos;
+        persp.front = camera.front;
+        persp.up = camera.up;
+        persp.target = target;
+        persp.fov = camera.fov;
+    }
+
+    void restore_persp() {
+        camera.pos = persp.pos;
+        camera.front = persp.front;
+        camera.up = persp.up;
+        target = persp.target;
+        camera.fov = persp.fov;
+    }
+
     void leave_orthographic() {
-        const float half_h = ortho_half_height();
-        const float persp_dist = half_h
-            / std::tan(glm::radians(perspective_fov) * 0.5f);
-        camera.pos = target + glm::normalize(camera.pos - target) * std::max(0.1f, persp_dist);
-        camera.front = glm::normalize(target - camera.pos);
-        camera.fov = perspective_fov;
+        restore_persp();
         orthographic = false;
+        ortho_view = OrthoView::None;
     }
 
     void orbit(float dx, float dy) {
         if (orthographic) {
-            leave_orthographic();
+            return;
         }
         const glm::vec3 offset = camera.pos - target;
         const glm::quat yaw = glm::angleAxis(-dx * 0.005f * screen_x_sign(), camera.up);
@@ -116,9 +139,10 @@ struct CameraNavigator {
 
     // Place the camera on the semantic "from" axis, looking at the pivot.
     // Numpad 1/3/7: front (from in), right (from right), top (from up).
-    void look_front() { look_from(semantic_in, semantic_up); }
-    void look_right() { look_from(semantic_right, semantic_up); }
-    void look_top() { look_from(semantic_up, semantic_in); }
+    // Pressing the same view key again returns to perspective.
+    void look_front() { toggle_look(OrthoView::Front, semantic_in, semantic_up); }
+    void look_right() { toggle_look(OrthoView::Right, semantic_right, semantic_up); }
+    void look_top() { toggle_look(OrthoView::Top, semantic_up, semantic_in); }
 
     void look_from(glm::vec3 from, glm::vec3 up) {
         const float from_len = glm::length(from);
@@ -133,7 +157,7 @@ struct CameraNavigator {
         }
 
         if (!orthographic) {
-            perspective_fov = camera.fov;
+            store_persp();
         }
         const float half_h = ortho_half_height();
         const float parked = ortho_park_distance();
@@ -143,6 +167,15 @@ struct CameraNavigator {
         camera.front = glm::normalize(target - camera.pos);
         camera.up = glm::normalize(up - camera.front * glm::dot(up, camera.front));
         orthographic = true;
+    }
+
+    void toggle_look(OrthoView view, glm::vec3 from, glm::vec3 up) {
+        if (orthographic && ortho_view == view) {
+            leave_orthographic();
+            return;
+        }
+        look_from(from, up);
+        ortho_view = view;
     }
 
     void update_ubo() {
@@ -171,9 +204,11 @@ struct CameraNavigator {
         const float half_w = half_h * std::max(camera.ratio, 1.0e-4f);
         const float ortho_near = std::min(camera.near, distance * 0.01f);
         const float ortho_far = std::max(camera.far, distance * 2.0f);
+        // Vulkan clips NDC z to [0, 1]. Default GLM ortho uses OpenGL [-1, 1],
+        // which puts the look plane (and the XZ grid in top view) at z <= 0.
         glm::mat4 proj = right_handed
-            ? glm::ortho(-half_w, half_w, -half_h, half_h, ortho_near, ortho_far)
-            : glm::orthoLH(-half_w, half_w, -half_h, half_h, ortho_near, ortho_far);
+            ? glm::orthoRH_ZO(-half_w, half_w, -half_h, half_h, ortho_near, ortho_far)
+            : glm::orthoLH_ZO(-half_w, half_w, -half_h, half_h, ortho_near, ortho_far);
         proj[1][1] *= -1.0f;
         camera.ubo_data.proj = proj;
     }
@@ -182,7 +217,8 @@ struct CameraNavigator {
     glm::vec3 target{0.0f};
     bool right_handed = true;
     bool orthographic = false;
-    float perspective_fov = 45.0f;
+    OrthoView ortho_view = OrthoView::None;
+    ViewState persp;
     glm::vec3 semantic_right{1.0f, 0.0f, 0.0f};
     glm::vec3 semantic_up{0.0f, 1.0f, 0.0f};
     glm::vec3 semantic_in{0.0f, 0.0f, 1.0f};

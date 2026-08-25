@@ -8,7 +8,8 @@
 namespace ORL
 {
 
-// Numpad 1/3/7 snaps to Frame-relative orthogonal views (front / right / top).
+// Numpad 1/3/7 toggles Frame-relative orthogonal views (front / right / top).
+// Pressing the active view key again returns to perspective.
 class CameraSwitchOp : public VpOperation<CameraSwitchOp> {
 public:
     explicit CameraSwitchOp(CameraNavigator& navigator)
