@@ -157,13 +157,26 @@ bool CreateJointOp::hit_pivot_plane(double cursor_x, double cursor_y, glm::vec3&
     const float ndc_x = static_cast<float>(2.0 * cursor_x / static_cast<double>(width) - 1.0);
     const float ndc_y = static_cast<float>(2.0 * cursor_y / static_cast<double>(height) - 1.0);
     const glm::mat4 inv = glm::inverse(camera.ubo_data.proj * camera.ubo_data.view);
-    glm::vec4 far_h = inv * glm::vec4{ndc_x, ndc_y, 1.0f, 1.0f};
-    if (std::abs(far_h.w) < 1e-8f) {
+
+    // Unproject the same pixel at two clip depths. That ray goes through the
+    // camera for perspective, and is parallel to camera.front for ortho —
+    // camera.pos is only the view center, so it is not a valid ortho origin.
+    const auto unproject = [&](float ndc_z, glm::vec3& out) {
+        glm::vec4 clip = inv * glm::vec4{ndc_x, ndc_y, ndc_z, 1.0f};
+        if (std::abs(clip.w) < 1e-8f) {
+            return false;
+        }
+        out = glm::vec3{clip / clip.w};
+        return true;
+    };
+
+    glm::vec3 ray_origin{};
+    glm::vec3 ray_far{};
+    if (!unproject(-1.0f, ray_origin) || !unproject(1.0f, ray_far)) {
         return false;
     }
-    far_h /= far_h.w;
 
-    glm::vec3 ray_dir = glm::vec3{far_h} - camera.pos;
+    glm::vec3 ray_dir = ray_far - ray_origin;
     const float ray_len = glm::length(ray_dir);
     if (ray_len < 1e-8f) {
         return false;
@@ -176,12 +189,9 @@ bool CreateJointOp::hit_pivot_plane(double cursor_x, double cursor_y, glm::vec3&
         return false;
     }
 
-    const float t = glm::dot(pivot - camera.pos, normal) / denom;
-    if (t < 0.0f) {
-        return false;
-    }
-    world = camera.pos + ray_dir * t;
-    return true;
+    const float t = glm::dot(pivot - ray_origin, normal) / denom;
+    world = ray_origin + ray_dir * t;
+    return glm::dot(world - camera.pos, camera.front) > 0.0f;
 }
 
 std::string CreateJointOp::unique_joint_name() const {

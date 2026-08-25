@@ -86,6 +86,30 @@
         "key": "enter",
         "action": "press"
       }
+    },
+    {
+      "op": "camera_switch",
+      "input": {
+        "type": "key",
+        "key": "kp1",
+        "action": "press"
+      }
+    },
+    {
+      "op": "camera_switch",
+      "input": {
+        "type": "key",
+        "key": "kp3",
+        "action": "press"
+      }
+    },
+    {
+      "op": "camera_switch",
+      "input": {
+        "type": "key",
+        "key": "kp7",
+        "action": "press"
+      }
     }
   ]
 }

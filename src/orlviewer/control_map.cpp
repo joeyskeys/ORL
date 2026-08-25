@@ -201,6 +201,20 @@ int ControlMap::parse_key(std::string_view name) {
         }
     }
 
+    std::string keypad;
+    if (key.rfind("numpad", 0) == 0) {
+        keypad = key.substr(6);
+    }
+    else if (key.rfind("kp", 0) == 0) {
+        keypad = key.substr(2);
+    }
+    else if (key.rfind("np", 0) == 0) {
+        keypad = key.substr(2);
+    }
+    if (keypad.size() == 1 && keypad[0] >= '0' && keypad[0] <= '9') {
+        return GLFW_KEY_KP_0 + (keypad[0] - '0');
+    }
+
     const auto it = kNamedKeys.find(key);
     if (it == kNamedKeys.end()) {
         throw std::runtime_error("unknown key '" + std::string(name) + "'");

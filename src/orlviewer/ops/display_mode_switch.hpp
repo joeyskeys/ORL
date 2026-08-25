@@ -60,9 +60,6 @@ private:
         if (key >= GLFW_KEY_1 && key <= GLFW_KEY_9) {
             return key - GLFW_KEY_1;
         }
-        if (key >= GLFW_KEY_KP_1 && key <= GLFW_KEY_KP_9) {
-            return key - GLFW_KEY_KP_1;
-        }
         return -1;
     }
 

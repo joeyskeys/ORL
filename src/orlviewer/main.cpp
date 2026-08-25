@@ -13,9 +13,11 @@
 #include "ORL/frame.h"
 
 #include "asset_mgr/scene.h"
+#include "camera_navigator.hpp"
 #include "component_manager.hpp"
 #include "concepts/camera.h"
 #include "control_map.hpp"
+#include "ops/camera_switch_op.hpp"
 #include "ops/create_joint_op.hpp"
 #include "ops/display_mode_switch.hpp"
 #include "ops/load_model_op.hpp"
@@ -89,70 +91,6 @@ vkkk::vp::CoordinateSystem make_coordinate_system(const ViewportFrame& viewport_
     };
 }
 
-void update_camera_ubo(vkkk::Camera& camera, bool right_handed) {
-    if (right_handed) {
-        camera.update_ubo_data();
-        return;
-    }
-
-    // vkkk::Camera is RH (glm::lookAt / glm::perspective). Match a left-handed
-    // ORL Frame with LH view/proj, then apply the same Vulkan NDC Y flip.
-    camera.ubo_data.view = glm::lookAtLH(camera.pos, camera.pos + camera.front, camera.up);
-    glm::mat4 proj = glm::perspectiveLH(
-        glm::radians(camera.fov), camera.ratio, camera.near, camera.far);
-    proj[1][1] *= -1.0f;
-    camera.ubo_data.proj = proj;
-}
-
-struct CameraNavigator {
-    CameraNavigator(vkkk::Camera& camera, bool right_handed)
-        : camera(camera)
-        , target(camera.pos + camera.front * glm::length(camera.pos))
-        , right_handed(right_handed)
-    {
-    }
-
-    // glm::cross / angleAxis are right-handed in world space. lookAtLH only
-    // mirrors screen X (camera-right = up × front). Horizontal mouse motion
-    // must flip; pitch stays around world front × up so vertical does not.
-    float screen_x_sign() const {
-        return right_handed ? 1.0f : -1.0f;
-    }
-
-    glm::vec3 world_right() const {
-        return glm::normalize(glm::cross(camera.front, camera.up));
-    }
-
-    void orbit(float dx, float dy) {
-        const glm::vec3 offset = camera.pos - target;
-        const glm::quat yaw = glm::angleAxis(-dx * 0.005f * screen_x_sign(), camera.up);
-        const glm::quat pitch = glm::angleAxis(-dy * 0.005f, world_right());
-        camera.pos = target + pitch * yaw * offset;
-        camera.front = glm::normalize(target - camera.pos);
-    }
-
-    void pan(float dx, float dy) {
-        const float distance = glm::length(camera.pos - target);
-        const glm::vec3 right = world_right();
-        const glm::vec3 up = glm::normalize(glm::cross(right, camera.front));
-        const glm::vec3 translation =
-            (-right * dx * screen_x_sign() + up * dy) * distance * 0.002f;
-        camera.pos += translation;
-        target += translation;
-    }
-
-    void zoom(float amount) {
-        const glm::vec3 offset = camera.pos - target;
-        const float distance = std::max(0.1f, glm::length(offset) * (1.0f - amount * 0.1f));
-        camera.pos = target + glm::normalize(offset) * distance;
-        camera.front = glm::normalize(target - camera.pos);
-    }
-
-    vkkk::Camera& camera;
-    glm::vec3 target{0.0f};
-    bool right_handed = true;
-};
-
 } // namespace
 
 int main() {
@@ -182,7 +120,6 @@ int main() {
         0.1f,
         100.0f,
     };
-    update_camera_ubo(camera, viewport_frame.right_handed);
 
     vkkk::Scene scene;
     scene.camera = &camera;
@@ -205,9 +142,11 @@ int main() {
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
         camera, font_path, make_coordinate_system(viewport_frame));
 
-    CameraNavigator navigator(camera, viewport_frame.right_handed);
+    ORL::CameraNavigator navigator(camera, world_frame, viewport_frame.right_handed);
+    navigator.update_ubo();
     ORL::LoadModelOp load_model(scene, context, window, world_frame);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, window);
+    ORL::CameraSwitchOp camera_switch(navigator);
     ORL::DisplayModeSwitch display_mode;
     display_mode.register_mode("phong", [&] {
         if (auto* mesh = viewport.find_feature(mesh_handle)) {
@@ -241,6 +180,7 @@ int main() {
     });
     controls.bind_op("load_model", load_model);
     controls.bind_op("create_joint", create_joint);
+    controls.bind_op("camera_switch", camera_switch);
     controls.bind_op("display_mode_switch", display_mode);
 
     try {
@@ -265,7 +205,7 @@ int main() {
         const auto extent = viewport.extent();
         camera.ratio = static_cast<float>(extent.width) /
                        static_cast<float>(extent.height == 0 ? 1 : extent.height);
-        update_camera_ubo(camera, viewport_frame.right_handed);
+        navigator.update_ubo();
 
         viewport.update(frame);
         viewport.record_frame(frame);
