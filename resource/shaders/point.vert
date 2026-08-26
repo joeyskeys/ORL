@@ -10,7 +10,9 @@ layout(binding = 0) uniform CameraUBO {
 // Keep layout identical to src/orlviewer/comps/joint.glsl (128-byte stride).
 struct Joint {
     int64_t parent;
-    double pad_parent[3];
+    int64_t selected;
+    int64_t displayed;
+    int64_t pad;
     double translation[4];
     double rotation[4];
     double scale[4];
@@ -69,7 +71,9 @@ void main() {
         parent = int(joint_buf.joints[parent].parent);
     }
 
-    fragColor = point_color.value;
+    const vec4 selected_color = vec4(0.2, 0.45, 1.0, 1.0);
+    fragColor = joint_buf.joints[index].displayed != int64_t(0)
+        ? selected_color : point_color.value;
     gl_Position = ubo.proj * ubo.view * (world * vec4(0.0, 0.0, 0.0, 1.0));
     gl_PointSize = max(point_size.value.x, 1.0);
 }

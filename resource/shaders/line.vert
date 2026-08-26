@@ -10,7 +10,9 @@ layout(binding = 0) uniform CameraUBO {
 // Keep layout identical to src/orlviewer/comps/joint.glsl (128-byte stride).
 struct Joint {
     int64_t parent;
-    double pad_parent[3];
+    int64_t selected;
+    int64_t displayed;
+    int64_t pad;
     double translation[4];
     double rotation[4];
     double scale[4];
@@ -84,6 +86,10 @@ void main() {
     vec3 world_pos = joint_world_position(index);
     // Dummy vertex is only a draw trigger; width is applied as raster lineWidth.
     world_pos += inPosition * 0.0 + vec3(line_width.value.x * 0.0);
-    fragColor = line_color.value;
+    // Color the bone from a displayed joint to its children, not the
+    // incoming edge from an unselected parent.
+    const vec4 selected_color = vec4(0.2, 0.45, 1.0, 1.0);
+    fragColor = parent >= 0 && joint_buf.joints[parent].displayed != int64_t(0)
+        ? selected_color : line_color.value;
     gl_Position = ubo.proj * ubo.view * vec4(world_pos, 1.0);
 }

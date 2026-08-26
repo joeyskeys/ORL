@@ -3,7 +3,9 @@
 
 struct Joint {
     int64_t parent;
-    double pad_parent[3];
+    int64_t selected;
+    int64_t displayed;
+    int64_t pad;
     double translation[4];
     double rotation[4];
     double scale[4];

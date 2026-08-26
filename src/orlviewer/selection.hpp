@@ -116,7 +116,10 @@ public:
     {
     }
 
-    void clear() { items.clear(); }
+    void clear() {
+        items.clear();
+        sync_joint_states();
+    }
     bool empty() const { return items.empty(); }
     std::size_t size() const { return items.size(); }
 
@@ -125,12 +128,14 @@ public:
         if (ref) {
             items.push_back(std::move(ref));
         }
+        sync_joint_states();
     }
 
     void add(SelectionRef ref) {
         if (ref) {
             items.push_back(std::move(ref));
         }
+        sync_joint_states();
     }
 
     const std::vector<SelectionRef>& refs() const { return items; }
@@ -156,6 +161,52 @@ public:
     }
 
 private:
+    void sync_joint_states() {
+        components.for_each([&](const Component& meta) {
+            if (meta.kind != ComponentKind::Joint) {
+                return;
+            }
+            auto* joint = components.joint(meta.id);
+            if (joint == nullptr) {
+                return;
+            }
+            joint->selected = 0;
+            joint->displayed = 0;
+        });
+
+        for (const auto& item : items) {
+            if (item.kind != SelectionRef::Kind::Joint) {
+                continue;
+            }
+            if (auto* joint = components.joint(item.component)) {
+                joint->selected = 1;
+            }
+        }
+
+        const auto packed = components.packed_joints();
+        components.for_each([&](const Component& meta) {
+            if (meta.kind != ComponentKind::Joint) {
+                return;
+            }
+            auto* joint = components.joint(meta.id);
+            if (joint == nullptr) {
+                return;
+            }
+            bool display = joint->selected != 0;
+            auto parent = joint->parent;
+            while (!display && parent >= 0
+                && static_cast<std::size_t>(parent) < packed.size())
+            {
+                if (packed[static_cast<std::size_t>(parent)].selected != 0) {
+                    display = true;
+                    break;
+                }
+                parent = packed[static_cast<std::size_t>(parent)].parent;
+            }
+            joint->displayed = display ? 1 : 0;
+        });
+    }
+
     XformAttr make_dest(const SelectionRef& ref) const {
         XformAttr attr;
         if (ref.kind == SelectionRef::Kind::Joint) {
