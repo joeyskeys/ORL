@@ -16,6 +16,7 @@ struct InputEvent {
         Key,
         MouseButton,
         MouseDrag,
+        MouseMove,
         Scroll,
         Hold,
     };
@@ -59,6 +60,11 @@ enum class ControlMapLoadMode {
     Merge,
 };
 
+enum class OpMode {
+    Immediate,
+    Modal,
+};
+
 // Maps named viewport operations to keyboard and mouse inputs.
 // Bindings can be loaded from JSON and changed at runtime. Operation
 // handlers are registered in code and invoked from GLFW callbacks.
@@ -80,12 +86,33 @@ public:
     void bind_op(std::string op, OpHandler handler);
 
     // Bind any viewport operation that exposes eval(const InputEvent&),
-    // including VpOperation<Derived> CRTP types.
+    // including VpOperation<Derived> CRTP types. Modal ops also expose
+    // mode()/enter()/confirm()/cancel()/active(); ControlMap calls those
+    // instead of stuffing modal input into extra JSON bindings.
     template <typename Op>
     void bind_op(std::string op, Op& operation) {
-        bind_op(std::move(op), [&operation](const InputEvent& event) {
+        unbind_op(op);
+        BoundOp bound;
+        bound.name = std::move(op);
+        bound.eval = [&operation](const InputEvent& event) {
             operation.eval(event);
-        });
+        };
+        if constexpr (requires { operation.mode(); }) {
+            bound.mode = operation.mode();
+        }
+        if constexpr (requires { operation.enter(); }) {
+            bound.enter = [&operation] { operation.enter(); };
+        }
+        if constexpr (requires { operation.confirm(); }) {
+            bound.confirm = [&operation] { operation.confirm(); };
+        }
+        if constexpr (requires { operation.cancel(); }) {
+            bound.cancel = [&operation] { operation.cancel(); };
+        }
+        if constexpr (requires { operation.active(); }) {
+            bound.active = [&operation] { return operation.active(); };
+        }
+        ops.push_back(std::move(bound));
     }
 
     void unbind_op(std::string_view op);
@@ -110,7 +137,19 @@ public:
     static int parse_action(std::string_view name);
 
 private:
+    struct BoundOp {
+        std::string name;
+        OpMode mode = OpMode::Immediate;
+        std::function<void(const InputEvent&)> eval;
+        std::function<void()> enter;
+        std::function<void()> confirm;
+        std::function<void()> cancel;
+        std::function<bool()> active;
+    };
+
     void dispatch(const InputEvent& event);
+    void invoke_modal(BoundOp& op, const InputEvent& event);
+    BoundOp* find_op(std::string_view name);
     bool matches(const InputSpec& spec, const InputEvent& event) const;
     int current_mods() const;
 
@@ -122,7 +161,8 @@ private:
 
     GLFWwindow* window_ = nullptr;
     std::vector<ControlBinding> bindings_;
-    std::vector<std::pair<std::string, OpHandler>> handlers_;
+    std::vector<BoundOp> ops;
+    std::string modal;
     int buttons_down_ = 0;
     bool cursor_valid_ = false;
     double cursor_x_ = 0.0;

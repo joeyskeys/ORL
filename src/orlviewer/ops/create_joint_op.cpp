@@ -9,79 +9,18 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec4.hpp>
 
+#include "selection.hpp"
+
 namespace ORL
 {
-namespace
-{
-
-glm::mat4 joint_local_matrix(const orlviewer::Joint& joint) {
-    glm::vec4 q{
-        static_cast<float>(joint.rotation[0]),
-        static_cast<float>(joint.rotation[1]),
-        static_cast<float>(joint.rotation[2]),
-        static_cast<float>(joint.rotation[3]),
-    };
-    const float qlen = glm::length(q);
-    q = qlen > 0.0f ? q / qlen : glm::vec4{0.0f, 0.0f, 0.0f, 1.0f};
-
-    const float xx = q.x * q.x;
-    const float yy = q.y * q.y;
-    const float zz = q.z * q.z;
-    const float xy = q.x * q.y;
-    const float xz = q.x * q.z;
-    const float yz = q.y * q.z;
-    const float wx = q.w * q.x;
-    const float wy = q.w * q.y;
-    const float wz = q.w * q.z;
-    const float sx = static_cast<float>(joint.scale[0]);
-    const float sy = static_cast<float>(joint.scale[1]);
-    const float sz = static_cast<float>(joint.scale[2]);
-
-    return glm::mat4{
-        glm::vec4{sx * (1.0f - 2.0f * (yy + zz)), sx * (2.0f * (xy + wz)), sx * (2.0f * (xz - wy)), 0.0f},
-        glm::vec4{sy * (2.0f * (xy - wz)), sy * (1.0f - 2.0f * (xx + zz)), sy * (2.0f * (yz + wx)), 0.0f},
-        glm::vec4{sz * (2.0f * (xz + wy)), sz * (2.0f * (yz - wx)), sz * (1.0f - 2.0f * (xx + yy)), 0.0f},
-        glm::vec4{
-            static_cast<float>(joint.translation[0]),
-            static_cast<float>(joint.translation[1]),
-            static_cast<float>(joint.translation[2]),
-            1.0f},
-    };
-}
-
-glm::mat4 joint_world_matrix(const std::vector<orlviewer::Joint>& joints, std::int64_t index) {
-    if (index < 0 || static_cast<std::size_t>(index) >= joints.size()) {
-        return glm::mat4{1.0f};
-    }
-
-    glm::mat4 world = joint_local_matrix(joints[static_cast<std::size_t>(index)]);
-    std::int64_t parent = joints[static_cast<std::size_t>(index)].parent;
-    for (int i = 0; i < 64 && parent >= 0 && static_cast<std::size_t>(parent) < joints.size(); ++i) {
-        world = joint_local_matrix(joints[static_cast<std::size_t>(parent)]) * world;
-        parent = joints[static_cast<std::size_t>(parent)].parent;
-    }
-    return world;
-}
-
-glm::vec3 world_to_local(const std::vector<orlviewer::Joint>& joints, std::int64_t parent_index,
-    const glm::vec3& world)
-{
-    if (parent_index < 0) {
-        return world;
-    }
-    const glm::vec4 local = glm::inverse(joint_world_matrix(joints, parent_index))
-        * glm::vec4{world, 1.0f};
-    return glm::vec3{local};
-}
-
-} // namespace
 
 CreateJointOp::CreateJointOp(ComponentManager& components, vkkk::Camera& camera,
-    const glm::vec3& pivot, GLFWwindow* window)
+    const glm::vec3& pivot, GLFWwindow* window, Selection& selection)
     : components(components)
     , camera(camera)
     , pivot(pivot)
     , window(window)
+    , selection(selection)
 {
 }
 
@@ -123,7 +62,7 @@ void CreateJointOp::place(double cursor_x, double cursor_y) {
     }
 
     const std::int64_t parent_index = last_in_chain ? components.joint_index(last_in_chain) : -1;
-    const glm::vec3 local = world_to_local(components.packed_joints(), parent_index, world);
+    const glm::vec3 local = orlviewer::world_to_local(components.packed_joints(), parent_index, world);
 
     orlviewer::Joint joint = orlviewer::make_identity_joint();
     joint.parent = parent_index;
@@ -137,6 +76,7 @@ void CreateJointOp::place(double cursor_x, double cursor_y) {
         return;
     }
     last_in_chain = id;
+    selection.replace(SelectionRef::joint(id));
     if (const auto* created = components.find(id)) {
         std::cout << "Created '" << created->name << "'\n";
     }

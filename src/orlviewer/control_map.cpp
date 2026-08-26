@@ -299,24 +299,31 @@ void ControlMap::detach() {
         g_window_maps.erase(it);
     }
     window_ = nullptr;
+    modal.clear();
     buttons_down_ = 0;
     cursor_valid_ = false;
 }
 
 void ControlMap::bind_op(std::string op, OpHandler handler) {
     unbind_op(op);
-    handlers_.emplace_back(std::move(op), std::move(handler));
+    BoundOp bound;
+    bound.name = std::move(op);
+    bound.eval = std::move(handler);
+    ops.push_back(std::move(bound));
 }
 
 void ControlMap::unbind_op(std::string_view op) {
-    handlers_.erase(std::remove_if(handlers_.begin(), handlers_.end(),
-                        [op](const auto& entry) { return entry.first == op; }),
-        handlers_.end());
+    if (modal == op) {
+        modal.clear();
+    }
+    ops.erase(std::remove_if(ops.begin(), ops.end(),
+                  [op](const BoundOp& bound) { return bound.name == op; }),
+        ops.end());
 }
 
 bool ControlMap::has_op(std::string_view op) const {
-    return std::any_of(handlers_.begin(), handlers_.end(),
-        [op](const auto& entry) { return entry.first == op; });
+    return std::any_of(ops.begin(), ops.end(),
+        [op](const BoundOp& bound) { return bound.name == op; });
 }
 
 void ControlMap::map(InputSpec input, std::string op) {
@@ -408,16 +415,80 @@ void ControlMap::poll() {
 }
 
 void ControlMap::dispatch(const InputEvent& event) {
+    if (auto* current = find_op(modal)) {
+        if (current->active && !current->active()) {
+            modal.clear();
+        }
+        else {
+            invoke_modal(*current, event);
+            if (current->active && !current->active()) {
+                modal.clear();
+            }
+            return;
+        }
+    }
+
     for (const auto& binding : bindings_) {
         if (!matches(binding.input, event)) {
             continue;
         }
-        for (const auto& handler : handlers_) {
-            if (handler.first == binding.op && handler.second) {
-                handler.second(event);
+        auto* op = find_op(binding.op);
+        if (op == nullptr) {
+            continue;
+        }
+        if (op->mode == OpMode::Modal) {
+            if (op->enter) {
+                op->enter();
             }
+            if (op->active && op->active()) {
+                modal = op->name;
+            }
+            continue;
+        }
+        if (op->eval) {
+            op->eval(event);
         }
     }
+}
+
+void ControlMap::invoke_modal(BoundOp& op, const InputEvent& event) {
+    if (event.kind == InputEvent::Kind::MouseButton && event.action == GLFW_PRESS) {
+        if (event.button == GLFW_MOUSE_BUTTON_LEFT) {
+            if (op.confirm) {
+                op.confirm();
+            }
+            return;
+        }
+        if (event.button == GLFW_MOUSE_BUTTON_RIGHT) {
+            if (op.cancel) {
+                op.cancel();
+            }
+            return;
+        }
+    }
+    if (event.kind == InputEvent::Kind::Key && event.action == GLFW_PRESS
+        && event.key == GLFW_KEY_ESCAPE)
+    {
+        if (op.cancel) {
+            op.cancel();
+        }
+        return;
+    }
+    if (op.eval) {
+        op.eval(event);
+    }
+}
+
+ControlMap::BoundOp* ControlMap::find_op(std::string_view name) {
+    if (name.empty()) {
+        return nullptr;
+    }
+    for (auto& op : ops) {
+        if (op.name == name) {
+            return &op;
+        }
+    }
+    return nullptr;
 }
 
 bool ControlMap::matches(const InputSpec& spec, const InputEvent& event) const {
@@ -528,17 +599,21 @@ void ControlMap::cursor_pos_callback(GLFWwindow* window, double x, double y) {
     map->cursor_x_ = x;
     map->cursor_y_ = y;
     map->cursor_valid_ = true;
-    if (map->buttons_down_ == 0) {
-        return;
-    }
 
     InputEvent event;
-    event.kind = InputEvent::Kind::MouseDrag;
     event.mods = map->current_mods();
     event.x = x;
     event.y = y;
     event.dx = dx;
     event.dy = dy;
+    event.kind = InputEvent::Kind::MouseMove;
+    map->dispatch(event);
+
+    if (map->buttons_down_ == 0) {
+        return;
+    }
+
+    event.kind = InputEvent::Kind::MouseDrag;
     for (int button = 0; button <= GLFW_MOUSE_BUTTON_LAST; ++button) {
         if ((map->buttons_down_ & (1 << button)) == 0) {
             continue;

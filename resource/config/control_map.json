@@ -6,7 +6,8 @@
       "input": {
         "type": "key",
         "key": "G",
-        "action": "press"
+        "action": "press",
+        "mods": ["shift"]
       }
     },
     {
@@ -84,6 +85,22 @@
       "input": {
         "type": "key",
         "key": "enter",
+        "action": "press"
+      }
+    },
+    {
+      "op": "select",
+      "input": {
+        "type": "mouse_button",
+        "button": "left",
+        "action": "press"
+      }
+    },
+    {
+      "op": "move",
+      "input": {
+        "type": "key",
+        "key": "G",
         "action": "press"
       }
     },

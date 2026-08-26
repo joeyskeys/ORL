@@ -10,13 +10,15 @@
 namespace ORL
 {
 
+class Selection;
+
 // Modal joint placement: J enters, left-click places on the pivot/view plane,
 // Enter finishes. Each session starts a new chain; later joints parent to the
 // previous joint created in that session.
 class CreateJointOp : public VpOperation<CreateJointOp> {
 public:
     CreateJointOp(ComponentManager& components, vkkk::Camera& camera, const glm::vec3& pivot,
-        GLFWwindow* window);
+        GLFWwindow* window, Selection& selection);
 
     void on_eval(const InputEvent& event);
     bool active() const { return active_; }
@@ -32,6 +34,7 @@ private:
     vkkk::Camera& camera;
     const glm::vec3& pivot;
     GLFWwindow* window = nullptr;
+    Selection& selection;
     bool active_ = false;
     ComponentId last_in_chain;
 };

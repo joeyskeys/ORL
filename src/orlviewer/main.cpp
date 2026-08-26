@@ -17,10 +17,13 @@
 #include "component_manager.hpp"
 #include "concepts/camera.h"
 #include "control_map.hpp"
+#include "selection.hpp"
 #include "ops/camera_switch_op.hpp"
 #include "ops/create_joint_op.hpp"
 #include "ops/display_mode_switch.hpp"
 #include "ops/load_model_op.hpp"
+#include "ops/move_op.hpp"
+#include "ops/select_op.hpp"
 #include "vp/frame_axis.hpp"
 #include "vp/grid.hpp"
 #include "vp/joint_feature.hpp"
@@ -149,8 +152,11 @@ int main() {
     bool show_grid = true;
     const auto ortho_grid_handle = viewport.add_feature<ORL::OrthoGridFeature>(
         navigator, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    ORL::Selection selection(components, scene);
     ORL::LoadModelOp load_model(scene, context, window, world_frame);
-    ORL::CreateJointOp create_joint(components, camera, navigator.target, window);
+    ORL::CreateJointOp create_joint(components, camera, navigator.target, window, selection);
+    ORL::SelectOp select_op(selection, components, scene, camera, window, create_joint);
+    ORL::MoveOp move_op(selection, navigator, window);
     ORL::CameraSwitchOp camera_switch(navigator);
     ORL::DisplayModeSwitch display_mode;
     display_mode.register_mode("phong", [&] {
@@ -186,6 +192,8 @@ int main() {
     });
     controls.bind_op("load_model", load_model);
     controls.bind_op("create_joint", create_joint);
+    controls.bind_op("select", select_op);
+    controls.bind_op("move", move_op);
     controls.bind_op("camera_switch", camera_switch);
     controls.bind_op("display_mode_switch", display_mode);
 

@@ -6,9 +6,11 @@
 
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/geometric.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 #include "ORL/frame.h"
 #include "concepts/camera.h"
@@ -69,6 +71,53 @@ struct CameraNavigator {
 
     glm::vec3 world_right() const {
         return glm::normalize(glm::cross(camera.front, camera.up));
+    }
+
+    // Hit the view plane through pivot with a window-space cursor. Uses the
+    // live view/proj (current Frame handedness, ortho/persp, Vulkan Y flip)
+    // so screen motion matches what is drawn.
+    bool view_plane_hit(double cursor_x, double cursor_y, int width, int height,
+        const glm::vec3& pivot, glm::vec3& world) const
+    {
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+
+        const float ndc_x = static_cast<float>(2.0 * cursor_x / static_cast<double>(width) - 1.0);
+        const float ndc_y = static_cast<float>(2.0 * cursor_y / static_cast<double>(height) - 1.0);
+        const glm::mat4 inv = glm::inverse(camera.ubo_data.proj * camera.ubo_data.view);
+
+        const auto unproject = [&](float ndc_z, glm::vec3& out) {
+            glm::vec4 clip = inv * glm::vec4{ndc_x, ndc_y, ndc_z, 1.0f};
+            if (std::abs(clip.w) < 1e-8f) {
+                return false;
+            }
+            out = glm::vec3{clip / clip.w};
+            return true;
+        };
+
+        glm::vec3 ray_origin{};
+        glm::vec3 ray_far{};
+        if (!unproject(-1.0f, ray_origin) || !unproject(1.0f, ray_far)) {
+            return false;
+        }
+
+        glm::vec3 ray_dir = ray_far - ray_origin;
+        const float ray_len = glm::length(ray_dir);
+        if (ray_len < 1e-8f) {
+            return false;
+        }
+        ray_dir /= ray_len;
+
+        const glm::vec3 normal = glm::normalize(camera.front);
+        const float denom = glm::dot(ray_dir, normal);
+        if (std::abs(denom) < 1e-6f) {
+            return false;
+        }
+
+        const float t = glm::dot(pivot - ray_origin, normal) / denom;
+        world = ray_origin + ray_dir * t;
+        return glm::dot(world - camera.pos, camera.front) > 0.0f;
     }
 
     static constexpr float kMinOrthoFov = 0.5f;
