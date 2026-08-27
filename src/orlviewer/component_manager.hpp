@@ -128,6 +128,7 @@ public:
 
     // Joints in creation order, suitable for packing into Joint joints[].
     std::vector<orlviewer::Joint> packed_joints() const;
+    std::vector<ComponentId> packed_joint_ids() const;
     std::int64_t joint_index(ComponentId id) const;
 
     template <typename Fn>

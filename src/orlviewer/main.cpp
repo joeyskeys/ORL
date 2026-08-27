@@ -27,6 +27,7 @@
 #include "vp/frame_axis.hpp"
 #include "vp/grid.hpp"
 #include "vp/joint_feature.hpp"
+#include "vp/joint_picking_feature.hpp"
 #include "vp/ortho_grid_feature.hpp"
 #include "vp/scene_mesh_feature.hpp"
 #include "vp/viewport.hpp"
@@ -134,6 +135,7 @@ int main() {
         ORL::OrthoGridFeature,
         ORL::SceneMeshFeature,
         ORL::JointFeature,
+        ORL::JointPickingFeature,
         vkkk::vp::FrameAxisFeature>;
     Viewport viewport(context);
     const std::filesystem::path font_path =
@@ -156,6 +158,11 @@ int main() {
     ORL::LoadModelOp load_model(scene, context, window, world_frame);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, window, selection);
     ORL::SelectOp select_op(selection, components, scene, camera, window, create_joint);
+    const auto joint_pick_handle = viewport.add_feature<ORL::JointPickingFeature>(
+        components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    if (auto* gpu_pick = viewport.find_feature(joint_pick_handle)) {
+        select_op.set_gpu_picking(*gpu_pick);
+    }
     ORL::MoveOp move_op(selection, navigator, window);
     ORL::CameraSwitchOp camera_switch(navigator);
     ORL::DisplayModeSwitch display_mode;

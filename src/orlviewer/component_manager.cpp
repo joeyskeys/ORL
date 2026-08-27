@@ -181,6 +181,17 @@ std::vector<orlviewer::Joint> ComponentManager::packed_joints() const {
     return joints;
 }
 
+std::vector<ComponentId> ComponentManager::packed_joint_ids() const {
+    std::vector<ComponentId> ids;
+    ids.reserve(joint_order.size());
+    for (const ComponentId id : joint_order) {
+        if (joint(id) != nullptr) {
+            ids.push_back(id);
+        }
+    }
+    return ids;
+}
+
 std::int64_t ComponentManager::joint_index(ComponentId id) const {
     for (std::size_t i = 0; i < joint_order.size(); ++i) {
         if (joint_order[i] == id) {
