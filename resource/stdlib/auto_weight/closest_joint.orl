@@ -1,0 +1,16 @@
+// Closest-joint auto-weight.
+//   use auto_weight/closest_joint;
+//
+// Distance to joint world positions (points), not bone segments.
+// Not implemented yet.
+
+use joint;
+
+int auto_weight_closest_joint(point positions[],
+                              Joint joints[],
+                              int bone_indices[],
+                              float weights[],
+                              int vertex_count,
+                              int joint_count) {
+    return 0;
+}

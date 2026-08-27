@@ -1,0 +1,173 @@
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// counts: x = vertex_count, y = triangle_count, z = neighbor_capacity, w = pass
+// pass 0 clear, 1 count, 2 scan, 3 scatter, 4 unique, 5 compact
+layout(std140, binding = 0) uniform CsrBuildParams {
+    uvec4 counts;
+} params;
+
+layout(std430, binding = 1) buffer Indices {
+    uint values[];
+} indices;
+
+layout(std430, binding = 2) buffer Degrees {
+    uint values[];
+} degrees;
+
+layout(std430, binding = 3) buffer Offsets {
+    uint values[];
+} offsets;
+
+layout(std430, binding = 4) buffer Fill {
+    uint values[];
+} fill;
+
+layout(std430, binding = 5) buffer Neighbors {
+    uint values[];
+} neighbors;
+
+layout(std430, binding = 6) buffer Packed {
+    uint values[];
+} packed;
+
+void add_directed(uint from, uint to) {
+    const uint vertex_count = params.counts.x;
+    if (from == to || from >= vertex_count || to >= vertex_count) {
+        return;
+    }
+    atomicAdd(degrees.values[from], 1);
+}
+
+void scatter_directed(uint from, uint to) {
+    const uint vertex_count = params.counts.x;
+    const uint neighbor_capacity = params.counts.z;
+    if (from == to || from >= vertex_count || to >= vertex_count) {
+        return;
+    }
+    const uint slot = atomicAdd(fill.values[from], 1);
+    const uint lo = offsets.values[from];
+    const uint hi = offsets.values[from + 1];
+    const uint dest = lo + slot;
+    if (dest < hi && dest < neighbor_capacity) {
+        neighbors.values[dest] = to;
+    }
+}
+
+void emit_triangle_count(uint tri) {
+    const uint i0 = indices.values[tri * 3 + 0];
+    const uint i1 = indices.values[tri * 3 + 1];
+    const uint i2 = indices.values[tri * 3 + 2];
+    add_directed(i0, i1);
+    add_directed(i1, i0);
+    add_directed(i1, i2);
+    add_directed(i2, i1);
+    add_directed(i2, i0);
+    add_directed(i0, i2);
+}
+
+void emit_triangle_scatter(uint tri) {
+    const uint i0 = indices.values[tri * 3 + 0];
+    const uint i1 = indices.values[tri * 3 + 1];
+    const uint i2 = indices.values[tri * 3 + 2];
+    scatter_directed(i0, i1);
+    scatter_directed(i1, i0);
+    scatter_directed(i1, i2);
+    scatter_directed(i2, i1);
+    scatter_directed(i2, i0);
+    scatter_directed(i0, i2);
+}
+
+void unique_vertex(uint v) {
+    const uint lo = offsets.values[v];
+    const uint hi = offsets.values[v + 1];
+    if (lo >= hi) {
+        fill.values[v] = 0;
+        return;
+    }
+    for (uint i = lo + 1; i < hi; ++i) {
+        const uint key = neighbors.values[i];
+        uint j = i;
+        while (j > lo && neighbors.values[j - 1] > key) {
+            neighbors.values[j] = neighbors.values[j - 1];
+            j -= 1;
+        }
+        neighbors.values[j] = key;
+    }
+    uint write = lo;
+    uint prev = 0xFFFFFFFFu;
+    for (uint i = lo; i < hi; ++i) {
+        const uint n = neighbors.values[i];
+        if (n != prev) {
+            neighbors.values[write] = n;
+            write += 1;
+            prev = n;
+        }
+    }
+    fill.values[v] = write - lo;
+}
+
+void main() {
+    const uint id = gl_GlobalInvocationID.x;
+    const uint vertex_count = params.counts.x;
+    const uint triangle_count = params.counts.y;
+    const uint pass = params.counts.w;
+
+    if (pass == 0) {
+        if (id < vertex_count) {
+            degrees.values[id] = 0;
+            fill.values[id] = 0;
+        }
+        if (id == 0) {
+            offsets.values[0] = 0;
+        }
+        return;
+    }
+
+    if (pass == 1) {
+        if (id < triangle_count) {
+            emit_triangle_count(id);
+        }
+        return;
+    }
+
+    if (pass == 2) {
+        if (id != 0) {
+            return;
+        }
+        offsets.values[0] = 0;
+        for (uint v = 0; v < vertex_count; ++v) {
+            offsets.values[v + 1] = offsets.values[v] + degrees.values[v];
+        }
+        return;
+    }
+
+    if (pass == 3) {
+        if (id < triangle_count) {
+            emit_triangle_scatter(id);
+        }
+        return;
+    }
+
+    if (pass == 4) {
+        if (id < vertex_count) {
+            unique_vertex(id);
+        }
+        return;
+    }
+
+    if (pass == 5 && id == 0) {
+        uint dst = 0;
+        for (uint v = 0; v < vertex_count; ++v) {
+            const uint lo = offsets.values[v];
+            const uint n = fill.values[v];
+            for (uint i = 0; i < n; ++i) {
+                packed.values[dst + i] = neighbors.values[lo + i];
+            }
+            offsets.values[v] = dst;
+            dst += n;
+        }
+        offsets.values[vertex_count] = dst;
+    }
+}

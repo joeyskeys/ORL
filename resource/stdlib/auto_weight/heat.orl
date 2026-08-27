@@ -1,0 +1,20 @@
+// Heat-diffusion auto-weight (Baran & Popović Pinocchio / Maya heat map).
+//   use auto_weight/heat;
+//
+// Solve a Laplace equation on the mesh: bone vertices are heat sources,
+// equilibrium temperature becomes the weight. Needs CSR offsets[] / neighbors[]
+// from the viewer mesh precompute. Not implemented yet.
+
+use joint;
+
+int auto_weight_heat(point positions[],
+                     int offsets[],
+                     int neighbors[],
+                     Joint joints[],
+                     int bone_indices[],
+                     float weights[],
+                     int vertex_count,
+                     int joint_count,
+                     int influences_per_vertex) {
+    return 0;
+}

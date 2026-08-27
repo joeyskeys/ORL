@@ -284,6 +284,26 @@ TEST_CASE("llvm codegen lowers stdlib joint helpers", "[orl][codegen][stdlib][jo
     REQUIRE(ir.find("define [16 x double] @joint_skin_matrix") != std::string::npos);
 }
 
+TEST_CASE("llvm codegen lowers closest-bone auto-weight", "[orl][codegen][stdlib][auto_weight]") {
+    const std::string src =
+        "use auto_weight/closest_bone;\n"
+        "int bind(point positions[], Joint joints[], int bones[], float weights[], int vcount, int jcount) {\n"
+        "    return auto_weight_closest_bone(positions, joints, bones, weights, vcount, jcount);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen("orl_stdlib_closest_bone_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("define i64 @auto_weight_closest_bone") != std::string::npos);
+    REQUIRE(ir.find("define double @closest_bone_segment_distance2") != std::string::npos);
+}
+
 TEST_CASE("llvm codegen rejects unknown custom struct fields", "[orl][codegen][struct][error]") {
     const std::string src =
         "struct Weight {\n"

@@ -1,0 +1,19 @@
+// Envelope / capsule auto-weight.
+//   use auto_weight/envelope;
+//
+// Radial or capsule falloff around each bone segment, then normalize.
+// Typical of 3ds Max envelopes and Blender envelope bind.
+// Not implemented yet.
+
+use joint;
+
+int auto_weight_envelope(point positions[],
+                         Joint joints[],
+                         float radii[],
+                         int bone_indices[],
+                         float weights[],
+                         int vertex_count,
+                         int joint_count,
+                         int influences_per_vertex) {
+    return 0;
+}

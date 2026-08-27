@@ -28,6 +28,7 @@
 #include "vp/grid.hpp"
 #include "vp/joint_feature.hpp"
 #include "vp/joint_picking_feature.hpp"
+#include "vp/mesh_csr_feature.hpp"
 #include "vp/ortho_grid_feature.hpp"
 #include "vp/scene_mesh_feature.hpp"
 #include "vp/viewport.hpp"
@@ -136,6 +137,7 @@ int main() {
         ORL::SceneMeshFeature,
         ORL::JointFeature,
         ORL::JointPickingFeature,
+        ORL::MeshCsrFeature,
         vkkk::vp::FrameAxisFeature>;
     Viewport viewport(context);
     const std::filesystem::path font_path =
@@ -144,6 +146,8 @@ int main() {
     const auto mesh_handle = viewport.add_feature<ORL::SceneMeshFeature>(
         scene, viewport_frame.right_handed,
         std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    viewport.add_feature<ORL::MeshCsrFeature>(
+        scene, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     viewport.add_feature<ORL::JointFeature>(
         components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(

@@ -1,0 +1,18 @@
+// Geodesic auto-weight (Blender geodesic voxel / surface geodesic).
+//   use auto_weight/geodesic;
+//
+// Weights from geodesic distance to bones, usually through a voxelization of
+// the volume so they do not leak across nearby but disconnected surfaces.
+// CSR is not enough; a voxel grid is a viewer precompute. Not implemented yet.
+
+use joint;
+
+int auto_weight_geodesic(point positions[],
+                         Joint joints[],
+                         int bone_indices[],
+                         float weights[],
+                         int vertex_count,
+                         int joint_count,
+                         int influences_per_vertex) {
+    return 0;
+}

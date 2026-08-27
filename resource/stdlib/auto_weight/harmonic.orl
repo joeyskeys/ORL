@@ -1,0 +1,20 @@
+// Harmonic coordinates (Joshi et al. / Jacobson SIGGRAPH course).
+//   use auto_weight/harmonic;
+//
+// Solve Laplace's equation with bone handles as boundary conditions, without
+// the bound constraints that BBW adds. Needs CSR and a linear solve.
+// Not implemented yet.
+
+use joint;
+
+int auto_weight_harmonic(point positions[],
+                         int offsets[],
+                         int neighbors[],
+                         Joint joints[],
+                         int bone_indices[],
+                         float weights[],
+                         int vertex_count,
+                         int joint_count,
+                         int influences_per_vertex) {
+    return 0;
+}

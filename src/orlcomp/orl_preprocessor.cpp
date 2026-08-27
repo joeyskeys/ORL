@@ -46,6 +46,16 @@ bool ParseUseLine(const std::string &line, std::string *name) {
     while (index < trimmed.size() && IsIdentifierChar(trimmed[index], false)) {
         ++index;
     }
+    while (index < trimmed.size() && trimmed[index] == '/') {
+        ++index;
+        if (index >= trimmed.size() || !IsIdentifierChar(trimmed[index], true)) {
+            return false;
+        }
+        ++index;
+        while (index < trimmed.size() && IsIdentifierChar(trimmed[index], false)) {
+            ++index;
+        }
+    }
     *name = trimmed.substr(start, index - start);
 
     while (index < trimmed.size() && (trimmed[index] == ' ' || trimmed[index] == '\t')) {

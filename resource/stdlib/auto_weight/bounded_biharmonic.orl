@@ -1,0 +1,21 @@
+// Bounded biharmonic weights (Jacobson et al., "Bounded Biharmonic Weights
+// for Real-Time Deformation").
+//   use auto_weight/bounded_biharmonic;
+//
+// Minimize Laplacian energy with bound constraints 0..1 and partition of unity.
+// Needs a mesh Laplacian (from CSR) and a global linear solve — not a single
+// per-vertex parallel for. Not implemented yet.
+
+use joint;
+
+int auto_weight_bounded_biharmonic(point positions[],
+                                   int offsets[],
+                                   int neighbors[],
+                                   Joint joints[],
+                                   int bone_indices[],
+                                   float weights[],
+                                   int vertex_count,
+                                   int joint_count,
+                                   int influences_per_vertex) {
+    return 0;
+}

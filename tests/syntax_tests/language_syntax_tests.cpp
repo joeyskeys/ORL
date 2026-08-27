@@ -233,8 +233,29 @@ TEST_CASE("syntax includes stdlib joint definitions", "[orl][syntax][stdlib][joi
     RequireParses(src);
 }
 
+TEST_CASE("syntax includes nested stdlib auto-weight modules", "[orl][syntax][stdlib][auto_weight]") {
+    const std::string src =
+        "use auto_weight/closest_bone;\n"
+        "use auto_weight/closest_joint;\n"
+        "use auto_weight/envelope;\n"
+        "use auto_weight/heat;\n"
+        "use auto_weight/geodesic;\n"
+        "use auto_weight/harmonic;\n"
+        "use auto_weight/bounded_biharmonic;\n"
+        "int bind(point positions[], Joint joints[], int bones[], float weights[], int vcount, int jcount) {\n"
+        "    return auto_weight_closest_bone(positions, joints, bones, weights, vcount, jcount);\n"
+        "}\n";
+
+    RequireParses(src);
+}
+
 TEST_CASE("syntax rejects unknown stdlib includes", "[orl][syntax][stdlib][error]") {
     RequireRejects("use missing_stdlib_module;\n");
+}
+
+TEST_CASE("syntax rejects incomplete nested stdlib use paths", "[orl][syntax][stdlib][error]") {
+    RequireRejects("use auto_weight/;\n");
+    RequireRejects("use auto_weight/missing_auto_weight;\n");
 }
 
 TEST_CASE("syntax rejects incomplete declarations and control flow", "[orl][syntax][error]") {

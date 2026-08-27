@@ -6,6 +6,7 @@ add_executable(orl_viewer
     comps/joint.glsl
     ops/load_model_op.cpp
     ops/create_joint_op.cpp
+    vp/mesh_csr_feature.cpp
 )
 set_source_files_properties(comps/joint.hpp comps/joint.glsl PROPERTIES HEADER_FILE_ONLY TRUE)
 
