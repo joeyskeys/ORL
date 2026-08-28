@@ -327,7 +327,11 @@ bool ControlMap::has_op(std::string_view op) const {
 }
 
 void ControlMap::map(InputSpec input, std::string op) {
-    bindings_.push_back(ControlBinding{input, std::move(op)});
+    map(input, std::vector<std::string>{std::move(op)});
+}
+
+void ControlMap::map(InputSpec input, std::vector<std::string> ops) {
+    bindings_.push_back(ControlBinding{input, std::move(ops)});
 }
 
 void ControlMap::unmap(const InputSpec& input) {
@@ -342,8 +346,12 @@ void ControlMap::unmap(const InputSpec& input) {
 }
 
 void ControlMap::unmap_op(std::string_view op) {
+    for (auto& binding : bindings_) {
+        binding.ops.erase(std::remove(binding.ops.begin(), binding.ops.end(), op),
+            binding.ops.end());
+    }
     bindings_.erase(std::remove_if(bindings_.begin(), bindings_.end(),
-                        [op](const ControlBinding& binding) { return binding.op == op; }),
+                        [](const ControlBinding& binding) { return binding.ops.empty(); }),
         bindings_.end());
 }
 
@@ -375,13 +383,33 @@ void ControlMap::load_config(const std::filesystem::path& path, ControlMapLoadMo
     }
 
     for (const auto& binding : document["bindings"].GetArray()) {
-        if (!binding.IsObject() || !binding.HasMember("op") || !binding["op"].IsString()) {
-            throw std::runtime_error("each binding needs an 'op' string");
+        if (!binding.IsObject() || !binding.HasMember("op")) {
+            throw std::runtime_error("each binding needs an 'op' string or array");
         }
         if (!binding.HasMember("input")) {
             throw std::runtime_error("each binding needs an 'input' object");
         }
-        map(parse_input_spec(binding["input"]), binding["op"].GetString());
+
+        std::vector<std::string> ops;
+        const auto& op = binding["op"];
+        if (op.IsString()) {
+            ops.emplace_back(op.GetString());
+        }
+        else if (op.IsArray()) {
+            for (const auto& name : op.GetArray()) {
+                if (!name.IsString()) {
+                    throw std::runtime_error("each 'op' entry must be a string");
+                }
+                ops.emplace_back(name.GetString());
+            }
+        }
+        else {
+            throw std::runtime_error("binding 'op' must be a string or array of strings");
+        }
+        if (ops.empty()) {
+            throw std::runtime_error("each binding needs at least one op");
+        }
+        map(parse_input_spec(binding["input"]), std::move(ops));
     }
 }
 
@@ -432,21 +460,23 @@ void ControlMap::dispatch(const InputEvent& event) {
         if (!matches(binding.input, event)) {
             continue;
         }
-        auto* op = find_op(binding.op);
-        if (op == nullptr) {
-            continue;
-        }
-        if (op->mode == OpMode::Modal) {
-            if (op->enter) {
-                op->enter();
+        for (const auto& name : binding.ops) {
+            auto* op = find_op(name);
+            if (op == nullptr) {
+                continue;
             }
-            if (op->active && op->active()) {
-                modal = op->name;
+            if (op->mode == OpMode::Modal) {
+                if (op->enter) {
+                    op->enter();
+                }
+                if (op->active && op->active()) {
+                    modal = op->name;
+                }
+                continue;
             }
-            continue;
-        }
-        if (op->eval) {
-            op->eval(event);
+            if (op->eval) {
+                op->eval(event);
+            }
         }
     }
 }

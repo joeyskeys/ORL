@@ -6,6 +6,7 @@
 
 #include <glm/vec4.hpp>
 
+#include "asset_mgr/drawable_mgr.h"
 #include "utils/sizeable.hpp"
 #include "vk_ins/context.hpp"
 

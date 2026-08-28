@@ -4,11 +4,15 @@ add_executable(orl_viewer
     component_manager.cpp
     comps/joint.hpp
     comps/joint.glsl
+    comps/weight.hpp
+    comps/deformer.hpp
     ops/load_model_op.cpp
     ops/create_joint_op.cpp
     vp/mesh_csr_feature.cpp
+    vp/auto_weight_feature.cpp
+    vp/deformer_feature.cpp
 )
-set_source_files_properties(comps/joint.hpp comps/joint.glsl PROPERTIES HEADER_FILE_ONLY TRUE)
+set_source_files_properties(comps/joint.hpp comps/joint.glsl comps/weight.hpp comps/deformer.hpp PROPERTIES HEADER_FILE_ONLY TRUE)
 
 if(VKKK_VCPKG_INSTALLED_DIR)
     list(PREPEND CMAKE_PREFIX_PATH "${VKKK_VCPKG_INSTALLED_DIR}")
@@ -18,6 +22,7 @@ find_package(RapidJSON CONFIG REQUIRED)
 target_link_libraries(orl_viewer
     PRIVATE
         vkkk
+        orlexec
         Eigen3::Eigen
         RapidJSON
 )

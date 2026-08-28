@@ -284,6 +284,25 @@ TEST_CASE("llvm codegen lowers stdlib joint helpers", "[orl][codegen][stdlib][jo
     REQUIRE(ir.find("define [16 x double] @joint_skin_matrix") != std::string::npos);
 }
 
+TEST_CASE("llvm codegen lowers type constructors in expressions", "[orl][codegen][constructor]") {
+    const std::string src =
+        "point origin_world(matrix world) {\n"
+        "    return world * point(0.0, 0.0, 0.0);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen("orl_expr_ctor_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("declare i64 @point") == std::string::npos);
+    REQUIRE(ir.find("matvec") != std::string::npos);
+}
+
 TEST_CASE("llvm codegen lowers closest-bone auto-weight", "[orl][codegen][stdlib][auto_weight]") {
     const std::string src =
         "use auto_weight/closest_bone;\n"
@@ -302,6 +321,27 @@ TEST_CASE("llvm codegen lowers closest-bone auto-weight", "[orl][codegen][stdlib
     const std::string ir = codegen.DumpIR();
     REQUIRE(ir.find("define i64 @auto_weight_closest_bone") != std::string::npos);
     REQUIRE(ir.find("define double @closest_bone_segment_distance2") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen lowers lbs deformer", "[orl][codegen][stdlib][deformer]") {
+    const std::string src =
+        "use deformer/lbs;\n"
+        "int skin(point bind[], point out[], Joint joints[], matrix inverse_binds[],\n"
+        "         int bones[], float weights[], int vcount, int jcount, int inf) {\n"
+        "    return deformer_lbs(bind, out, joints, inverse_binds, bones, weights, vcount, jcount, inf);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen("orl_stdlib_lbs_deformer_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("define i64 @deformer_lbs") != std::string::npos);
+    REQUIRE(ir.find("define i64 @deformer_lbs_capture_bind") != std::string::npos);
 }
 
 TEST_CASE("llvm codegen rejects unknown custom struct fields", "[orl][codegen][struct][error]") {

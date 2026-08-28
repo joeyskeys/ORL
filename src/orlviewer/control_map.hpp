@@ -52,7 +52,7 @@ struct InputSpec {
 
 struct ControlBinding {
     InputSpec input;
-    std::string op;
+    std::vector<std::string> ops;
 };
 
 enum class ControlMapLoadMode {
@@ -66,8 +66,10 @@ enum class OpMode {
 };
 
 // Maps named viewport operations to keyboard and mouse inputs.
-// Bindings can be loaded from JSON and changed at runtime. Operation
-// handlers are registered in code and invoked from GLFW callbacks.
+// Bindings can be loaded from JSON and changed at runtime. A binding's
+// `op` may be a string or an array; one trigger invokes every named op
+// in order. Operation handlers are registered in code and invoked from
+// GLFW callbacks.
 class ControlMap {
 public:
     using OpHandler = std::function<void(const InputEvent&)>;
@@ -119,6 +121,7 @@ public:
     bool has_op(std::string_view op) const;
 
     void map(InputSpec input, std::string op);
+    void map(InputSpec input, std::vector<std::string> ops);
     void unmap(const InputSpec& input);
     void unmap_op(std::string_view op);
     void clear_bindings();

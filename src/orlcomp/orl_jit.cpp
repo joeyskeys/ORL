@@ -14,6 +14,11 @@
 #include <llvm/Support/Error.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/TargetSelect.h>
+#if __has_include(<llvm/TargetParser/Host.h>)
+#include <llvm/TargetParser/Host.h>
+#else
+#include <llvm/Support/Host.h>
+#endif
 
 #include <array>
 #include <utility>
@@ -85,6 +90,12 @@ struct OrlJitEngine::Impl {
         }
 
         jit_ = std::move(*jit_or_error);
+        if (module->getTargetTriple().empty()) {
+            module->setTargetTriple(llvm::sys::getDefaultTargetTriple());
+        }
+        if (module->getDataLayout().getStringRepresentation().empty()) {
+            module->setDataLayout(jit_->getDataLayout());
+        }
         llvm::orc::MangleAndInterner mangle(jit_->getExecutionSession(), jit_->getDataLayout());
         llvm::orc::SymbolMap runtime_symbols;
         runtime_symbols[mangle("__orl_parallel_for")] = {

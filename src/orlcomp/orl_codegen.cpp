@@ -4,6 +4,7 @@
 #if __has_include(<llvm/IR/BasicBlock.h>)
 
 #include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/CallingConv.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
@@ -13,7 +14,16 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/MC/TargetRegistry.h>
+#include <llvm/Support/CodeGen.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/Target/TargetMachine.h>
+#if __has_include(<llvm/TargetParser/Host.h>)
+#include <llvm/TargetParser/Host.h>
+#else
+#include <llvm/Support/Host.h>
+#endif
 
 #include <memory>
 #include <sstream>
@@ -85,6 +95,10 @@ struct LlvmIrCodegen::Impl {
         current_function_definition_ = nullptr;
         parallel_body_counter_ = 0;
         generating_parallel_body_ = false;
+
+        if (target_ == OrlCodegenTarget::Host && !ApplyNativeDataLayout()) {
+            return false;
+        }
 
         for (const auto &item : program.items) {
             const auto *struct_definition = dynamic_cast<const StructDefinitionStatement *>(item.get());
@@ -234,6 +248,30 @@ struct LlvmIrCodegen::Impl {
             EnterScope();
         }
         scopes_.back()[name] = info;
+    }
+
+    bool ApplyNativeDataLayout() {
+        llvm::InitializeNativeTarget();
+        llvm::InitializeNativeTargetAsmPrinter();
+        const std::string triple = llvm::sys::getDefaultTargetTriple();
+        std::string error;
+        const llvm::Target *target = llvm::TargetRegistry::lookupTarget(triple, error);
+        if (target == nullptr) {
+            AddError("Failed to find native LLVM target: " + error);
+            return false;
+        }
+
+        const llvm::TargetOptions options;
+        std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(
+            triple, "generic", "", options, std::nullopt, std::nullopt, llvm::CodeGenOptLevel::Default));
+        if (!machine) {
+            AddError("Failed to create native LLVM target machine");
+            return false;
+        }
+
+        module_->setTargetTriple(triple);
+        module_->setDataLayout(machine->createDataLayout());
+        return true;
     }
 
     llvm::AllocaInst *CreateEntryAlloca(const std::string &name, llvm::Type *type) {
@@ -535,32 +573,30 @@ struct LlvmIrCodegen::Impl {
         return true;
     }
 
-    llvm::Value *BuildConstructedValue(const DeclarationStatement &declaration) {
-        llvm::Type *declared_type = MapTypeName(declaration.type_name);
+    llvm::Value *BuildValueFromArgs(const std::string &type_name, const std::vector<llvm::Value *> &args) {
+        llvm::Type *declared_type = MapTypeName(type_name);
         if (declared_type == nullptr) {
             return nullptr;
         }
 
         if (declared_type->isIntegerTy(64) || declared_type->isDoubleTy() || declared_type->isPointerTy()) {
-            if (declaration.constructor_arguments.size() != 1) {
-                AddError("Constructor for type '" + declaration.type_name + "' expects exactly one argument");
+            if (args.size() != 1) {
+                AddError("Constructor for type '" + type_name + "' expects exactly one argument");
                 return nullptr;
             }
-            llvm::Value *arg = GenerateExpression(*declaration.constructor_arguments.front());
-            return CastValue(arg, declared_type, "constructor argument");
+            return CastValue(args.front(), declared_type, "constructor argument");
         }
 
         if (auto *vector_type = llvm::dyn_cast<llvm::FixedVectorType>(declared_type)) {
             const unsigned int count = vector_type->getNumElements();
-            if (declaration.constructor_arguments.size() != count) {
-                AddError("Constructor for '" + declaration.type_name + "' expects " + std::to_string(count) + " arguments");
+            if (args.size() != count) {
+                AddError("Constructor for '" + type_name + "' expects " + std::to_string(count) + " arguments");
                 return nullptr;
             }
 
             llvm::Value *aggregate = llvm::UndefValue::get(vector_type);
             for (unsigned int i = 0; i < count; ++i) {
-                llvm::Value *component = GenerateExpression(*declaration.constructor_arguments[i]);
-                component = CastValue(component, builder_.getDoubleTy(), "vector constructor argument");
+                llvm::Value *component = CastValue(args[i], builder_.getDoubleTy(), "vector constructor argument");
                 if (component == nullptr) {
                     return nullptr;
                 }
@@ -570,15 +606,14 @@ struct LlvmIrCodegen::Impl {
         }
 
         if (auto *struct_type = llvm::dyn_cast<llvm::StructType>(declared_type)) {
-            if (declaration.constructor_arguments.size() != struct_type->getNumElements()) {
-                AddError("Constructor for '" + declaration.type_name + "' expects " +
+            if (args.size() != struct_type->getNumElements()) {
+                AddError("Constructor for '" + type_name + "' expects " +
                          std::to_string(struct_type->getNumElements()) + " arguments");
                 return nullptr;
             }
             llvm::Value *aggregate = llvm::UndefValue::get(struct_type);
             for (unsigned int i = 0; i < struct_type->getNumElements(); ++i) {
-                llvm::Value *field = GenerateExpression(*declaration.constructor_arguments[i]);
-                field = CastValue(field, struct_type->getElementType(i), "struct constructor argument");
+                llvm::Value *field = CastValue(args[i], struct_type->getElementType(i), "struct constructor argument");
                 if (field == nullptr) {
                     return nullptr;
                 }
@@ -589,15 +624,14 @@ struct LlvmIrCodegen::Impl {
 
         if (auto *array_type = llvm::dyn_cast<llvm::ArrayType>(declared_type)) {
             const std::size_t count = array_type->getNumElements();
-            if (declaration.constructor_arguments.size() != count) {
-                AddError("Constructor for '" + declaration.type_name + "' expects " + std::to_string(count) + " arguments");
+            if (args.size() != count) {
+                AddError("Constructor for '" + type_name + "' expects " + std::to_string(count) + " arguments");
                 return nullptr;
             }
 
             llvm::Value *aggregate = llvm::UndefValue::get(array_type);
             for (std::size_t i = 0; i < count; ++i) {
-                llvm::Value *component = GenerateExpression(*declaration.constructor_arguments[i]);
-                component = CastValue(component, builder_.getDoubleTy(), "matrix constructor argument");
+                llvm::Value *component = CastValue(args[i], builder_.getDoubleTy(), "matrix constructor argument");
                 if (component == nullptr) {
                     return nullptr;
                 }
@@ -606,8 +640,21 @@ struct LlvmIrCodegen::Impl {
             return aggregate;
         }
 
-        AddError("Unsupported constructor target type: " + declaration.type_name);
+        AddError("Unsupported constructor target type: " + type_name);
         return nullptr;
+    }
+
+    llvm::Value *BuildConstructedValue(const DeclarationStatement &declaration) {
+        std::vector<llvm::Value *> args;
+        args.reserve(declaration.constructor_arguments.size());
+        for (const auto &argument : declaration.constructor_arguments) {
+            llvm::Value *value = GenerateExpression(*argument);
+            if (value == nullptr) {
+                return nullptr;
+            }
+            args.push_back(value);
+        }
+        return BuildValueFromArgs(declaration.type_name, args);
     }
 
     bool GenerateReturn(const ReturnStatement &return_statement) {
@@ -831,9 +878,11 @@ struct LlvmIrCodegen::Impl {
             builder_.getVoidTy(), {builder_.getPtrTy(), builder_.getInt64Ty()}, false);
         llvm::Function *body_function = llvm::Function::Create(
             body_type,
-            llvm::GlobalValue::InternalLinkage,
+            llvm::GlobalValue::ExternalLinkage,
             "orl.parallel.body." + std::to_string(body_id),
             module_.get());
+        body_function->setCallingConv(llvm::CallingConv::C);
+        body_function->addFnAttr(llvm::Attribute::NoUnwind);
         auto body_argument = body_function->arg_begin();
         body_argument->setName("context");
         llvm::Value *body_context = &*body_argument++;
@@ -888,8 +937,12 @@ struct LlvmIrCodegen::Impl {
                 builder_.getVoidTy(),
                 {builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getPtrTy(), builder_.getPtrTy()},
                 false));
-        builder_.CreateCall(runtime,
-                            {builder_.getInt64(0), bound, body_function, context_slot});
+        if (auto *runtime_fn = module_->getFunction("__orl_parallel_for")) {
+            runtime_fn->setCallingConv(llvm::CallingConv::C);
+        }
+        auto *call = builder_.CreateCall(runtime,
+            {builder_.getInt64(0), bound, body_function, context_slot});
+        call->setCallingConv(llvm::CallingConv::C);
         return true;
     }
 
@@ -1631,6 +1684,10 @@ struct LlvmIrCodegen::Impl {
                 return nullptr;
             }
             arguments.push_back(value);
+        }
+
+        if (MapTypeName(callee_identifier->name) != nullptr) {
+            return BuildValueFromArgs(callee_identifier->name, arguments);
         }
 
         llvm::Value *intrinsic_result = nullptr;

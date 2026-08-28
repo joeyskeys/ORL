@@ -24,11 +24,14 @@
 #include "ops/load_model_op.hpp"
 #include "ops/move_op.hpp"
 #include "ops/select_op.hpp"
+#include "vp/auto_weight_feature.hpp"
+#include "vp/deformer_feature.hpp"
 #include "vp/frame_axis.hpp"
 #include "vp/grid.hpp"
 #include "vp/joint_feature.hpp"
 #include "vp/joint_picking_feature.hpp"
 #include "vp/mesh_csr_feature.hpp"
+#include "vp/mesh_picking_feature.hpp"
 #include "vp/ortho_grid_feature.hpp"
 #include "vp/scene_mesh_feature.hpp"
 #include "vp/viewport.hpp"
@@ -130,6 +133,9 @@ int main() {
     vkkk::Scene scene;
     scene.camera = &camera;
     ORL::ComponentManager components;
+    const auto weight_id = components.create_weight("weights");
+    const auto deformer_id = components.create_deformer("deformer");
+    ORL::Selection selection(components, scene);
 
     using Viewport = vkkk::vp::Viewport<
         vkkk::vp::GridFeature,
@@ -137,7 +143,10 @@ int main() {
         ORL::SceneMeshFeature,
         ORL::JointFeature,
         ORL::JointPickingFeature,
+        ORL::MeshPickingFeature,
         ORL::MeshCsrFeature,
+        ORL::AutoWeightFeature,
+        ORL::DeformerFeature,
         vkkk::vp::FrameAxisFeature>;
     Viewport viewport(context);
     const std::filesystem::path font_path =
@@ -145,9 +154,18 @@ int main() {
     const auto grid_handle = viewport.add_feature<vkkk::vp::GridFeature>(camera);
     const auto mesh_handle = viewport.add_feature<ORL::SceneMeshFeature>(
         scene, viewport_frame.right_handed,
-        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
-    viewport.add_feature<ORL::MeshCsrFeature>(
+        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders", selection);
+    const auto csr_handle = viewport.add_feature<ORL::MeshCsrFeature>(
         scene, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    const auto auto_weight_handle = viewport.add_feature<ORL::AutoWeightFeature>(
+        scene, components, weight_id, selection);
+    if (auto* auto_weight = viewport.find_feature(auto_weight_handle)) {
+        if (auto* csr = viewport.find_feature(csr_handle)) {
+            auto_weight->set_csr(*csr);
+        }
+    }
+    const auto deformer_handle = viewport.add_feature<ORL::DeformerFeature>(
+        scene, components, deformer_id, weight_id, selection);
     viewport.add_feature<ORL::JointFeature>(
         components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
@@ -158,7 +176,6 @@ int main() {
     bool show_grid = true;
     const auto ortho_grid_handle = viewport.add_feature<ORL::OrthoGridFeature>(
         navigator, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
-    ORL::Selection selection(components, scene);
     ORL::LoadModelOp load_model(scene, context, window, world_frame);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, window, selection);
     ORL::SelectOp select_op(selection, components, scene, camera, window, create_joint);
@@ -166,6 +183,11 @@ int main() {
         components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     if (auto* gpu_pick = viewport.find_feature(joint_pick_handle)) {
         select_op.set_gpu_picking(*gpu_pick);
+    }
+    const auto mesh_pick_handle = viewport.add_feature<ORL::MeshPickingFeature>(
+        scene, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    if (auto* mesh_pick = viewport.find_feature(mesh_pick_handle)) {
+        select_op.set_mesh_picking(*mesh_pick);
     }
     ORL::MoveOp move_op(selection, navigator, window);
     ORL::CameraSwitchOp camera_switch(navigator);
@@ -207,6 +229,16 @@ int main() {
     controls.bind_op("move", move_op);
     controls.bind_op("camera_switch", camera_switch);
     controls.bind_op("display_mode_switch", display_mode);
+    controls.bind_op("auto_weight", [&](const ORL::InputEvent&) {
+        if (auto* auto_weight = viewport.find_feature(auto_weight_handle)) {
+            auto_weight->request();
+        }
+    });
+    controls.bind_op("setup_deformer", [&](const ORL::InputEvent&) {
+        if (auto* deformer = viewport.find_feature(deformer_handle)) {
+            deformer->request();
+        }
+    });
 
     try {
         controls.load_config(

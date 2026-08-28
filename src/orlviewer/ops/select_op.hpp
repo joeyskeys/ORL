@@ -18,6 +18,7 @@
 #include "ops/create_joint_op.hpp"
 #include "selection.hpp"
 #include "vp/joint_picking_feature.hpp"
+#include "vp/mesh_picking_feature.hpp"
 #include "vp_operation.hpp"
 
 namespace ORL
@@ -39,7 +40,14 @@ public:
     void set_gpu_picking(JointPickingFeature& gpu_picking) {
         this->gpu_picking = &gpu_picking;
         gpu_picking.set_hit_callback([this](const std::vector<uint32_t>& ids, bool) {
-            apply_gpu_hits(ids);
+            apply_gpu_joint_hits(ids);
+        });
+    }
+
+    void set_mesh_picking(MeshPickingFeature& mesh_picking) {
+        this->mesh_picking = &mesh_picking;
+        mesh_picking.set_hit_callback([this](uint32_t object_id) {
+            apply_gpu_mesh_hit(object_id);
         });
     }
 
@@ -56,30 +64,50 @@ public:
 
         fallback_x = event.x;
         fallback_y = event.y;
-        if (gpu_picking != nullptr && gpu_picking->request(event.x, event.y)) {
+        awaiting_joint = gpu_picking != nullptr && gpu_picking->request(event.x, event.y);
+        awaiting_mesh = mesh_picking != nullptr && mesh_picking->request(event.x, event.y);
+        joint_hit = false;
+        mesh_id = 0;
+        if (awaiting_joint || awaiting_mesh) {
             return;
         }
-        pick(event.x, event.y, PickMask::All);
+        pick_cpu_joints(event.x, event.y);
     }
 
 private:
     static constexpr float kPickPixels = 16.0f;
 
-    enum class PickMask {
-        Joints = 1,
-        Objects = 2,
-        All = 3,
-    };
-
-    static bool has(PickMask mask, PickMask bit) {
-        return (static_cast<int>(mask) & static_cast<int>(bit)) != 0;
-    }
-
-    void apply_gpu_hits(const std::vector<uint32_t>& ids) {
+    void apply_gpu_joint_hits(const std::vector<uint32_t>& ids) {
+        awaiting_joint = false;
         if (choose_gpu_joint(ids)) {
+            joint_hit = true;
+            awaiting_mesh = false;
             return;
         }
-        pick(fallback_x, fallback_y, PickMask::Objects);
+        finish_click();
+    }
+
+    void apply_gpu_mesh_hit(uint32_t object_id) {
+        awaiting_mesh = false;
+        mesh_id = object_id;
+        if (joint_hit) {
+            return;
+        }
+        finish_click();
+    }
+
+    void finish_click() {
+        if (joint_hit || awaiting_joint || awaiting_mesh) {
+            return;
+        }
+        if (mesh_id != 0 && mesh_picking != nullptr) {
+            const auto& name = mesh_picking->object_name(mesh_id);
+            if (!name.empty()) {
+                selection.set(SelectionRef::scene_object(name));
+                return;
+            }
+        }
+        pick_cpu_joints(fallback_x, fallback_y);
     }
 
     bool choose_gpu_joint(const std::vector<uint32_t>& ids) {
@@ -106,25 +134,32 @@ private:
         if (!chosen) {
             return false;
         }
-        selection.replace(chosen);
+        selection.set(chosen);
         return true;
     }
 
-    void pick(double cursor_x, double cursor_y, PickMask mask) {
+    void pick_cpu_joints(double cursor_x, double cursor_y) {
         if (window == nullptr) {
+            selection.set({});
             return;
         }
         int width = 0;
         int height = 0;
         glfwGetWindowSize(window, &width, &height);
         if (width <= 0 || height <= 0) {
+            selection.set({});
             return;
         }
 
         float best = kPickPixels * kPickPixels;
         SelectionRef chosen;
-
-        const auto consider = [&](const glm::vec3& world, SelectionRef ref) {
+        const auto packed = components.packed_joints();
+        components.for_each([&](const Component& meta) {
+            if (meta.kind != ComponentKind::Joint) {
+                return;
+            }
+            const auto index = components.joint_index(meta.id);
+            const glm::vec3 world{orlviewer::joint_world_matrix(packed, index)[3]};
             glm::vec2 pixel{};
             if (!project(world, width, height, pixel)) {
                 return;
@@ -134,29 +169,10 @@ private:
             const float dist = dx * dx + dy * dy;
             if (dist < best) {
                 best = dist;
-                chosen = std::move(ref);
+                chosen = SelectionRef::joint(meta.id);
             }
-        };
-
-        if (has(mask, PickMask::Joints)) {
-            const auto packed = components.packed_joints();
-            components.for_each([&](const Component& meta) {
-                if (meta.kind != ComponentKind::Joint) {
-                    return;
-                }
-                const auto index = components.joint_index(meta.id);
-                consider(glm::vec3{orlviewer::joint_world_matrix(packed, index)[3]},
-                    SelectionRef::joint(meta.id));
-            });
-        }
-
-        if (has(mask, PickMask::Objects)) {
-            scene.for_each_object([&](const std::string& name, const vkkk::SceneObject& object) {
-                consider(glm::vec3{object.model[3]}, SelectionRef::scene_object(name));
-            });
-        }
-
-        selection.replace(chosen);
+        });
+        selection.set(chosen);
     }
 
     bool project(const glm::vec3& world, int width, int height, glm::vec2& pixel) const {
@@ -178,8 +194,13 @@ private:
     GLFWwindow* window = nullptr;
     const CreateJointOp& create_joint;
     JointPickingFeature* gpu_picking = nullptr;
+    MeshPickingFeature* mesh_picking = nullptr;
     double fallback_x = 0.0;
     double fallback_y = 0.0;
+    uint32_t mesh_id = 0;
+    bool awaiting_joint = false;
+    bool awaiting_mesh = false;
+    bool joint_hit = false;
 };
 
 } // namespace ORL

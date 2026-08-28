@@ -249,6 +249,17 @@ TEST_CASE("syntax includes nested stdlib auto-weight modules", "[orl][syntax][st
     RequireParses(src);
 }
 
+TEST_CASE("syntax includes stdlib lbs deformer", "[orl][syntax][stdlib][deformer]") {
+    const std::string src =
+        "use deformer/lbs;\n"
+        "int skin(point bind[], point out[], Joint joints[], matrix inverse_binds[],\n"
+        "         int bones[], float weights[], int vcount, int jcount, int inf) {\n"
+        "    return deformer_lbs(bind, out, joints, inverse_binds, bones, weights, vcount, jcount, inf);\n"
+        "}\n";
+
+    RequireParses(src);
+}
+
 TEST_CASE("syntax rejects unknown stdlib includes", "[orl][syntax][stdlib][error]") {
     RequireRejects("use missing_stdlib_module;\n");
 }

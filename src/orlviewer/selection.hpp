@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -131,6 +132,19 @@ public:
         sync_joint_states();
     }
 
+    // Replace items of the same kind, keep the rest. Empty ref clears all.
+    void set(SelectionRef ref) {
+        if (!ref) {
+            clear();
+            return;
+        }
+        items.erase(std::remove_if(items.begin(), items.end(),
+                        [&ref](const SelectionRef& item) { return item.kind == ref.kind; }),
+            items.end());
+        items.push_back(std::move(ref));
+        sync_joint_states();
+    }
+
     void add(SelectionRef ref) {
         if (ref) {
             items.push_back(std::move(ref));
@@ -141,6 +155,32 @@ public:
     const std::vector<SelectionRef>& refs() const { return items; }
     const SelectionRef* focus() const {
         return items.empty() ? nullptr : &items.back();
+    }
+
+    std::string selected_mesh_name() const {
+        for (const auto& item : items) {
+            if (item.kind != SelectionRef::Kind::SceneObject) {
+                continue;
+            }
+            const auto* object = scene.find_object(item.object_name);
+            if (object != nullptr && !object->mesh_name.empty()) {
+                return object->mesh_name;
+            }
+        }
+        return {};
+    }
+
+    bool has_selected_joint() const {
+        for (const auto& item : items) {
+            if (item.kind == SelectionRef::Kind::Joint) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool valid_for_bind() const {
+        return !selected_mesh_name().empty() && has_selected_joint();
     }
 
     XformAttr dest(const SelectionRef& ref) const { return make_dest(ref); }

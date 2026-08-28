@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "comps/joint.hpp"
+#include "comps/weight.hpp"
+#include "comps/deformer.hpp"
 #include "concepts/curve.hpp"
 
 namespace ORL
@@ -77,9 +79,7 @@ struct CurveLink {
     bool empty() const { return std::holds_alternative<std::monostate>(handle); }
 };
 
-struct WeightData {};
 struct ConstraintData {};
-struct DeformerData {};
 
 struct Component {
     ComponentId id;

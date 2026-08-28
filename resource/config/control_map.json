@@ -127,6 +127,14 @@
         "key": "kp7",
         "action": "press"
       }
+    },
+    {
+      "op": ["auto_weight", "setup_deformer"],
+      "input": {
+        "type": "key",
+        "key": "B",
+        "action": "press"
+      }
     }
   ]
 }
