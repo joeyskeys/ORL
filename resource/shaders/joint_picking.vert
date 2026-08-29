@@ -11,8 +11,8 @@ layout(binding = 0) uniform CameraUBO {
 struct Joint {
     int64_t parent;
     int64_t selected;
-    int64_t displayed;
-    int64_t pad;
+    int64_t pad0;
+    int64_t pad1;
     double translation[4];
     double rotation[4];
     double scale[4];

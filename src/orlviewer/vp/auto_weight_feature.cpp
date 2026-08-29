@@ -3,9 +3,13 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
+
+#include <glm/mat4x4.hpp>
+#include <glm/vec4.hpp>
 
 #include "comps/joint.hpp"
 #include "concepts/mesh.h"
@@ -54,7 +58,7 @@ int vertex_float_offset(const vkkk::Mesh& mesh) {
     return -1;
 }
 
-bool fill_positions(exec::OrlBuffer& positions, const vkkk::Mesh& mesh) {
+bool fill_positions(exec::OrlBuffer& positions, const vkkk::Mesh& mesh, const glm::mat4& model) {
     const int offset = vertex_float_offset(mesh);
     if (offset < 0 || mesh.vbuf == nullptr || mesh.vcnt == 0) {
         return false;
@@ -65,9 +69,10 @@ bool fill_positions(exec::OrlBuffer& positions, const vkkk::Mesh& mesh) {
     auto* dst = static_cast<double*>(positions.data());
     for (std::uint32_t v = 0; v < mesh.vcnt; ++v) {
         const float* src = mesh.vbuf + v * mesh.comp_size + offset;
-        dst[v * 4 + 0] = src[0];
-        dst[v * 4 + 1] = src[1];
-        dst[v * 4 + 2] = src[2];
+        const glm::vec4 world = model * glm::vec4{src[0], src[1], src[2], 1.0f};
+        dst[v * 4 + 0] = world.x;
+        dst[v * 4 + 1] = world.y;
+        dst[v * 4 + 2] = world.z;
         dst[v * 4 + 3] = 0.0;
     }
     return true;
@@ -103,6 +108,65 @@ bool fill_radii(exec::OrlBuffer& radii, std::size_t joint_count) {
         out[i] = 1.0;
     }
     return true;
+}
+
+void write_text_file(const char* path, const std::string& text) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        std::cerr << "Auto weight: could not write " << path << '\n';
+        return;
+    }
+    out << text;
+    std::cout << "Auto weight: wrote " << path << " (" << text.size() << " bytes)\n";
+}
+
+void dump_weights(const WeightData& weight, std::size_t vertex_count, std::size_t joint_count) {
+    const auto influences = std::max<std::int64_t>(1, weight.influences_per_vertex);
+    const auto out_count = weight.bone_indices.count();
+    const auto* bones = static_cast<const std::int64_t*>(weight.bone_indices.data());
+    const auto* values = static_cast<const double*>(weight.weights.data());
+    if (bones == nullptr || values == nullptr || out_count == 0) {
+        std::cerr << "Auto weight: weight buffers are empty, skip dump\n";
+        return;
+    }
+
+    std::vector<std::size_t> counts(joint_count, 0);
+    std::size_t invalid = 0;
+    for (std::size_t i = 0; i < out_count; ++i) {
+        const auto bone = bones[i];
+        if (bone < 0 || static_cast<std::size_t>(bone) >= joint_count) {
+            ++invalid;
+            continue;
+        }
+        ++counts[static_cast<std::size_t>(bone)];
+    }
+
+    std::cout << "Auto weight: dump influences_per_vertex=" << influences
+        << " slots=" << out_count << " invalid=" << invalid << '\n';
+    for (std::size_t j = 0; j < counts.size(); ++j) {
+        std::cout << "  bone " << j << ": " << counts[j] << " influences\n";
+    }
+
+    const std::size_t preview = std::min<std::size_t>(out_count, 8);
+    for (std::size_t i = 0; i < preview; ++i) {
+        const auto vertex = i / static_cast<std::size_t>(influences);
+        std::cout << "  vert " << vertex << " slot " << i
+            << " bone=" << bones[i] << " w=" << values[i] << '\n';
+    }
+
+    std::ofstream out("orl_debug_weights.txt", std::ios::trunc);
+    if (!out) {
+        std::cerr << "Auto weight: could not write orl_debug_weights.txt\n";
+        return;
+    }
+    out << "# vertex\tslot\tbone\tweight\n";
+    for (std::size_t i = 0; i < out_count; ++i) {
+        const auto vertex = vertex_count == 0
+            ? i
+            : i / static_cast<std::size_t>(influences);
+        out << vertex << '\t' << i << '\t' << bones[i] << '\t' << values[i] << '\n';
+    }
+    std::cout << "Auto weight: wrote orl_debug_weights.txt (" << out_count << " rows)\n";
 }
 
 } // namespace
@@ -176,6 +240,7 @@ bool AutoWeightFeature::ensure_program() {
     program = std::move(compiled_program);
     execution = std::move(compiled_execution);
     compiled = algorithm_name;
+    write_text_file("orl_debug_auto_weight.ll", execution->ir());
     return true;
 }
 
@@ -225,7 +290,7 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
     exec::OrlBuffer neighbors("int", sizeof(std::int64_t));
     exec::OrlBuffer radii("float", sizeof(double));
 
-    if (!fill_positions(positions, *mesh) || !fill_joints(joints, packed)) {
+    if (!fill_positions(positions, *mesh, selection.selected_mesh_model()) || !fill_joints(joints, packed)) {
         std::cerr << "Auto weight: failed to pack mesh or joints\n";
         return false;
     }
@@ -316,9 +381,29 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
         return false;
     }
 
+    std::size_t used_joints = 0;
+    if (const auto* bones = static_cast<const std::int64_t*>(weight->bone_indices.data())) {
+        std::vector<char> used(static_cast<std::size_t>(joint_count), 0);
+        for (std::size_t i = 0; i < out_count; ++i) {
+            const auto bone = bones[i];
+            if (bone < 0 || bone >= joint_count) {
+                continue;
+            }
+            auto& flag = used[static_cast<std::size_t>(bone)];
+            if (flag == 0) {
+                flag = 1;
+                ++used_joints;
+            }
+        }
+    }
+
     std::cout << "Auto weight: " << algorithm_name << " '" << mesh_name << "' "
         << mesh->vcnt << " verts, " << packed.size() << " joints, wrote "
-        << out_count << " influences\n";
+        << out_count << " influences across " << used_joints << " joints\n";
+    if (used_joints <= 1 && mesh->vcnt > 1) {
+        std::cerr << "Auto weight: all vertices bound to one joint; the mesh will move rigidly\n";
+    }
+    dump_weights(*weight, static_cast<std::size_t>(mesh->vcnt), packed.size());
     return true;
 }
 

@@ -1,26 +1,32 @@
 // ORL standard joint. Users pull this in instead of a language-level joint type:
 //   use joint;
 //
-// Host/GPU storage is orlviewer/comps/Joint: i64 parent plus 32-byte
-// translation, rotation, and scale slots. Keep this field order unchanged.
+// Host/GPU storage is orlviewer/comps/Joint. Keep the 128-byte ABI:
+//   i64 parent, i64 selected, 16 bytes pad, then 32-byte TRS slots.
+// selected/pad are viewer flags; skinning only uses parent+TRS.
 
 struct Joint {
     int parent;
-    vector translation;
+    int selected;
+    int pad0;
+    int pad1;
+    vec4 translation;
     quat rotation;
-    vector scale;
+    vec4 scale;
 }
 
 Joint joint_identity() {
-    vector translation(0.0, 0.0, 0.0);
+    vec4 translation(0.0, 0.0, 0.0, 0.0);
     quat rotation(0.0, 0.0, 0.0, 1.0);
-    vector scale(1.0, 1.0, 1.0);
-    Joint result(-1, translation, rotation, scale);
+    vec4 scale(1.0, 1.0, 1.0, 0.0);
+    Joint result(-1, 0, 0, 0, translation, rotation, scale);
     return result;
 }
 
 Joint joint_from_trs(int parent, vector translation, quat rotation, vector scale) {
-    Joint result(parent, translation, rotation, scale);
+    vec4 t(translation.x, translation.y, translation.z, 0.0);
+    vec4 s(scale.x, scale.y, scale.z, 0.0);
+    Joint result(parent, 0, 0, 0, t, rotation, s);
     return result;
 }
 
@@ -51,6 +57,9 @@ matrix joint_local_matrix(Joint joint) {
 }
 
 matrix joint_world_matrix(Joint joints[], int index) {
+    if (index < 0) {
+        return mat_identity();
+    }
     Joint current = joints[index];
     matrix world = joint_local_matrix(current);
     int parent = current.parent;

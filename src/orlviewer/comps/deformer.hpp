@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include <glm/mat4x4.hpp>
+
 #include "orl_exec.hpp"
 
 namespace ORL
@@ -15,6 +17,7 @@ struct DeformerData {
     std::string mesh_name;
     exec::OrlBuffer bind_positions;
     exec::OrlBuffer inverse_binds;
+    glm::mat4 bind_model{1.0f};
     bool bound = false;
 
     DeformerData()

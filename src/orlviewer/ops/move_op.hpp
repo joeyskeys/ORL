@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <vector>
 
 #include <GLFW/glfw3.h>
@@ -31,7 +30,17 @@ public:
 
     void on_enter() {
         starts.clear();
+        const auto* focus = selection.focus();
+        if (focus == nullptr || window == nullptr) {
+            engaged = false;
+            return;
+        }
+        // Bind keeps mesh + joints selected together. Transform only the
+        // kind last clicked so moving a joint does not drag the mesh object.
         for (const auto& ref : selection.refs()) {
+            if (ref.kind != focus->kind) {
+                continue;
+            }
             const auto attr = selection.dest(ref);
             if (!attr) {
                 starts.clear();
@@ -40,7 +49,7 @@ public:
             }
             starts.push_back(attr.world_position());
         }
-        if (starts.empty() || window == nullptr) {
+        if (starts.empty()) {
             engaged = false;
             return;
         }
@@ -94,13 +103,23 @@ private:
     }
 
     void apply() {
-        const auto& refs = selection.refs();
-        const std::size_t count = std::min(refs.size(), starts.size());
-        for (std::size_t i = 0; i < count; ++i) {
-            auto attr = selection.dest(refs[i]);
+        const auto* focus = selection.focus();
+        if (focus == nullptr) {
+            return;
+        }
+        std::size_t i = 0;
+        for (const auto& ref : selection.refs()) {
+            if (ref.kind != focus->kind) {
+                continue;
+            }
+            if (i >= starts.size()) {
+                break;
+            }
+            auto attr = selection.dest(ref);
             if (attr) {
                 attr.set_world_position(starts[i] + accum);
             }
+            ++i;
         }
     }
 

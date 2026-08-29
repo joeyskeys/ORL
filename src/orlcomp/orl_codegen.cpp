@@ -9,12 +9,14 @@
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/MC/TargetRegistry.h>
+#include <llvm/Support/Alignment.h>
 #include <llvm/Support/CodeGen.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/TargetSelect.h>
@@ -93,7 +95,6 @@ struct LlvmIrCodegen::Impl {
         current_function_ = nullptr;
         current_function_return_type_ = nullptr;
         current_function_definition_ = nullptr;
-        parallel_body_counter_ = 0;
         generating_parallel_body_ = false;
 
         if (target_ == OrlCodegenTarget::Host && !ApplyNativeDataLayout()) {
@@ -277,6 +278,17 @@ struct LlvmIrCodegen::Impl {
     llvm::AllocaInst *CreateEntryAlloca(const std::string &name, llvm::Type *type) {
         llvm::IRBuilder<> entry_builder(&current_function_->getEntryBlock(), current_function_->getEntryBlock().begin());
         return entry_builder.CreateAlloca(type, nullptr, name);
+    }
+
+    llvm::Value *CreatePackedLoad(llvm::Type *type, llvm::Value *address, const llvm::Twine &name) {
+        llvm::LoadInst *load = builder_.CreateLoad(type, address, name);
+        load->setAlignment(llvm::Align(1));
+        return load;
+    }
+
+    void CreatePackedStore(llvm::Value *value, llvm::Value *address) {
+        llvm::StoreInst *store = builder_.CreateStore(value, address);
+        store->setAlignment(llvm::Align(1));
     }
 
     llvm::Value *CastValue(llvm::Value *value, llvm::Type *target_type, const char *context) {
@@ -846,103 +858,45 @@ struct LlvmIrCodegen::Impl {
             return false;
         }
 
-        llvm::Function *outer_function = current_function_;
-        llvm::Type *outer_return_type = current_function_return_type_;
-        const FunctionDefinitionStatement *outer_definition = current_function_definition_;
-        llvm::BasicBlock *outer_block = builder_.GetInsertBlock();
-        const std::uint32_t body_id = parallel_body_counter_++;
-
-        std::vector<llvm::Type *> capture_types;
-        capture_types.reserve(outer_function->arg_size());
-        for (llvm::Argument &argument : outer_function->args()) {
-            capture_types.push_back(argument.getType());
-        }
-        llvm::StructType *context_type = llvm::StructType::create(
-            *context_, capture_types, "orl.parallel.context." + std::to_string(body_id));
-        llvm::AllocaInst *context_slot = CreateEntryAlloca("parallel.context", context_type);
-        for (std::size_t index = 0; index < outer_definition->parameters.size(); ++index) {
-            const Parameter &parameter = outer_definition->parameters[index];
-            VariableInfo *variable = FindVariable(parameter.name);
-            if (variable == nullptr) {
-                AddError("Parallel for cannot capture missing function parameter: " + parameter.name);
-                return false;
-            }
-            llvm::Value *value = parameter.is_buffer
-                                     ? variable->slot
-                                     : builder_.CreateLoad(variable->type, variable->slot, parameter.name + ".capture");
-            llvm::Value *field = builder_.CreateStructGEP(context_type, context_slot, index, parameter.name + ".capture.field");
-            builder_.CreateStore(value, field);
-        }
-
-        auto *body_type = llvm::FunctionType::get(
-            builder_.getVoidTy(), {builder_.getPtrTy(), builder_.getInt64Ty()}, false);
-        llvm::Function *body_function = llvm::Function::Create(
-            body_type,
-            llvm::GlobalValue::ExternalLinkage,
-            "orl.parallel.body." + std::to_string(body_id),
-            module_.get());
-        body_function->setCallingConv(llvm::CallingConv::C);
-        body_function->addFnAttr(llvm::Attribute::NoUnwind);
-        auto body_argument = body_function->arg_begin();
-        body_argument->setName("context");
-        llvm::Value *body_context = &*body_argument++;
-        body_argument->setName(parallel_for.index_name);
-
-        auto outer_scopes = std::move(scopes_);
-        const bool outer_generating_parallel_body = generating_parallel_body_;
-        current_function_ = body_function;
-        current_function_return_type_ = body_function->getReturnType();
-        scopes_.clear();
-        generating_parallel_body_ = true;
-        auto *entry_block = llvm::BasicBlock::Create(*context_, "entry", body_function);
-        builder_.SetInsertPoint(entry_block);
-        EnterScope();
+        llvm::Function *function = builder_.GetInsertBlock()->getParent();
         llvm::AllocaInst *index_slot = CreateEntryAlloca(parallel_for.index_name, builder_.getInt64Ty());
-        builder_.CreateStore(&*body_argument, index_slot);
+        builder_.CreateStore(builder_.getInt64(0), index_slot);
+
+        auto *cond_block = llvm::BasicBlock::Create(*context_, "parallel.cond", function);
+        auto *body_block = llvm::BasicBlock::Create(*context_, "parallel.body", function);
+        auto *inc_block = llvm::BasicBlock::Create(*context_, "parallel.inc", function);
+        auto *after_block = llvm::BasicBlock::Create(*context_, "parallel.end", function);
+        builder_.CreateBr(cond_block);
+
+        builder_.SetInsertPoint(cond_block);
+        llvm::Value *index_value = builder_.CreateLoad(builder_.getInt64Ty(), index_slot, parallel_for.index_name);
+        llvm::Value *condition = builder_.CreateICmpSLT(index_value, bound, "parallel.condition");
+        builder_.CreateCondBr(condition, body_block, after_block);
+
+        const bool outer_generating_parallel_body = generating_parallel_body_;
+        generating_parallel_body_ = true;
+        loops_.push_back(LoopContext{after_block, inc_block});
+        EnterScope();
         AddVariable(parallel_for.index_name, VariableInfo{index_slot, builder_.getInt64Ty()});
-
-        for (std::size_t index = 0; index < outer_definition->parameters.size(); ++index) {
-            const Parameter &parameter = outer_definition->parameters[index];
-            llvm::Value *field = builder_.CreateStructGEP(context_type, body_context, index, parameter.name + ".field");
-            llvm::Type *field_type = capture_types[index];
-            llvm::Value *value = builder_.CreateLoad(field_type, field, parameter.name + ".capture");
-            if (parameter.is_buffer) {
-                llvm::Type *element_type = MapTypeName(parameter.type_name);
-                AddVariable(parameter.name, VariableInfo{value, element_type, true});
-            } else {
-                llvm::AllocaInst *slot = CreateEntryAlloca(parameter.name, field_type);
-                builder_.CreateStore(value, slot);
-                AddVariable(parameter.name, VariableInfo{slot, field_type});
-            }
-        }
-
+        builder_.SetInsertPoint(body_block);
         const bool generated_body = GenerateStatement(*parallel_for.body);
         if (generated_body && builder_.GetInsertBlock()->getTerminator() == nullptr) {
-            builder_.CreateRetVoid();
+            builder_.CreateBr(inc_block);
         }
         LeaveScope();
-        scopes_ = std::move(outer_scopes);
+        loops_.pop_back();
         generating_parallel_body_ = outer_generating_parallel_body;
-        current_function_ = outer_function;
-        current_function_return_type_ = outer_return_type;
-        current_function_definition_ = outer_definition;
-        builder_.SetInsertPoint(outer_block);
         if (!generated_body) {
             return false;
         }
 
-        llvm::FunctionCallee runtime = module_->getOrInsertFunction(
-            "__orl_parallel_for",
-            llvm::FunctionType::get(
-                builder_.getVoidTy(),
-                {builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getPtrTy(), builder_.getPtrTy()},
-                false));
-        if (auto *runtime_fn = module_->getFunction("__orl_parallel_for")) {
-            runtime_fn->setCallingConv(llvm::CallingConv::C);
-        }
-        auto *call = builder_.CreateCall(runtime,
-            {builder_.getInt64(0), bound, body_function, context_slot});
-        call->setCallingConv(llvm::CallingConv::C);
+        builder_.SetInsertPoint(inc_block);
+        llvm::Value *current = builder_.CreateLoad(builder_.getInt64Ty(), index_slot, "parallel.i");
+        builder_.CreateStore(
+            builder_.CreateAdd(current, builder_.getInt64(1), "parallel.next"), index_slot);
+        builder_.CreateBr(cond_block);
+
+        builder_.SetInsertPoint(after_block);
         return true;
     }
 
@@ -1089,7 +1043,7 @@ struct LlvmIrCodegen::Impl {
         if (address == nullptr) {
             return nullptr;
         }
-        return builder_.CreateLoad(element_type, address, "arrayload");
+        return CreatePackedLoad(element_type, address, "arrayload");
     }
 
     bool FindStructField(llvm::StructType *struct_type, const std::string &field_name, unsigned int *index) {
@@ -1487,7 +1441,7 @@ struct LlvmIrCodegen::Impl {
             return nullptr;
         }
 
-        builder_.CreateStore(value, address);
+        CreatePackedStore(value, address);
         return value;
     }
 
@@ -1776,7 +1730,6 @@ struct LlvmIrCodegen::Impl {
     llvm::Function *current_function_ = nullptr;
     llvm::Type *current_function_return_type_ = nullptr;
     const FunctionDefinitionStatement *current_function_definition_ = nullptr;
-    std::uint32_t parallel_body_counter_ = 0;
     bool generating_parallel_body_ = false;
     std::vector<std::string> errors_;
 };

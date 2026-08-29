@@ -221,6 +221,7 @@ struct OrlExecution::Impl {
     std::unique_ptr<orlcomp::OrlJitEngine> jit;
     std::unique_ptr<orlcomp::OrlGpuEngine> gpu;
     std::vector<std::string> errors;
+    std::string ir;
     bool initialized = false;
 
     ~Impl() {
@@ -329,6 +330,7 @@ struct OrlExecution::Impl {
             append_errors(errors, codegen.Errors());
             return false;
         }
+        ir = codegen.DumpIR();
 
         if (backend == Backend::Cpu) {
             jit = std::make_unique<orlcomp::OrlJitEngine>(orlcomp::OrlJitTarget::Native);
@@ -530,6 +532,11 @@ Backend OrlExecution::backend() const {
 
 const std::vector<std::string>& OrlExecution::errors() const {
     return impl_->errors;
+}
+
+const std::string& OrlExecution::ir() const {
+    static const std::string empty;
+    return impl_ != nullptr ? impl_->ir : empty;
 }
 
 } // namespace ORL::exec

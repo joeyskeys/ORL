@@ -130,6 +130,7 @@ public:
 
     Backend backend() const;
     const std::vector<std::string>& errors() const;
+    const std::string& ir() const;
 
 private:
     struct Impl;

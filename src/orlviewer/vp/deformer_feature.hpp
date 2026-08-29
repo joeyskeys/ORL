@@ -46,6 +46,8 @@ private:
     exec::OrlBuffer joints;
     exec::OrlBuffer output_positions;
     bool pending = false;
+    bool logged_rest = false;
+    bool logged_move = false;
 };
 
 } // namespace ORL

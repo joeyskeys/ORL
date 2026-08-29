@@ -14,9 +14,10 @@ namespace orlviewer {
 
 // Shared CPU/GPU joint storage. Field order matches resource/stdlib/joint.orl.
 // Padding follows ORL's LLVM/host ABI and GLSL std430:
-//   i64 parent, then 24 bytes of viewer flags, then 32-byte TRS slots.
-// selected is the real selection; displayed is what the viewport draws
-// (self or an ancestor selected). ORL stdlib Joint still only uses parent+TRS.
+//   i64 parent, i64 selected, 16 bytes pad, then 32-byte TRS slots.
+// selected is set on the picked joint and every descendant so the viewport
+// can highlight the whole subtree. Stdlib Joint mirrors these pad fields so
+// LLVM does not place translation on top of selected.
 // This buffer is meant to be bound to ORL as Joint joints[] and then drawn
 // from the same device memory. Do not introduce a CPU staging copy for that path.
 inline constexpr const char *kJointOrlType = "Joint";
@@ -34,8 +35,8 @@ struct JointSample {
 struct alignas(32) Joint {
     std::int64_t parent;
     std::int64_t selected;
-    std::int64_t displayed;
-    std::int64_t pad;
+    std::int64_t pad0;
+    std::int64_t pad1;
     double translation[4];
     double rotation[4];
     double scale[4];
@@ -43,7 +44,6 @@ struct alignas(32) Joint {
 
 static_assert(sizeof(Joint) == kJointStride, "Joint stride must stay 128 bytes");
 static_assert(offsetof(Joint, selected) == 8, "Joint selected must start at 8");
-static_assert(offsetof(Joint, displayed) == 16, "Joint displayed must start at 16");
 static_assert(offsetof(Joint, translation) == 32, "Joint translation must start at 32");
 static_assert(offsetof(Joint, rotation) == 64, "Joint rotation must start at 64");
 static_assert(offsetof(Joint, scale) == 96, "Joint scale must start at 96");

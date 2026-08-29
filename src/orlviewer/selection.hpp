@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -170,6 +171,21 @@ public:
         return {};
     }
 
+    glm::mat4 selected_mesh_model() const {
+        for (const auto& item : items) {
+            if (item.kind != SelectionRef::Kind::SceneObject) {
+                continue;
+            }
+            const auto* object = scene.find_object(item.object_name);
+            if (object != nullptr && !object->mesh_name.empty()) {
+                glm::mat4 model{1.0f};
+                std::memcpy(&model, &object->model, sizeof(model));
+                return model;
+            }
+        }
+        return glm::mat4{1.0f};
+    }
+
     bool has_selected_joint() const {
         for (const auto& item : items) {
             if (item.kind == SelectionRef::Kind::Joint) {
@@ -211,7 +227,6 @@ private:
                 return;
             }
             joint->selected = 0;
-            joint->displayed = 0;
         });
 
         for (const auto& item : items) {
@@ -229,21 +244,17 @@ private:
                 return;
             }
             auto* joint = components.joint(meta.id);
-            if (joint == nullptr) {
+            if (joint == nullptr || joint->selected != 0) {
                 return;
             }
-            bool display = joint->selected != 0;
             auto parent = joint->parent;
-            while (!display && parent >= 0
-                && static_cast<std::size_t>(parent) < packed.size())
-            {
+            while (parent >= 0 && static_cast<std::size_t>(parent) < packed.size()) {
                 if (packed[static_cast<std::size_t>(parent)].selected != 0) {
-                    display = true;
+                    joint->selected = 1;
                     break;
                 }
                 parent = packed[static_cast<std::size_t>(parent)].parent;
             }
-            joint->displayed = display ? 1 : 0;
         });
     }
 

@@ -34,9 +34,11 @@ int deformer_lbs(point bind_positions[],
             int slot = vertex * influences_per_vertex + i;
             int bone = bone_indices[slot];
             float w = weights[slot];
-            matrix world = joint_world_matrix(joints, bone);
-            matrix skin = joint_skin_matrix(world, inverse_binds[bone]);
-            skinned = skinned + w * (skin * bind);
+            if (bone >= 0) {
+                matrix world = joint_world_matrix(joints, bone);
+                matrix skin = joint_skin_matrix(world, inverse_binds[bone]);
+                skinned = skinned + w * (skin * bind);
+            }
             i = i + 1;
         }
         output_positions[vertex] = skinned;
