@@ -23,6 +23,7 @@ public:
 
     void set_csr(MeshCsrFeature& feature);
     bool set_algorithm(std::string_view name);
+    bool cycle_algorithm();
     std::string_view algorithm() const { return algorithm_name; }
 
     void request();

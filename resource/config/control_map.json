@@ -135,6 +135,15 @@
         "key": "B",
         "action": "press"
       }
+    },
+    {
+      "op": "auto_weight_cycle",
+      "input": {
+        "type": "key",
+        "key": "B",
+        "action": "press",
+        "mods": ["shift"]
+      }
     }
   ]
 }

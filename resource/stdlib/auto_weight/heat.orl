@@ -1,20 +1,129 @@
 // Heat-diffusion auto-weight (Baran & Popović Pinocchio / Maya heat map).
 //   use auto_weight/heat;
 //
-// Solve a Laplace equation on the mesh: bone vertices are heat sources,
-// equilibrium temperature becomes the weight. Needs CSR offsets[] / neighbors[]
-// from the viewer mesh precompute. Not implemented yet.
+// Pins vertices near a bone, then Gauss-Seidel on the combinatorial mesh
+// Laplacian. scratch[v * joint_count + j] holds bone j's heat at vertex v.
 
-use joint;
+use auto_weight/common;
+
+int auto_weight_heat_pin(float d0, float d1, float radius) {
+    int pin = 0;
+    if (d0 < radius * 0.45) {
+        pin = 1;
+    }
+    if (d0 * 1.35 < d1) {
+        pin = 1;
+    }
+    return pin;
+}
 
 int auto_weight_heat(point positions[],
                      int offsets[],
                      int neighbors[],
                      Joint joints[],
+                     float radii[],
+                     float scratch[],
                      int bone_indices[],
                      float weights[],
                      int vertex_count,
                      int joint_count,
                      int influences_per_vertex) {
-    return 0;
+    int v = 0;
+    while (v < vertex_count) {
+        point p = positions[v];
+        int closest = 0;
+        int second = 0;
+        float d0 = 1.0e30;
+        float d1 = 1.0e30;
+        int j = 0;
+        while (j < joint_count) {
+            Joint joint = joints[j];
+            point child = auto_weight_joint_origin(joints, j);
+            point start = child;
+            if (joint.parent >= 0) {
+                start = auto_weight_joint_origin(joints, joint.parent);
+            }
+            float dist = auto_weight_segment_distance2(p, start, child);
+            if (dist < d0) {
+                d1 = d0;
+                second = closest;
+                d0 = dist;
+                closest = j;
+            }
+            if (dist >= d0) {
+                if (dist < d1) {
+                    if (j != closest) {
+                        d1 = dist;
+                        second = j;
+                    }
+                }
+            }
+            j = j + 1;
+        }
+
+        float radius = radii[closest];
+        if (radius < 0.0001) {
+            radius = 1.0;
+        }
+        int pinned = auto_weight_heat_pin(d0, d1, radius * radius);
+        j = 0;
+        while (j < joint_count) {
+            float heat = 0.0;
+            if (pinned != 0) {
+                if (j == closest) {
+                    heat = 1.0;
+                }
+            }
+            scratch[v * joint_count + j] = heat;
+            j = j + 1;
+        }
+        bone_indices[v] = closest;
+        if (pinned != 0) {
+            bone_indices[v] = closest;
+        }
+        if (pinned == 0) {
+            bone_indices[v] = -1;
+        }
+        v = v + 1;
+    }
+
+    int iter = 0;
+    while (iter < 16) {
+        v = 0;
+        while (v < vertex_count) {
+            int pin_bone = bone_indices[v];
+            if (pin_bone < 0) {
+                int begin = offsets[v];
+                int end = offsets[v + 1];
+                float deg = 0.0;
+                int e = begin;
+                while (e < end) {
+                    deg = deg + 1.0;
+                    e = e + 1;
+                }
+                if (deg > 0.0) {
+                    int j = 0;
+                    while (j < joint_count) {
+                        float sum = 0.0;
+                        e = begin;
+                        while (e < end) {
+                            int n = neighbors[e];
+                            sum = sum + scratch[n * joint_count + j];
+                            e = e + 1;
+                        }
+                        scratch[v * joint_count + j] = sum / deg;
+                        j = j + 1;
+                    }
+                }
+            }
+            v = v + 1;
+        }
+        iter = iter + 1;
+    }
+
+    parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
+        auto_weight_write_topk(scratch, bone_indices, weights, vertex, joint_count,
+            influences_per_vertex);
+    }
+    return vertex_count;
 }

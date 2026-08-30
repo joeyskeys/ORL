@@ -1,0 +1,123 @@
+// Shared auto-weight helpers.
+//   use auto_weight/common;
+
+use joint;
+
+float auto_weight_segment_distance2(point p, point a, point b) {
+    vector ab = b - a;
+    vector ap = p - a;
+    float ab2 = dot(ab, ab);
+    float t = 0.0;
+    if (ab2 > 0.0000001) {
+        t = clamp(dot(ap, ab) / ab2, 0.0, 1.0);
+    }
+    point closest = a + t * ab;
+    vector delta = p - closest;
+    return dot(delta, delta);
+}
+
+float auto_weight_segment_distance(point p, point a, point b) {
+    vector ab = b - a;
+    vector ap = p - a;
+    float ab2 = dot(ab, ab);
+    float t = 0.0;
+    if (ab2 > 0.0000001) {
+        t = clamp(dot(ap, ab) / ab2, 0.0, 1.0);
+    }
+    point closest = a + t * ab;
+    return length(p - closest);
+}
+
+point auto_weight_joint_origin(Joint joints[], int index) {
+    matrix world = joint_world_matrix(joints, index);
+    return world * point(0.0, 0.0, 0.0);
+}
+
+int auto_weight_bone_taken(int bone_indices[], int vertex, int influences, int slot, int bone) {
+    int s = 0;
+    while (s < slot) {
+        if (bone_indices[vertex * influences + s] == bone) {
+            return 1;
+        }
+        s = s + 1;
+    }
+    return 0;
+}
+
+int auto_weight_write_topk(float scratch[],
+                           int bone_indices[],
+                           float weights[],
+                           int vertex,
+                           int joint_count,
+                           int influences) {
+    int slot = 0;
+    while (slot < influences) {
+        int best = -1;
+        float best_w = -1.0;
+        int j = 0;
+        while (j < joint_count) {
+            float w = scratch[vertex * joint_count + j];
+            int taken = auto_weight_bone_taken(bone_indices, vertex, influences, slot, j);
+            if (taken == 0) {
+                if (w > best_w) {
+                    best_w = w;
+                    best = j;
+                }
+            }
+            j = j + 1;
+        }
+        int out = vertex * influences + slot;
+        if (best < 0) {
+            bone_indices[out] = -1;
+            weights[out] = 0.0;
+        }
+        if (best >= 0) {
+            if (best_w <= 0.0) {
+                bone_indices[out] = -1;
+                weights[out] = 0.0;
+            }
+            if (best_w > 0.0) {
+                bone_indices[out] = best;
+                weights[out] = best_w;
+            }
+        }
+        slot = slot + 1;
+    }
+
+    float sum = 0.0;
+    slot = 0;
+    while (slot < influences) {
+        sum = sum + weights[vertex * influences + slot];
+        slot = slot + 1;
+    }
+    if (sum > 0.0000001) {
+        slot = 0;
+        while (slot < influences) {
+            int out = vertex * influences + slot;
+            weights[out] = weights[out] / sum;
+            slot = slot + 1;
+        }
+        return influences;
+    }
+
+    int fallback = 0;
+    float best_w = scratch[vertex * joint_count];
+    int j = 1;
+    while (j < joint_count) {
+        float w = scratch[vertex * joint_count + j];
+        if (w > best_w) {
+            best_w = w;
+            fallback = j;
+        }
+        j = j + 1;
+    }
+    bone_indices[vertex * influences] = fallback;
+    weights[vertex * influences] = 1.0;
+    slot = 1;
+    while (slot < influences) {
+        bone_indices[vertex * influences + slot] = -1;
+        weights[vertex * influences + slot] = 0.0;
+        slot = slot + 1;
+    }
+    return influences;
+}

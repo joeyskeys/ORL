@@ -1,20 +1,124 @@
 // Harmonic coordinates (Joshi et al. / Jacobson SIGGRAPH course).
 //   use auto_weight/harmonic;
 //
-// Solve Laplace's equation with bone handles as boundary conditions, without
-// the bound constraints that BBW adds. Needs CSR and a linear solve.
-// Not implemented yet.
+// Same combinatorial Laplace as heat, with wider bone pins so the solved
+// field interpolates handle values more strictly.
 
-use joint;
+use auto_weight/common;
+
+int auto_weight_harmonic_pin(float d0, float d1, float radius2) {
+    int pin = 0;
+    if (d0 < radius2 * 0.85) {
+        pin = 1;
+    }
+    if (d0 * 1.15 < d1) {
+        pin = 1;
+    }
+    return pin;
+}
 
 int auto_weight_harmonic(point positions[],
                          int offsets[],
                          int neighbors[],
                          Joint joints[],
+                         float radii[],
+                         float scratch[],
                          int bone_indices[],
                          float weights[],
                          int vertex_count,
                          int joint_count,
                          int influences_per_vertex) {
-    return 0;
+    int v = 0;
+    while (v < vertex_count) {
+        point p = positions[v];
+        int closest = 0;
+        float d0 = 1.0e30;
+        float d1 = 1.0e30;
+        int j = 0;
+        while (j < joint_count) {
+            Joint joint = joints[j];
+            point child = auto_weight_joint_origin(joints, j);
+            point start = child;
+            if (joint.parent >= 0) {
+                start = auto_weight_joint_origin(joints, joint.parent);
+            }
+            float dist = auto_weight_segment_distance2(p, start, child);
+            if (dist < d0) {
+                d1 = d0;
+                d0 = dist;
+                closest = j;
+            }
+            if (dist >= d0) {
+                if (j != closest) {
+                    if (dist < d1) {
+                        d1 = dist;
+                    }
+                }
+            }
+            j = j + 1;
+        }
+
+        float radius = radii[closest];
+        if (radius < 0.0001) {
+            radius = 1.0;
+        }
+        int pinned = auto_weight_harmonic_pin(d0, d1, radius * radius);
+        j = 0;
+        while (j < joint_count) {
+            float value = 0.0;
+            if (pinned != 0) {
+                if (j == closest) {
+                    value = 1.0;
+                }
+            }
+            scratch[v * joint_count + j] = value;
+            j = j + 1;
+        }
+        if (pinned != 0) {
+            bone_indices[v] = closest;
+        }
+        if (pinned == 0) {
+            bone_indices[v] = -1;
+        }
+        v = v + 1;
+    }
+
+    int iter = 0;
+    while (iter < 24) {
+        v = 0;
+        while (v < vertex_count) {
+            if (bone_indices[v] < 0) {
+                int begin = offsets[v];
+                int end = offsets[v + 1];
+                float deg = 0.0;
+                int e = begin;
+                while (e < end) {
+                    deg = deg + 1.0;
+                    e = e + 1;
+                }
+                if (deg > 0.0) {
+                    int j = 0;
+                    while (j < joint_count) {
+                        float sum = 0.0;
+                        e = begin;
+                        while (e < end) {
+                            int n = neighbors[e];
+                            sum = sum + scratch[n * joint_count + j];
+                            e = e + 1;
+                        }
+                        scratch[v * joint_count + j] = sum / deg;
+                        j = j + 1;
+                    }
+                }
+            }
+            v = v + 1;
+        }
+        iter = iter + 1;
+    }
+
+    parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
+        auto_weight_write_topk(scratch, bone_indices, weights, vertex, joint_count,
+            influences_per_vertex);
+    }
+    return vertex_count;
 }

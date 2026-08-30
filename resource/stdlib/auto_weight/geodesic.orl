@@ -1,18 +1,81 @@
-// Geodesic auto-weight (Blender geodesic voxel / surface geodesic).
+// Surface-geodesic auto-weight.
 //   use auto_weight/geodesic;
 //
-// Weights from geodesic distance to bones, usually through a voxelization of
-// the volume so they do not leak across nearby but disconnected surfaces.
-// CSR is not enough; a voxel grid is a viewer precompute. Not implemented yet.
+// Relaxes graph distance on the mesh CSR (edge length |vi-vj|), starting from
+// Euclidean bone-segment distance. Inverse-square of that distance becomes the
+// weight. Voxel/volume geodesic is a later viewer precompute.
 
-use joint;
+use auto_weight/common;
 
 int auto_weight_geodesic(point positions[],
+                         int offsets[],
+                         int neighbors[],
                          Joint joints[],
+                         float scratch[],
                          int bone_indices[],
                          float weights[],
                          int vertex_count,
                          int joint_count,
                          int influences_per_vertex) {
-    return 0;
+    int v = 0;
+    while (v < vertex_count) {
+        point p = positions[v];
+        int j = 0;
+        while (j < joint_count) {
+            Joint joint = joints[j];
+            point child = auto_weight_joint_origin(joints, j);
+            point start = child;
+            if (joint.parent >= 0) {
+                start = auto_weight_joint_origin(joints, joint.parent);
+            }
+            scratch[v * joint_count + j] = auto_weight_segment_distance(p, start, child);
+            j = j + 1;
+        }
+        v = v + 1;
+    }
+
+    int iter = 0;
+    while (iter < 32) {
+        v = 0;
+        while (v < vertex_count) {
+            point p = positions[v];
+            int begin = offsets[v];
+            int end = offsets[v + 1];
+            int j = 0;
+            while (j < joint_count) {
+                float best = scratch[v * joint_count + j];
+                int e = begin;
+                while (e < end) {
+                    int n = neighbors[e];
+                    vector edge = p - positions[n];
+                    float via = scratch[n * joint_count + j] + length(edge);
+                    if (via < best) {
+                        best = via;
+                    }
+                    e = e + 1;
+                }
+                scratch[v * joint_count + j] = best;
+                j = j + 1;
+            }
+            v = v + 1;
+        }
+        iter = iter + 1;
+    }
+
+    v = 0;
+    while (v < vertex_count) {
+        int j = 0;
+        while (j < joint_count) {
+            float d = scratch[v * joint_count + j];
+            scratch[v * joint_count + j] = 1.0 / (d * d + 0.0000001);
+            j = j + 1;
+        }
+        v = v + 1;
+    }
+
+    parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
+        auto_weight_write_topk(scratch, bone_indices, weights, vertex, joint_count,
+            influences_per_vertex);
+    }
+    return vertex_count;
 }

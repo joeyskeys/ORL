@@ -8,7 +8,9 @@
 #include <string>
 #include <vector>
 
+#include <glm/geometric.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
 #include "comps/joint.hpp"
@@ -99,13 +101,29 @@ bool fill_uints_as_int(exec::OrlBuffer& dst, const std::vector<std::uint32_t>& s
     return true;
 }
 
-bool fill_radii(exec::OrlBuffer& radii, std::size_t joint_count) {
-    if (!radii.resize(joint_count)) {
+bool fill_radii(exec::OrlBuffer& radii, const std::vector<orlviewer::Joint>& packed) {
+    if (!radii.resize(packed.size())) {
         return false;
     }
+    double acc = 0.0;
+    int bones = 0;
+    for (std::size_t i = 0; i < packed.size(); ++i) {
+        if (packed[i].parent < 0) {
+            continue;
+        }
+        const glm::vec3 child{orlviewer::joint_world_matrix(packed, static_cast<std::int64_t>(i))[3]};
+        const glm::vec3 parent{orlviewer::joint_world_matrix(packed, packed[i].parent)[3]};
+        acc += static_cast<double>(glm::length(child - parent));
+        ++bones;
+    }
+    double radius = bones > 0 ? acc / static_cast<double>(bones) : 1.0;
+    if (radius < 0.25) {
+        radius = 0.25;
+    }
+    radius *= 1.25;
     auto* out = static_cast<double*>(radii.data());
-    for (std::size_t i = 0; i < joint_count; ++i) {
-        out[i] = 1.0;
+    for (std::size_t i = 0; i < packed.size(); ++i) {
+        out[i] = radius;
     }
     return true;
 }
@@ -190,6 +208,20 @@ bool AutoWeightFeature::set_algorithm(std::string_view name) {
         return false;
     }
     algorithm_name = std::string{name};
+    return true;
+}
+
+bool AutoWeightFeature::cycle_algorithm() {
+    constexpr int count = static_cast<int>(sizeof(kAlgorithms) / sizeof(kAlgorithms[0]));
+    int index = 0;
+    for (; index < count; ++index) {
+        if (algorithm_name == kAlgorithms[index]) {
+            break;
+        }
+    }
+    index = (index + 1) % count;
+    algorithm_name = kAlgorithms[index];
+    std::cout << "Auto weight: algorithm '" << algorithm_name << "'\n";
     return true;
 }
 
@@ -289,6 +321,7 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
     exec::OrlBuffer offsets("int", sizeof(std::int64_t));
     exec::OrlBuffer neighbors("int", sizeof(std::int64_t));
     exec::OrlBuffer radii("float", sizeof(double));
+    exec::OrlBuffer scratch("float", sizeof(double));
 
     if (!fill_positions(positions, *mesh, selection.selected_mesh_model()) || !fill_joints(joints, packed)) {
         std::cerr << "Auto weight: failed to pack mesh or joints\n";
@@ -297,12 +330,16 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
 
     bool needs_csr_buffers = false;
     bool needs_influences = false;
+    bool needs_scratch = false;
     for (const auto& parameter : program->parameters()) {
         if (parameter.name == "offsets" || parameter.name == "neighbors") {
             needs_csr_buffers = true;
         }
         if (parameter.name == "influences_per_vertex") {
             needs_influences = true;
+        }
+        if (parameter.name == "scratch") {
+            needs_scratch = true;
         }
     }
     if (needs_csr_buffers && built == nullptr) {
@@ -317,12 +354,23 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
             return false;
         }
     }
-    if (!fill_radii(radii, packed.size())) {
+    if (!fill_radii(radii, packed)) {
         std::cerr << "Auto weight: failed to pack radii\n";
         return false;
     }
 
-    const auto influences = std::max<std::int64_t>(1, weight->influences_per_vertex);
+    auto influences = std::max<std::int64_t>(1, weight->influences_per_vertex);
+    if (needs_influences && weight->influences_per_vertex <= 1) {
+        influences = std::min<std::int64_t>(4, std::max<std::int64_t>(1,
+            static_cast<std::int64_t>(packed.size())));
+    }
+    weight->influences_per_vertex = influences;
+    if (needs_scratch
+        && !scratch.resize(static_cast<std::size_t>(mesh->vcnt) * packed.size()))
+    {
+        std::cerr << "Auto weight: failed to resize scratch\n";
+        return false;
+    }
     const auto out_count = needs_influences
         ? static_cast<std::size_t>(mesh->vcnt) * static_cast<std::size_t>(influences)
         : static_cast<std::size_t>(mesh->vcnt);
@@ -355,6 +403,9 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
         }
         else if (parameter.name == "radii") {
             ok = execution->bind_buffer("radii", radii);
+        }
+        else if (parameter.name == "scratch") {
+            ok = execution->bind_buffer("scratch", scratch);
         }
         else if (parameter.name == "vertex_count") {
             ok = execution->bind_int("vertex_count", vertex_count);

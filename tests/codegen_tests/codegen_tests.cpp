@@ -323,6 +323,35 @@ TEST_CASE("llvm codegen lowers closest-bone auto-weight", "[orl][codegen][stdlib
     REQUIRE(ir.find("define double @closest_bone_segment_distance2") != std::string::npos);
 }
 
+TEST_CASE("llvm codegen lowers remaining auto-weight algorithms", "[orl][codegen][stdlib][auto_weight]") {
+    const std::string src =
+        "use auto_weight/closest_joint;\n"
+        "use auto_weight/envelope;\n"
+        "use auto_weight/heat;\n"
+        "use auto_weight/geodesic;\n"
+        "use auto_weight/harmonic;\n"
+        "use auto_weight/bounded_biharmonic;\n"
+        "int bind_joint(point positions[], Joint joints[], int bones[], float weights[], int vcount, int jcount) {\n"
+        "    return auto_weight_closest_joint(positions, joints, bones, weights, vcount, jcount);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen("orl_stdlib_auto_weight_rest_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("define i64 @auto_weight_closest_joint") != std::string::npos);
+    REQUIRE(ir.find("define i64 @auto_weight_envelope") != std::string::npos);
+    REQUIRE(ir.find("define i64 @auto_weight_heat") != std::string::npos);
+    REQUIRE(ir.find("define i64 @auto_weight_geodesic") != std::string::npos);
+    REQUIRE(ir.find("define i64 @auto_weight_harmonic") != std::string::npos);
+    REQUIRE(ir.find("define i64 @auto_weight_bounded_biharmonic") != std::string::npos);
+}
+
 TEST_CASE("llvm codegen lowers lbs deformer", "[orl][codegen][stdlib][deformer]") {
     const std::string src =
         "use deformer/lbs;\n"

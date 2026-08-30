@@ -1,11 +1,10 @@
 // Envelope / capsule auto-weight.
 //   use auto_weight/envelope;
 //
-// Radial or capsule falloff around each bone segment, then normalize.
-// Typical of 3ds Max envelopes and Blender envelope bind.
-// Not implemented yet.
+// Radial capsule falloff around each bone segment, then keep the strongest
+// influences and normalize. Typical of 3ds Max envelopes and Blender envelope.
 
-use joint;
+use auto_weight/common;
 
 int auto_weight_envelope(point positions[],
                          Joint joints[],
@@ -15,5 +14,83 @@ int auto_weight_envelope(point positions[],
                          int vertex_count,
                          int joint_count,
                          int influences_per_vertex) {
-    return 0;
+    parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
+        point p = positions[vertex];
+        int slot = 0;
+        while (slot < influences_per_vertex) {
+            int best = -1;
+            float best_w = -1.0;
+            int j = 0;
+            while (j < joint_count) {
+                int taken = auto_weight_bone_taken(bone_indices, vertex, influences_per_vertex, slot, j);
+                if (taken == 0) {
+                    Joint joint = joints[j];
+                    point child = auto_weight_joint_origin(joints, j);
+                    point start = child;
+                    if (joint.parent >= 0) {
+                        start = auto_weight_joint_origin(joints, joint.parent);
+                    }
+                    float dist2 = auto_weight_segment_distance2(p, start, child);
+                    float radius = radii[j];
+                    vector bone = child - start;
+                    float bone_len = length(bone);
+                    if (radius < bone_len) {
+                        radius = bone_len;
+                    }
+                    if (radius < 0.0001) {
+                        radius = 1.0;
+                    }
+                    float t = 1.0 - clamp(dist2 / (radius * radius), 0.0, 1.0);
+                    float w = t * t;
+                    if (w > best_w) {
+                        best_w = w;
+                        best = j;
+                    }
+                }
+                j = j + 1;
+            }
+            int out = vertex * influences_per_vertex + slot;
+            if (best < 0) {
+                bone_indices[out] = -1;
+                weights[out] = 0.0;
+            }
+            if (best >= 0) {
+                if (best_w <= 0.0) {
+                    bone_indices[out] = -1;
+                    weights[out] = 0.0;
+                }
+                if (best_w > 0.0) {
+                    bone_indices[out] = best;
+                    weights[out] = best_w;
+                }
+            }
+            slot = slot + 1;
+        }
+
+        float sum = 0.0;
+        slot = 0;
+        while (slot < influences_per_vertex) {
+            sum = sum + weights[vertex * influences_per_vertex + slot];
+            slot = slot + 1;
+        }
+        if (sum > 0.0000001) {
+            slot = 0;
+            while (slot < influences_per_vertex) {
+                int out = vertex * influences_per_vertex + slot;
+                weights[out] = weights[out] / sum;
+                slot = slot + 1;
+            }
+        }
+        if (sum <= 0.0000001) {
+            bone_indices[vertex * influences_per_vertex] = 0;
+            weights[vertex * influences_per_vertex] = 1.0;
+            slot = 1;
+            while (slot < influences_per_vertex) {
+                bone_indices[vertex * influences_per_vertex + slot] = -1;
+                weights[vertex * influences_per_vertex + slot] = 0.0;
+                slot = slot + 1;
+            }
+        }
+    }
+    return vertex_count;
 }

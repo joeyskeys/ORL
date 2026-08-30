@@ -2,9 +2,9 @@
 //   use auto_weight/closest_joint;
 //
 // Distance to joint world positions (points), not bone segments.
-// Not implemented yet.
+// Hard bind (weight 1) to the nearest joint. Does not use mesh CSR.
 
-use joint;
+use auto_weight/common;
 
 int auto_weight_closest_joint(point positions[],
                               Joint joints[],
@@ -12,5 +12,23 @@ int auto_weight_closest_joint(point positions[],
                               float weights[],
                               int vertex_count,
                               int joint_count) {
-    return 0;
+    parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
+        point p = positions[vertex];
+        int best = 0;
+        float best_dist = 1.0e30;
+        int j = 0;
+        while (j < joint_count) {
+            point origin = auto_weight_joint_origin(joints, j);
+            vector delta = p - origin;
+            float dist = dot(delta, delta);
+            if (dist < best_dist) {
+                best_dist = dist;
+                best = j;
+            }
+            j = j + 1;
+        }
+        bone_indices[vertex] = best;
+        weights[vertex] = 1.0;
+    }
+    return vertex_count;
 }

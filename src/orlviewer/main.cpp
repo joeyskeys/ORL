@@ -234,6 +234,11 @@ int main() {
             auto_weight->request();
         }
     });
+    controls.bind_op("auto_weight_cycle", [&](const ORL::InputEvent&) {
+        if (auto* auto_weight = viewport.find_feature(auto_weight_handle)) {
+            auto_weight->cycle_algorithm();
+        }
+    });
     controls.bind_op("setup_deformer", [&](const ORL::InputEvent&) {
         if (auto* deformer = viewport.find_feature(deformer_handle)) {
             deformer->request();
