@@ -170,6 +170,41 @@ double max_position_delta(const exec::OrlBuffer& bind, const exec::OrlBuffer& po
     return max_delta;
 }
 
+void dump_posed(const exec::OrlBuffer& bind, const exec::OrlBuffer& posed, const vkkk::Mesh& mesh,
+    int vertex_offset) {
+    const auto count = std::min(bind.count(), posed.count());
+    const auto* a = static_cast<const double*>(bind.data());
+    const auto* b = static_cast<const double*>(posed.data());
+    std::ofstream out("orl_debug_posed.txt", std::ios::trunc);
+    if (!out || a == nullptr || b == nullptr) {
+        std::cerr << "Deformer: could not write orl_debug_posed.txt\n";
+        return;
+    }
+    out << "# vertex\tbind_xyz\tposed_xyz\tcpu_vbuf_xyz\n";
+    const std::size_t preview = std::min<std::size_t>(count, 8);
+    std::cout << "Deformer: posed preview\n";
+    for (std::size_t v = 0; v < preview; ++v) {
+        float cx = 0.0f;
+        float cy = 0.0f;
+        float cz = 0.0f;
+        if (mesh.vbuf != nullptr && vertex_offset >= 0) {
+            const float* cpu = mesh.vbuf + v * mesh.comp_size + vertex_offset;
+            cx = cpu[0];
+            cy = cpu[1];
+            cz = cpu[2];
+        }
+        std::cout << "  vert " << v
+            << " bind=(" << a[v * 4 + 0] << ", " << a[v * 4 + 1] << ", " << a[v * 4 + 2] << ")"
+            << " posed=(" << b[v * 4 + 0] << ", " << b[v * 4 + 1] << ", " << b[v * 4 + 2] << ")"
+            << " cpu=(" << cx << ", " << cy << ", " << cz << ")\n";
+        out << v << '\t'
+            << a[v * 4 + 0] << '\t' << a[v * 4 + 1] << '\t' << a[v * 4 + 2] << '\t'
+            << b[v * 4 + 0] << '\t' << b[v * 4 + 1] << '\t' << b[v * 4 + 2] << '\t'
+            << cx << '\t' << cy << '\t' << cz << '\n';
+    }
+    std::cout << "Deformer: wrote orl_debug_posed.txt\n";
+}
+
 } // namespace
 
 DeformerFeature::DeformerFeature(vkkk::Scene& scene, ComponentManager& components,
@@ -437,10 +472,11 @@ bool DeformerFeature::evaluate(vkkk::Context& context) {
         logged_rest = true;
     } else if (!logged_move && delta > 1.0e-3) {
         std::cout << "Deformer: mesh moved, max |posed-bind|=" << delta << '\n';
+        dump_posed(deformer->bind_positions, output_positions, *mesh, vertex_float_offset(*mesh));
         logged_move = true;
     }
-    if (!context.load_mesh(mesh_name, *mesh)) {
-        std::cerr << "Deformer: GPU mesh upload failed for '" << mesh_name << "'\n";
+    if (!context.update_mesh(mesh_name, *mesh)) {
+        std::cerr << "Deformer: GPU mesh update failed for '" << mesh_name << "'\n";
         return false;
     }
     return true;
