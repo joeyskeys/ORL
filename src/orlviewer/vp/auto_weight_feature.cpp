@@ -139,11 +139,10 @@ void write_text_file(const char* path, const std::string& text) {
 }
 
 void dump_weights(const WeightData& weight, std::size_t vertex_count, std::size_t joint_count) {
-    const auto influences = std::max<std::int64_t>(1, weight.influences_per_vertex);
-    const auto out_count = weight.bone_indices.count();
-    const auto* bones = static_cast<const std::int64_t*>(weight.bone_indices.data());
-    const auto* values = static_cast<const double*>(weight.weights.data());
-    if (bones == nullptr || values == nullptr || out_count == 0) {
+    const auto weight_cnt = std::max<std::int64_t>(1, weight.weight_cnt);
+    const auto out_count = weight.weights.count();
+    const auto* cells = static_cast<const orlviewer::Weight*>(weight.weights.data());
+    if (cells == nullptr || out_count == 0) {
         std::cerr << "Auto weight: weight buffers are empty, skip dump\n";
         return;
     }
@@ -151,7 +150,7 @@ void dump_weights(const WeightData& weight, std::size_t vertex_count, std::size_
     std::vector<std::size_t> counts(joint_count, 0);
     std::size_t invalid = 0;
     for (std::size_t i = 0; i < out_count; ++i) {
-        const auto bone = bones[i];
+        const auto bone = cells[i].joint;
         if (bone < 0 || static_cast<std::size_t>(bone) >= joint_count) {
             ++invalid;
             continue;
@@ -159,7 +158,7 @@ void dump_weights(const WeightData& weight, std::size_t vertex_count, std::size_
         ++counts[static_cast<std::size_t>(bone)];
     }
 
-    std::cout << "Auto weight: dump influences_per_vertex=" << influences
+    std::cout << "Auto weight: dump weight_cnt=" << weight_cnt
         << " slots=" << out_count << " invalid=" << invalid << '\n';
     for (std::size_t j = 0; j < counts.size(); ++j) {
         std::cout << "  bone " << j << ": " << counts[j] << " influences\n";
@@ -167,9 +166,10 @@ void dump_weights(const WeightData& weight, std::size_t vertex_count, std::size_
 
     const std::size_t preview = std::min<std::size_t>(out_count, 8);
     for (std::size_t i = 0; i < preview; ++i) {
-        const auto vertex = i / static_cast<std::size_t>(influences);
-        std::cout << "  vert " << vertex << " slot " << i
-            << " bone=" << bones[i] << " w=" << values[i] << '\n';
+        const auto vertex = i / static_cast<std::size_t>(weight_cnt);
+        const auto slot = i % static_cast<std::size_t>(weight_cnt);
+        std::cout << "  vert " << vertex << " slot " << slot
+            << " joint=" << cells[i].joint << " w=" << cells[i].weight << '\n';
     }
 
     std::ofstream out("orl_debug_weights.txt", std::ios::trunc);
@@ -177,12 +177,15 @@ void dump_weights(const WeightData& weight, std::size_t vertex_count, std::size_
         std::cerr << "Auto weight: could not write orl_debug_weights.txt\n";
         return;
     }
-    out << "# vertex\tslot\tbone\tweight\n";
+    out << "# vertex\tslot\tjoint\tweight\n";
     for (std::size_t i = 0; i < out_count; ++i) {
         const auto vertex = vertex_count == 0
             ? i
-            : i / static_cast<std::size_t>(influences);
-        out << vertex << '\t' << i << '\t' << bones[i] << '\t' << values[i] << '\n';
+            : i / static_cast<std::size_t>(weight_cnt);
+        const auto slot = vertex_count == 0
+            ? i
+            : i % static_cast<std::size_t>(weight_cnt);
+        out << vertex << '\t' << slot << '\t' << cells[i].joint << '\t' << cells[i].weight << '\n';
     }
     std::cout << "Auto weight: wrote orl_debug_weights.txt (" << out_count << " rows)\n";
 }
@@ -329,14 +332,10 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
     }
 
     bool needs_csr_buffers = false;
-    bool needs_influences = false;
     bool needs_scratch = false;
     for (const auto& parameter : program->parameters()) {
         if (parameter.name == "offsets" || parameter.name == "neighbors") {
             needs_csr_buffers = true;
-        }
-        if (parameter.name == "influences_per_vertex") {
-            needs_influences = true;
         }
         if (parameter.name == "scratch") {
             needs_scratch = true;
@@ -359,23 +358,20 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
         return false;
     }
 
-    auto influences = std::max<std::int64_t>(1, weight->influences_per_vertex);
-    if (needs_influences && weight->influences_per_vertex <= 1) {
-        influences = std::min<std::int64_t>(4, std::max<std::int64_t>(1,
-            static_cast<std::int64_t>(packed.size())));
+    auto weight_cnt = weight->weight_cnt;
+    if (weight_cnt <= 0) {
+        weight_cnt = orlviewer::kDefaultWeightCount;
     }
-    weight->influences_per_vertex = influences;
+    weight->weight_cnt = weight_cnt;
     if (needs_scratch
         && !scratch.resize(static_cast<std::size_t>(mesh->vcnt) * packed.size()))
     {
         std::cerr << "Auto weight: failed to resize scratch\n";
         return false;
     }
-    const auto out_count = needs_influences
-        ? static_cast<std::size_t>(mesh->vcnt) * static_cast<std::size_t>(influences)
-        : static_cast<std::size_t>(mesh->vcnt);
-    if (!weight->bone_indices.resize(out_count) || !weight->weights.resize(out_count)) {
-        std::cerr << "Auto weight: failed to resize weight buffers\n";
+    const auto out_count = static_cast<std::size_t>(mesh->vcnt) * static_cast<std::size_t>(weight_cnt);
+    if (!weight->weights.resize(out_count)) {
+        std::cerr << "Auto weight: failed to resize weight buffer\n";
         return false;
     }
 
@@ -388,9 +384,6 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
         }
         else if (parameter.name == "joints") {
             ok = execution->bind_buffer("joints", joints);
-        }
-        else if (parameter.name == "bone_indices") {
-            ok = execution->bind_buffer("bone_indices", weight->bone_indices);
         }
         else if (parameter.name == "weights") {
             ok = execution->bind_buffer("weights", weight->weights);
@@ -413,8 +406,8 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
         else if (parameter.name == "joint_count") {
             ok = execution->bind_int("joint_count", joint_count);
         }
-        else if (parameter.name == "influences_per_vertex") {
-            ok = execution->bind_int("influences_per_vertex", influences);
+        else if (parameter.name == "weight_cnt") {
+            ok = execution->bind_int("weight_cnt", weight_cnt);
         }
         else {
             std::cerr << "Auto weight: unhandled parameter '" << parameter.name << "'\n";
@@ -433,10 +426,10 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
     }
 
     std::size_t used_joints = 0;
-    if (const auto* bones = static_cast<const std::int64_t*>(weight->bone_indices.data())) {
+    if (const auto* cells = static_cast<const orlviewer::Weight*>(weight->weights.data())) {
         std::vector<char> used(static_cast<std::size_t>(joint_count), 0);
         for (std::size_t i = 0; i < out_count; ++i) {
-            const auto bone = bones[i];
+            const auto bone = cells[i].joint;
             if (bone < 0 || bone >= joint_count) {
                 continue;
             }

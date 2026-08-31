@@ -382,6 +382,7 @@ struct OrlGpuEngine::Impl {
     struct CudaBuffer {
         CUdeviceptr address = 0;
         std::size_t bytes = 0;
+        bool owned = true;
     };
 
     std::optional<OrlGpuBuffer> AllocateCudaBuffer(std::size_t bytes) {
@@ -398,7 +399,17 @@ struct OrlGpuEngine::Impl {
         }
 
         const OrlGpuBuffer handle = next_cuda_buffer_++;
-        cuda_buffers_.emplace(handle, CudaBuffer{address, bytes});
+        cuda_buffers_.emplace(handle, CudaBuffer{address, bytes, true});
+        return handle;
+    }
+
+    std::optional<OrlGpuBuffer> ImportCudaBuffer(CUdeviceptr address, std::size_t bytes) {
+        if (address == 0 || bytes == 0) {
+            errors_.push_back("ImportBuffer requires a non-null device pointer and non-zero size");
+            return std::nullopt;
+        }
+        const OrlGpuBuffer handle = next_cuda_buffer_++;
+        cuda_buffers_.emplace(handle, CudaBuffer{address, bytes, false});
         return handle;
     }
 
@@ -455,10 +466,12 @@ struct OrlGpuEngine::Impl {
             errors_.push_back("Unknown GPU buffer handle");
             return false;
         }
-        const CUresult rc = cuMemFree_(buffer->second.address);
-        if (rc != CUDA_SUCCESS) {
-            AddCudaError("cuMemFree failed", rc);
-            return false;
+        if (buffer->second.owned) {
+            const CUresult rc = cuMemFree_(buffer->second.address);
+            if (rc != CUDA_SUCCESS) {
+                AddCudaError("cuMemFree failed", rc);
+                return false;
+            }
         }
         cuda_buffers_.erase(buffer);
         return true;
@@ -568,7 +581,9 @@ struct OrlGpuEngine::Impl {
         if (cuMemFree_ != nullptr) {
             for (const auto &[handle, buffer] : cuda_buffers_) {
                 (void)handle;
-                cuMemFree_(buffer.address);
+                if (buffer.owned) {
+                    cuMemFree_(buffer.address);
+                }
             }
         }
         cuda_buffers_.clear();
@@ -787,6 +802,25 @@ std::optional<OrlGpuBuffer> OrlGpuEngine::AllocateBuffer(std::size_t bytes) {
 #else
     (void)bytes;
     impl_->errors_.push_back("CUDA headers not available; cannot allocate GPU buffers");
+    return std::nullopt;
+#endif
+}
+
+std::optional<OrlGpuBuffer> OrlGpuEngine::ImportBuffer(std::uint64_t device_ptr, std::size_t bytes) {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("ImportBuffer currently requires the CUDA backend");
+        return std::nullopt;
+    }
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return std::nullopt;
+    }
+    return impl_->ImportCudaBuffer(static_cast<CUdeviceptr>(device_ptr), bytes);
+#else
+    (void)device_ptr;
+    (void)bytes;
+    impl_->errors_.push_back("CUDA headers not available; cannot import GPU buffers");
     return std::nullopt;
 #endif
 }
@@ -1227,6 +1261,12 @@ void OrlGpuEngine::UnloadDriverModule() {
 std::optional<OrlGpuBuffer> OrlGpuEngine::AllocateBuffer(std::size_t) {
     impl_->errors_.clear();
     impl_->errors_.push_back("GPU buffer allocation unavailable in this build");
+    return std::nullopt;
+}
+
+std::optional<OrlGpuBuffer> OrlGpuEngine::ImportBuffer(std::uint64_t, std::size_t) {
+    impl_->errors_.clear();
+    impl_->errors_.push_back("GPU buffer import unavailable in this build");
     return std::nullopt;
 }
 

@@ -61,18 +61,22 @@ TEST_CASE("llvm CUDA codegen lowers parallel for", "[orl][codegen][cuda][paralle
 
 TEST_CASE("llvm CUDA codegen lowers skinning parallel for", "[orl][codegen][cuda][parallel][skinning]") {
     const std::string src =
+        "struct Weight {\n"
+        "    float weight;\n"
+        "    int joint;\n"
+        "}\n"
         "int deform(point input_positions[], point output_positions[], matrix bone_matrices[], "
-        "float weights[], int bone_indices[], int vertex_count) {\n"
+        "Weight weights[], int vertex_count, int weight_cnt) {\n"
         "    parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {\n"
-        "        int influence = vertex * 2;\n"
-        "        int bone0 = bone_indices[influence];\n"
-        "        int bone1 = bone_indices[influence + 1];\n"
-        "        float weight0 = weights[influence];\n"
-        "        float weight1 = weights[influence + 1];\n"
         "        point bind_position = input_positions[vertex];\n"
-        "        point transformed0 = bone_matrices[bone0] * bind_position;\n"
-        "        point transformed1 = bone_matrices[bone1] * bind_position;\n"
-        "        output_positions[vertex] = weight0 * transformed0 + weight1 * transformed1;\n"
+        "        point skinned(0.0, 0.0, 0.0);\n"
+        "        int i = 0;\n"
+        "        while (i < weight_cnt) {\n"
+        "            Weight cell = weights[vertex * weight_cnt + i];\n"
+        "            skinned = skinned + cell.weight * (bone_matrices[cell.joint] * bind_position);\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        output_positions[vertex] = skinned;\n"
         "    }\n"
         "    return vertex_count;\n"
         "}\n";
@@ -306,8 +310,8 @@ TEST_CASE("llvm codegen lowers type constructors in expressions", "[orl][codegen
 TEST_CASE("llvm codegen lowers closest-bone auto-weight", "[orl][codegen][stdlib][auto_weight]") {
     const std::string src =
         "use auto_weight/closest_bone;\n"
-        "int bind(point positions[], Joint joints[], int bones[], float weights[], int vcount, int jcount) {\n"
-        "    return auto_weight_closest_bone(positions, joints, bones, weights, vcount, jcount);\n"
+        "int bind(point positions[], Joint joints[], Weight weights[], int vcount, int jcount, int wcnt) {\n"
+        "    return auto_weight_closest_bone(positions, joints, weights, vcount, jcount, wcnt);\n"
         "}\n";
 
     Parser parser(src);
@@ -331,8 +335,8 @@ TEST_CASE("llvm codegen lowers remaining auto-weight algorithms", "[orl][codegen
         "use auto_weight/geodesic;\n"
         "use auto_weight/harmonic;\n"
         "use auto_weight/bounded_biharmonic;\n"
-        "int bind_joint(point positions[], Joint joints[], int bones[], float weights[], int vcount, int jcount) {\n"
-        "    return auto_weight_closest_joint(positions, joints, bones, weights, vcount, jcount);\n"
+        "int bind_joint(point positions[], Joint joints[], Weight weights[], int vcount, int jcount, int wcnt) {\n"
+        "    return auto_weight_closest_joint(positions, joints, weights, vcount, jcount, wcnt);\n"
         "}\n";
 
     Parser parser(src);
@@ -356,8 +360,8 @@ TEST_CASE("llvm codegen lowers lbs deformer", "[orl][codegen][stdlib][deformer]"
     const std::string src =
         "use deformer/lbs;\n"
         "int skin(point bind[], point out[], Joint joints[], matrix inverse_binds[],\n"
-        "         int bones[], float weights[], int vcount, int jcount, int inf) {\n"
-        "    return deformer_lbs(bind, out, joints, inverse_binds, bones, weights, vcount, jcount, inf);\n"
+        "         Weight weights[], int vcount, int jcount, int wcnt) {\n"
+        "    return deformer_lbs(bind, out, joints, inverse_binds, weights, vcount, jcount, wcnt);\n"
         "}\n";
 
     Parser parser(src);

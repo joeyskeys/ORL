@@ -12,11 +12,10 @@ int auto_weight_geodesic(point positions[],
                          int neighbors[],
                          Joint joints[],
                          float scratch[],
-                         int bone_indices[],
-                         float weights[],
+                         Weight weights[],
                          int vertex_count,
                          int joint_count,
-                         int influences_per_vertex) {
+                         int weight_cnt) {
     int v = 0;
     while (v < vertex_count) {
         point p = positions[v];
@@ -74,8 +73,7 @@ int auto_weight_geodesic(point positions[],
     }
 
     parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
-        auto_weight_write_topk(scratch, bone_indices, weights, vertex, joint_count,
-            influences_per_vertex);
+        auto_weight_write_topk(scratch, weights, vertex, joint_count, weight_cnt);
     }
     return vertex_count;
 }

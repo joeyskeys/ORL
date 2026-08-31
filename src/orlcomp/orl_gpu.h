@@ -70,6 +70,7 @@ public:
     bool LoadToDriver();
     void UnloadDriverModule();
     std::optional<OrlGpuBuffer> AllocateBuffer(std::size_t bytes);
+    std::optional<OrlGpuBuffer> ImportBuffer(std::uint64_t device_ptr, std::size_t bytes);
     bool UploadBuffer(OrlGpuBuffer buffer, const void *source, std::size_t bytes);
     bool DownloadBuffer(OrlGpuBuffer buffer, void *destination, std::size_t bytes);
     bool FreeBuffer(OrlGpuBuffer buffer);

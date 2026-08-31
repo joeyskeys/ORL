@@ -242,8 +242,8 @@ TEST_CASE("syntax includes nested stdlib auto-weight modules", "[orl][syntax][st
         "use auto_weight/geodesic;\n"
         "use auto_weight/harmonic;\n"
         "use auto_weight/bounded_biharmonic;\n"
-        "int bind(point positions[], Joint joints[], int bones[], float weights[], int vcount, int jcount) {\n"
-        "    return auto_weight_closest_bone(positions, joints, bones, weights, vcount, jcount);\n"
+        "int bind(point positions[], Joint joints[], Weight weights[], int vcount, int jcount, int wcnt) {\n"
+        "    return auto_weight_closest_bone(positions, joints, weights, vcount, jcount, wcnt);\n"
         "}\n";
 
     RequireParses(src);
@@ -253,8 +253,8 @@ TEST_CASE("syntax includes stdlib lbs deformer", "[orl][syntax][stdlib][deformer
     const std::string src =
         "use deformer/lbs;\n"
         "int skin(point bind[], point out[], Joint joints[], matrix inverse_binds[],\n"
-        "         int bones[], float weights[], int vcount, int jcount, int inf) {\n"
-        "    return deformer_lbs(bind, out, joints, inverse_binds, bones, weights, vcount, jcount, inf);\n"
+        "         Weight weights[], int vcount, int jcount, int wcnt) {\n"
+        "    return deformer_lbs(bind, out, joints, inverse_binds, weights, vcount, jcount, wcnt);\n"
         "}\n";
 
     RequireParses(src);

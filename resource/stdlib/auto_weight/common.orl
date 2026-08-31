@@ -2,6 +2,7 @@
 //   use auto_weight/common;
 
 use joint;
+use weight;
 
 float auto_weight_segment_distance2(point p, point a, point b) {
     vector ab = b - a;
@@ -33,10 +34,11 @@ point auto_weight_joint_origin(Joint joints[], int index) {
     return world * point(0.0, 0.0, 0.0);
 }
 
-int auto_weight_bone_taken(int bone_indices[], int vertex, int influences, int slot, int bone) {
+int auto_weight_bone_taken(Weight weights[], int vertex, int weight_cnt, int slot, int bone) {
     int s = 0;
     while (s < slot) {
-        if (bone_indices[vertex * influences + s] == bone) {
+        Weight cell = weights[vertex * weight_cnt + s];
+        if (cell.joint == bone) {
             return 1;
         }
         s = s + 1;
@@ -44,20 +46,29 @@ int auto_weight_bone_taken(int bone_indices[], int vertex, int influences, int s
     return 0;
 }
 
+int auto_weight_write_hard(Weight weights[], int vertex, int bone, int weight_cnt) {
+    weights[vertex * weight_cnt] = weight_bind(bone);
+    int slot = 1;
+    while (slot < weight_cnt) {
+        weights[vertex * weight_cnt + slot] = weight_empty();
+        slot = slot + 1;
+    }
+    return weight_cnt;
+}
+
 int auto_weight_write_topk(float scratch[],
-                           int bone_indices[],
-                           float weights[],
+                           Weight weights[],
                            int vertex,
                            int joint_count,
-                           int influences) {
+                           int weight_cnt) {
     int slot = 0;
-    while (slot < influences) {
+    while (slot < weight_cnt) {
         int best = -1;
         float best_w = -1.0;
         int j = 0;
         while (j < joint_count) {
             float w = scratch[vertex * joint_count + j];
-            int taken = auto_weight_bone_taken(bone_indices, vertex, influences, slot, j);
+            int taken = auto_weight_bone_taken(weights, vertex, weight_cnt, slot, j);
             if (taken == 0) {
                 if (w > best_w) {
                     best_w = w;
@@ -66,19 +77,16 @@ int auto_weight_write_topk(float scratch[],
             }
             j = j + 1;
         }
-        int out = vertex * influences + slot;
+        int out = vertex * weight_cnt + slot;
         if (best < 0) {
-            bone_indices[out] = -1;
-            weights[out] = 0.0;
+            weights[out] = weight_empty();
         }
         if (best >= 0) {
             if (best_w <= 0.0) {
-                bone_indices[out] = -1;
-                weights[out] = 0.0;
+                weights[out] = weight_empty();
             }
             if (best_w > 0.0) {
-                bone_indices[out] = best;
-                weights[out] = best_w;
+                weights[out] = weight_pair(best_w, best);
             }
         }
         slot = slot + 1;
@@ -86,18 +94,21 @@ int auto_weight_write_topk(float scratch[],
 
     float sum = 0.0;
     slot = 0;
-    while (slot < influences) {
-        sum = sum + weights[vertex * influences + slot];
+    while (slot < weight_cnt) {
+        Weight cell = weights[vertex * weight_cnt + slot];
+        sum = sum + cell.weight;
         slot = slot + 1;
     }
     if (sum > 0.0000001) {
         slot = 0;
-        while (slot < influences) {
-            int out = vertex * influences + slot;
-            weights[out] = weights[out] / sum;
+        while (slot < weight_cnt) {
+            int out = vertex * weight_cnt + slot;
+            Weight cell = weights[out];
+            cell.weight = cell.weight / sum;
+            weights[out] = cell;
             slot = slot + 1;
         }
-        return influences;
+        return weight_cnt;
     }
 
     int fallback = 0;
@@ -111,13 +122,6 @@ int auto_weight_write_topk(float scratch[],
         }
         j = j + 1;
     }
-    bone_indices[vertex * influences] = fallback;
-    weights[vertex * influences] = 1.0;
-    slot = 1;
-    while (slot < influences) {
-        bone_indices[vertex * influences + slot] = -1;
-        weights[vertex * influences + slot] = 0.0;
-        slot = slot + 1;
-    }
-    return influences;
+    auto_weight_write_hard(weights, vertex, fallback, weight_cnt);
+    return weight_cnt;
 }

@@ -1,25 +1,28 @@
-// Linear blend skinning with two influences per vertex.
+// Linear blend skinning with Weight cells.
 //
 // input_positions and output_positions are point buffers.
 // bone_matrices contains row-major affine 4x4 transforms.
-// weights and bone_indices are packed as two consecutive values per vertex.
+// weights is vertex-major: weights[vertex * weight_cnt + slot].
+use weight;
+
 int deform(point input_positions[],
            point output_positions[],
            matrix bone_matrices[],
-           float weights[],
-           int bone_indices[],
-           int vertex_count) {
+           Weight weights[],
+           int vertex_count,
+           int weight_cnt) {
     parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
-        int influence = vertex * 2;
-        int bone0 = bone_indices[influence];
-        int bone1 = bone_indices[influence + 1];
-        float weight0 = weights[influence];
-        float weight1 = weights[influence + 1];
-
         point bind_position = input_positions[vertex];
-        point transformed0 = bone_matrices[bone0] * bind_position;
-        point transformed1 = bone_matrices[bone1] * bind_position;
-        output_positions[vertex] = weight0 * transformed0 + weight1 * transformed1;
+        point skinned(0.0, 0.0, 0.0);
+        int i = 0;
+        while (i < weight_cnt) {
+            Weight cell = weights[vertex * weight_cnt + i];
+            if (cell.joint >= 0) {
+                skinned = skinned + cell.weight * (bone_matrices[cell.joint] * bind_position);
+            }
+            i = i + 1;
+        }
+        output_positions[vertex] = skinned;
     }
 
     return vertex_count;

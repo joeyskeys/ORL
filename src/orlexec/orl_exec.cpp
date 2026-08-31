@@ -39,6 +39,10 @@ std::size_t element_stride_for(std::string_view type_name) {
         // Matches orlviewer::kJointStride and the unpacked LLVM Joint ABI.
         return 128;
     }
+    if (type_name == "Weight") {
+        // Matches orlviewer::kWeightStride: float weight, int joint.
+        return 16;
+    }
     return 0;
 }
 
@@ -210,11 +214,19 @@ struct OrlExecution::Impl {
     struct DeviceBuffer {
         orlcomp::OrlGpuBuffer handle = 0;
         std::size_t capacity_bytes = 0;
+        std::uint64_t uploaded_version = 0;
+    };
+
+    struct ExternalDeviceBuffer {
+        std::uint64_t device_ptr = 0;
+        std::size_t bytes = 0;
+        orlcomp::OrlGpuBuffer handle = 0;
     };
 
     std::shared_ptr<OrlProgram::Impl> program;
     Backend backend = Backend::Cpu;
     std::unordered_map<std::string, OrlBuffer*> buffers;
+    std::unordered_map<std::string, ExternalDeviceBuffer> device_bindings;
     std::unordered_map<std::string, std::int64_t> integers;
     std::unordered_map<std::string, double> floats;
     std::unordered_map<OrlBuffer*, DeviceBuffer> device_buffers;
@@ -225,6 +237,7 @@ struct OrlExecution::Impl {
     bool initialized = false;
 
     ~Impl() {
+        release_device_bindings();
         if (gpu != nullptr) {
             for (const auto& [_, buffer] : device_buffers) {
                 if (buffer.handle != 0) {
@@ -232,6 +245,28 @@ struct OrlExecution::Impl {
                 }
             }
         }
+    }
+
+    void release_device_binding(const std::string& name) {
+        const auto found = device_bindings.find(name);
+        if (found == device_bindings.end()) {
+            return;
+        }
+        if (gpu != nullptr && found->second.handle != 0) {
+            gpu->FreeBuffer(found->second.handle);
+        }
+        device_bindings.erase(found);
+    }
+
+    void release_device_bindings() {
+        if (gpu != nullptr) {
+            for (const auto& [_, bound] : device_bindings) {
+                if (bound.handle != 0) {
+                    gpu->FreeBuffer(bound.handle);
+                }
+            }
+        }
+        device_bindings.clear();
     }
 
     const ParameterDesc* parameter(std::string_view name) const {
@@ -252,6 +287,16 @@ struct OrlExecution::Impl {
                 continue;
             }
             if (parameter.kind == ParameterKind::Buffer) {
+                const auto device = device_bindings.find(parameter.name);
+                if (device != device_bindings.end()) {
+                    if (backend != Backend::Cuda) {
+                        errors.emplace_back("Device buffer binding for '" + parameter.name
+                            + "' requires the CUDA backend");
+                        continue;
+                    }
+                    ordered_buffers.push_back(nullptr);
+                    continue;
+                }
                 const auto bound = buffers.find(parameter.name);
                 if (bound == buffers.end() || bound->second == nullptr) {
                     errors.emplace_back("Missing buffer binding for parameter '" + parameter.name + "'");
@@ -265,7 +310,7 @@ struct OrlExecution::Impl {
                         + "' does not match ORL type '" + parameter.orl_type + "'");
                     continue;
                 }
-                ordered_buffers.push_back(buffer.data());
+                ordered_buffers.push_back(backend == Backend::Cpu ? buffer.data() : nullptr);
             } else if (parameter.kind == ParameterKind::Int64) {
                 const auto bound = integers.find(parameter.name);
                 if (bound == integers.end()) {
@@ -305,12 +350,16 @@ struct OrlExecution::Impl {
             }
             device.handle = *allocated;
             device.capacity_bytes = capacity_bytes;
+            device.uploaded_version = 0;
         }
-        if (buffer.byte_size() != 0
-            && !gpu->UploadBuffer(device.handle, buffer.data(), buffer.byte_size()))
-        {
-            append_errors(errors, gpu->Errors());
-            return false;
+        if (buffer.byte_size() != 0 && device.uploaded_version != buffer.version()) {
+            if (!gpu->UploadBuffer(device.handle, static_cast<const OrlBuffer&>(buffer).data(),
+                    buffer.byte_size()))
+            {
+                append_errors(errors, gpu->Errors());
+                return false;
+            }
+            device.uploaded_version = buffer.version();
         }
         *handle = device.handle;
         return true;
@@ -390,6 +439,54 @@ bool OrlExecution::bind_buffer(std::string_view parameter, OrlBuffer& buffer) {
         return false;
     }
     impl_->buffers[std::string(parameter)] = &buffer;
+    impl_->release_device_binding(std::string(parameter));
+    return true;
+}
+
+bool OrlExecution::bind_device_buffer(std::string_view parameter, std::uint64_t device_ptr,
+    std::size_t bytes)
+{
+    impl_->errors.clear();
+    if (!impl_->initialized) {
+        impl_->errors.emplace_back("ORL execution was not initialized");
+        return false;
+    }
+    if (impl_->backend != Backend::Cuda || impl_->gpu == nullptr) {
+        impl_->errors.emplace_back("bind_device_buffer requires the CUDA backend");
+        return false;
+    }
+    const auto* desc = impl_->parameter(parameter);
+    if (desc == nullptr || desc->kind != ParameterKind::Buffer) {
+        impl_->errors.emplace_back("Parameter '" + std::string(parameter) + "' is not a buffer");
+        return false;
+    }
+    if (device_ptr == 0 || bytes == 0) {
+        impl_->errors.emplace_back("Device buffer binding for '" + std::string(parameter)
+            + "' requires a non-null CUDA pointer and non-zero size");
+        return false;
+    }
+
+    const std::string name(parameter);
+    impl_->buffers.erase(name);
+    auto& bound = impl_->device_bindings[name];
+    if (bound.handle != 0 && bound.device_ptr == device_ptr && bound.bytes == bytes) {
+        return true;
+    }
+    if (bound.handle != 0 && !impl_->gpu->FreeBuffer(bound.handle)) {
+        append_errors(impl_->errors, impl_->gpu->Errors());
+        impl_->device_bindings.erase(name);
+        return false;
+    }
+
+    const auto imported = impl_->gpu->ImportBuffer(device_ptr, bytes);
+    if (!imported.has_value()) {
+        append_errors(impl_->errors, impl_->gpu->Errors());
+        impl_->device_bindings.erase(name);
+        return false;
+    }
+    bound.device_ptr = device_ptr;
+    bound.bytes = bytes;
+    bound.handle = *imported;
     return true;
 }
 
@@ -424,6 +521,7 @@ bool OrlExecution::bind_float(std::string_view parameter, double value) {
 }
 
 void OrlExecution::clear_bindings() {
+    impl_->release_device_bindings();
     impl_->buffers.clear();
     impl_->integers.clear();
     impl_->floats.clear();
@@ -462,7 +560,10 @@ std::optional<std::int64_t> OrlExecution::evaluate(std::uint32_t element_count) 
     for (const auto& parameter : impl_->program->parameters) {
         if (parameter.kind == ParameterKind::Buffer) {
             orlcomp::OrlGpuBuffer handle = 0;
-            if (!impl_->ensure_device_buffer(*impl_->buffers.at(parameter.name), &handle)) {
+            const auto device = impl_->device_bindings.find(parameter.name);
+            if (device != impl_->device_bindings.end()) {
+                handle = device->second.handle;
+            } else if (!impl_->ensure_device_buffer(*impl_->buffers.at(parameter.name), &handle)) {
                 return std::nullopt;
             }
             orlcomp::OrlGpuKernelArgument argument;
@@ -496,10 +597,16 @@ std::optional<std::int64_t> OrlExecution::evaluate(std::uint32_t element_count) 
         return std::nullopt;
     }
 
-    for (const auto& [_, buffer] : impl_->buffers) {
+    for (const auto& [name, buffer] : impl_->buffers) {
+        if (impl_->device_bindings.contains(name)) {
+            continue;
+        }
         const auto device = impl_->device_buffers.find(buffer);
-        if (device != impl_->device_buffers.end() && buffer->byte_size() != 0
-            && !impl_->gpu->DownloadBuffer(device->second.handle, buffer->data(), buffer->byte_size()))
+        if (device == impl_->device_buffers.end() || buffer->byte_size() == 0) {
+            continue;
+        }
+        if (!impl_->gpu->DownloadBuffer(device->second.handle,
+                const_cast<void*>(static_cast<const OrlBuffer*>(buffer)->data()), buffer->byte_size()))
         {
             append_errors(impl_->errors, impl_->gpu->Errors());
             return std::nullopt;

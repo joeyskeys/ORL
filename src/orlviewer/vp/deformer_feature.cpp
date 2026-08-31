@@ -344,7 +344,7 @@ bool DeformerFeature::setup() {
         std::cerr << "Deformer: no joints\n";
         return false;
     }
-    if (weight->bone_indices.count() == 0 || weight->weights.count() == 0) {
+    if (weight->weights.count() == 0) {
         std::cerr << "Deformer: skipped, auto-weight did not fill weight buffers\n";
         return false;
     }
@@ -413,7 +413,7 @@ bool DeformerFeature::evaluate(vkkk::Context& context) {
         return false;
     }
 
-    const auto influences = std::max<std::int64_t>(1, weight->influences_per_vertex);
+    const auto weight_cnt = std::max<std::int64_t>(1, weight->weight_cnt);
     const auto vertex_count = static_cast<std::int64_t>(mesh->vcnt);
     const auto joint_count = static_cast<std::int64_t>(packed.size());
     for (const auto& parameter : deform_program->parameters()) {
@@ -430,9 +430,6 @@ bool DeformerFeature::evaluate(vkkk::Context& context) {
         else if (parameter.name == "inverse_binds") {
             ok = deform_execution->bind_buffer("inverse_binds", deformer->inverse_binds);
         }
-        else if (parameter.name == "bone_indices") {
-            ok = deform_execution->bind_buffer("bone_indices", weight->bone_indices);
-        }
         else if (parameter.name == "weights") {
             ok = deform_execution->bind_buffer("weights", weight->weights);
         }
@@ -442,8 +439,8 @@ bool DeformerFeature::evaluate(vkkk::Context& context) {
         else if (parameter.name == "joint_count") {
             ok = deform_execution->bind_int("joint_count", joint_count);
         }
-        else if (parameter.name == "influences_per_vertex") {
-            ok = deform_execution->bind_int("influences_per_vertex", influences);
+        else if (parameter.name == "weight_cnt") {
+            ok = deform_execution->bind_int("weight_cnt", weight_cnt);
         }
         else {
             std::cerr << "Deformer: unhandled parameter '" << parameter.name << "'\n";

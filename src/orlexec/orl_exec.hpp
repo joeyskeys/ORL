@@ -118,6 +118,10 @@ public:
     OrlExecution& operator=(OrlExecution&&) noexcept;
 
     bool bind_buffer(std::string_view parameter, OrlBuffer& buffer);
+    // Bind an existing CUDA device pointer (CUdeviceptr) for a buffer parameter.
+    // CUDA backend only; the pointer is not allocated or freed by ORL.
+    bool bind_device_buffer(std::string_view parameter, std::uint64_t device_ptr,
+        std::size_t bytes);
     bool bind_int(std::string_view parameter, std::int64_t value);
     bool bind_float(std::string_view parameter, double value);
     void clear_bindings();

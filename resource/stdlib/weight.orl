@@ -1,0 +1,27 @@
+// Skin-weight cell: one (value, joint) pair.
+//   use weight;
+//
+// Host/GPU storage is orlviewer/comps/Weight. Keep the 16-byte ABI:
+//   float weight at 0, int joint at 8.
+// Buffer layout is vertex-major: weights[vertex * weight_cnt + slot].
+// Length is weight_cnt * vertex_count. Unused slots are weight 0, joint -1.
+
+struct Weight {
+    float weight;
+    int joint;
+}
+
+Weight weight_empty() {
+    Weight cell(0.0, -1);
+    return cell;
+}
+
+Weight weight_bind(int joint) {
+    Weight cell(1.0, joint);
+    return cell;
+}
+
+Weight weight_pair(float weight, int joint) {
+    Weight cell(weight, joint);
+    return cell;
+}

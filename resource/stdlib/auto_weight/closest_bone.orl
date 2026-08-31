@@ -2,30 +2,21 @@
 //   use auto_weight/closest_bone;
 //
 // Each non-root joint is a segment from its parent world position to its own.
-// Root joints are points. Every vertex gets a hard bind (weight 1) to the
-// nearest segment. Does not use mesh CSR.
+// Root joints are points. Slot 0 is a hard bind (weight 1) to the nearest
+// segment; remaining weight_cnt slots are empty.
 
-use joint;
+use auto_weight/common;
 
 float closest_bone_segment_distance2(point p, point a, point b) {
-    vector ab = b - a;
-    vector ap = p - a;
-    float ab2 = dot(ab, ab);
-    float t = 0.0;
-    if (ab2 > 0.0000001) {
-        t = clamp(dot(ap, ab) / ab2, 0.0, 1.0);
-    }
-    point closest = a + t * ab;
-    vector delta = p - closest;
-    return dot(delta, delta);
+    return auto_weight_segment_distance2(p, a, b);
 }
 
 int auto_weight_closest_bone(point positions[],
                              Joint joints[],
-                             int bone_indices[],
-                             float weights[],
+                             Weight weights[],
                              int vertex_count,
-                             int joint_count) {
+                             int joint_count,
+                             int weight_cnt) {
     parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
         point p = positions[vertex];
         int best = 0;
@@ -48,8 +39,7 @@ int auto_weight_closest_bone(point positions[],
             }
             j = j + 1;
         }
-        bone_indices[vertex] = best;
-        weights[vertex] = 1.0;
+        auto_weight_write_hard(weights, vertex, best, weight_cnt);
     }
     return vertex_count;
 }

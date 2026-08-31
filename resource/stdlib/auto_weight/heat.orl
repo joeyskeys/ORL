@@ -3,6 +3,7 @@
 //
 // Pins vertices near a bone, then Gauss-Seidel on the combinatorial mesh
 // Laplacian. scratch[v * joint_count + j] holds bone j's heat at vertex v.
+// Pin joint is stored in weights[v * weight_cnt].joint until top-k write.
 
 use auto_weight/common;
 
@@ -23,11 +24,10 @@ int auto_weight_heat(point positions[],
                      Joint joints[],
                      float radii[],
                      float scratch[],
-                     int bone_indices[],
-                     float weights[],
+                     Weight weights[],
                      int vertex_count,
                      int joint_count,
-                     int influences_per_vertex) {
+                     int weight_cnt) {
     int v = 0;
     while (v < vertex_count) {
         point p = positions[v];
@@ -77,12 +77,11 @@ int auto_weight_heat(point positions[],
             scratch[v * joint_count + j] = heat;
             j = j + 1;
         }
-        bone_indices[v] = closest;
         if (pinned != 0) {
-            bone_indices[v] = closest;
+            weights[v * weight_cnt] = weight_pair(0.0, closest);
         }
         if (pinned == 0) {
-            bone_indices[v] = -1;
+            weights[v * weight_cnt] = weight_empty();
         }
         v = v + 1;
     }
@@ -91,8 +90,8 @@ int auto_weight_heat(point positions[],
     while (iter < 16) {
         v = 0;
         while (v < vertex_count) {
-            int pin_bone = bone_indices[v];
-            if (pin_bone < 0) {
+            Weight pin = weights[v * weight_cnt];
+            if (pin.joint < 0) {
                 int begin = offsets[v];
                 int end = offsets[v + 1];
                 float deg = 0.0;
@@ -122,8 +121,7 @@ int auto_weight_heat(point positions[],
     }
 
     parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
-        auto_weight_write_topk(scratch, bone_indices, weights, vertex, joint_count,
-            influences_per_vertex);
+        auto_weight_write_topk(scratch, weights, vertex, joint_count, weight_cnt);
     }
     return vertex_count;
 }

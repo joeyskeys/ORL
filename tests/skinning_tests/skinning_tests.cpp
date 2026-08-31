@@ -10,7 +10,6 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 
-#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -51,6 +50,11 @@ std::string LoadOrlSource(const std::string &filename) {
     FAIL("Unable to locate tests/skinning_tests/" + filename + " from current working directory");
     return {};
 }
+
+struct OrlWeight {
+    double weight;
+    std::int64_t joint;
+};
 
 struct Vertex {
     float x;
@@ -214,17 +218,20 @@ TEST_CASE("ORL LBS deformer skins dynamic vertex and influence buffers", "[orl][
           0.0, 0.0, 1.0, 0.0,
           0.0, 0.0, 0.0, 1.0}},
     };
-    double weights[] = {0.75, 0.25, 0.50, 0.50};
-    std::int64_t bone_indices[] = {0, 1, 0, 1};
+    OrlWeight weights[] = {
+        {0.75, 0}, {0.25, 1},
+        {0.50, 0}, {0.50, 1},
+    };
 
-    const std::array<void *, 5> buffers = {
+    void *buffers[] = {
         input_positions,
         output_positions,
         bone_matrices,
         weights,
-        bone_indices,
     };
-    const auto processed_vertices = jit.InvokeInt64WithBufferArgs("deform", buffers, 2);
+    const std::int64_t integers[] = {2, 2};
+    const auto processed_vertices =
+        jit.InvokeInt64WithRuntimeArgs("__orl_host_entry_deform", buffers, integers, nullptr);
 
     REQUIRE(processed_vertices.has_value());
     REQUIRE(*processed_vertices == 2);
@@ -277,30 +284,29 @@ TEST_CASE("ORL LBS deformer skins dynamic buffers on CUDA", "[orl][skinning][gpu
           0.0, 0.0, 1.0, 0.0,
           0.0, 0.0, 0.0, 1.0}},
     };
-    double weights[] = {0.75, 0.25, 0.50, 0.50};
-    std::int64_t bone_indices[] = {0, 1, 0, 1};
+    OrlWeight weights[] = {
+        {0.75, 0}, {0.25, 1},
+        {0.50, 0}, {0.50, 1},
+    };
 
     const auto input_buffer = gpu.AllocateBuffer(sizeof(input_positions));
     const auto output_buffer = gpu.AllocateBuffer(sizeof(output_positions));
     const auto bone_buffer = gpu.AllocateBuffer(sizeof(bone_matrices));
     const auto weight_buffer = gpu.AllocateBuffer(sizeof(weights));
-    const auto index_buffer = gpu.AllocateBuffer(sizeof(bone_indices));
     REQUIRE(input_buffer.has_value());
     REQUIRE(output_buffer.has_value());
     REQUIRE(bone_buffer.has_value());
     REQUIRE(weight_buffer.has_value());
-    REQUIRE(index_buffer.has_value());
     REQUIRE(gpu.UploadBuffer(*input_buffer, input_positions, sizeof(input_positions)));
     REQUIRE(gpu.UploadBuffer(*output_buffer, output_positions, sizeof(output_positions)));
     REQUIRE(gpu.UploadBuffer(*bone_buffer, bone_matrices, sizeof(bone_matrices)));
     REQUIRE(gpu.UploadBuffer(*weight_buffer, weights, sizeof(weights)));
-    REQUIRE(gpu.UploadBuffer(*index_buffer, bone_indices, sizeof(bone_indices)));
     REQUIRE(gpu.SetupCudaKernel(OrlGpuEngine::CudaEntryKernelName,
                                 BindGpuBuffer(*input_buffer),
                                 BindGpuBuffer(*output_buffer),
                                 BindGpuBuffer(*bone_buffer),
                                 BindGpuBuffer(*weight_buffer),
-                                BindGpuBuffer(*index_buffer),
+                                std::int64_t{2},
                                 std::int64_t{2}));
     REQUIRE(gpu.LaunchCudaKernelForElements(2));
     REQUIRE(gpu.Synchronize());
@@ -309,7 +315,6 @@ TEST_CASE("ORL LBS deformer skins dynamic buffers on CUDA", "[orl][skinning][gpu
     REQUIRE(gpu.FreeBuffer(*output_buffer));
     REQUIRE(gpu.FreeBuffer(*bone_buffer));
     REQUIRE(gpu.FreeBuffer(*weight_buffer));
-    REQUIRE(gpu.FreeBuffer(*index_buffer));
 
     REQUIRE(output_positions[0].x == Catch::Approx(2.5));
     REQUIRE(output_positions[0].y == Catch::Approx(3.0));

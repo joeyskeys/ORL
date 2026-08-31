@@ -2,10 +2,11 @@
 //   use deformer/lbs;
 //
 // bind_positions are rest-pose vertices. inverse_binds[j] is the inverse of
-// joint j's world matrix at bind time. bone_indices[] / weights[] are packed
-// as influences_per_vertex consecutive values per vertex.
+// joint j's world matrix at bind time. weights[] is vertex-major
+// Weight cells: weights[vertex * weight_cnt + slot].
 
 use joint;
+use weight;
 
 int deformer_lbs_capture_bind(Joint joints[], matrix inverse_binds[], int joint_count) {
     int j = 0;
@@ -21,23 +22,20 @@ int deformer_lbs(point bind_positions[],
                  point output_positions[],
                  Joint joints[],
                  matrix inverse_binds[],
-                 int bone_indices[],
-                 float weights[],
+                 Weight weights[],
                  int vertex_count,
                  int joint_count,
-                 int influences_per_vertex) {
+                 int weight_cnt) {
     parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
         point bind = bind_positions[vertex];
         point skinned(0.0, 0.0, 0.0);
         int i = 0;
-        while (i < influences_per_vertex) {
-            int slot = vertex * influences_per_vertex + i;
-            int bone = bone_indices[slot];
-            float w = weights[slot];
-            if (bone >= 0) {
-                matrix world = joint_world_matrix(joints, bone);
-                matrix skin = joint_skin_matrix(world, inverse_binds[bone]);
-                skinned = skinned + w * (skin * bind);
+        while (i < weight_cnt) {
+            Weight cell = weights[vertex * weight_cnt + i];
+            if (cell.joint >= 0) {
+                matrix world = joint_world_matrix(joints, cell.joint);
+                matrix skin = joint_skin_matrix(world, inverse_binds[cell.joint]);
+                skinned = skinned + cell.weight * (skin * bind);
             }
             i = i + 1;
         }
