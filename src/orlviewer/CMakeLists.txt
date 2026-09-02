@@ -36,6 +36,7 @@ target_include_directories(orl_viewer
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_SOURCE_DIR}/src/include"
         "${CMAKE_SOURCE_DIR}/thirdparty/vkkk/src"
+        "${CMAKE_SOURCE_DIR}/thirdparty/vkkk/thirdparty/imgui"
 )
 
 target_compile_definitions(orl_viewer

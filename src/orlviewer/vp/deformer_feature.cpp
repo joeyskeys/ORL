@@ -11,6 +11,7 @@
 
 #include "comps/joint.hpp"
 #include "concepts/mesh.h"
+#include "runtime_config.hpp"
 #include "vk_ins/types.h"
 #include "asset_mgr/drawable_mgr.h"
 
@@ -22,6 +23,12 @@ namespace ORL
 {
 namespace
 {
+
+exec::Backend backend_from_config() {
+    return runtime_config.device == ComputeDevice::Gpu
+        ? exec::Backend::Cuda
+        : exec::Backend::Cpu;
+}
 
 constexpr const char* kTypes[] = {
     "lbs",
@@ -258,10 +265,13 @@ void DeformerFeature::on_update(vkkk::Context& context, const vkkk::Context::Fra
 }
 
 bool DeformerFeature::ensure_programs() {
+    const auto backend = backend_from_config();
     if (compiled == type_name && capture_program.has_value() && capture_program->valid()
         && capture_execution.has_value() && capture_execution->valid()
         && deform_program.has_value() && deform_program->valid()
-        && deform_execution.has_value() && deform_execution->valid())
+        && deform_execution.has_value() && deform_execution->valid()
+        && capture_execution->backend() == backend
+        && deform_execution->backend() == backend)
     {
         capture_execution->clear_bindings();
         deform_execution->clear_bindings();
@@ -292,13 +302,17 @@ bool DeformerFeature::ensure_programs() {
         return false;
     }
 
-    auto capture_exec = exec::OrlExecution::Create(compiled_capture, exec::Backend::Cpu);
+    auto capture_exec = exec::OrlExecution::Create(compiled_capture, backend);
     if (!capture_exec.valid()) {
+        std::cerr << "Deformer: " << compute_device_label()
+            << " backend requested, capture execution init failed\n";
         print_exec_errors("jit capture", capture_exec.errors());
         return false;
     }
-    auto deform_exec = exec::OrlExecution::Create(compiled_deform, exec::Backend::Cpu);
+    auto deform_exec = exec::OrlExecution::Create(compiled_deform, backend);
     if (!deform_exec.valid()) {
+        std::cerr << "Deformer: " << compute_device_label()
+            << " backend requested, deform execution init failed\n";
         print_exec_errors("jit deform", deform_exec.errors());
         return false;
     }
@@ -308,6 +322,8 @@ bool DeformerFeature::ensure_programs() {
     deform_program = std::move(compiled_deform);
     deform_execution = std::move(deform_exec);
     compiled = type_name;
+    std::cout << "Deformer: execution backend "
+        << (deform_execution->backend() == exec::Backend::Cuda ? "CUDA" : "CPU") << '\n';
     write_text_file("orl_debug_deformer_capture.ll", capture_execution->ir());
     write_text_file("orl_debug_deformer.ll", deform_execution->ir());
     return true;

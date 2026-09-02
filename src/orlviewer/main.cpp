@@ -33,6 +33,7 @@
 #include "vp/mesh_csr_feature.hpp"
 #include "vp/mesh_picking_feature.hpp"
 #include "vp/ortho_grid_feature.hpp"
+#include "vp/runtime_hud_feature.hpp"
 #include "vp/scene_mesh_feature.hpp"
 #include "vp/viewport.hpp"
 
@@ -147,7 +148,8 @@ int main() {
         ORL::MeshCsrFeature,
         ORL::AutoWeightFeature,
         ORL::DeformerFeature,
-        vkkk::vp::FrameAxisFeature>;
+        vkkk::vp::FrameAxisFeature,
+        ORL::RuntimeHudFeature>;
     Viewport viewport(context);
     const std::filesystem::path font_path =
         std::filesystem::path{ORL_VKKK_SOURCE_DIR} / "resource/font/Roboto-Light.ttf";
@@ -170,6 +172,7 @@ int main() {
         components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
         camera, font_path, make_coordinate_system(viewport_frame));
+    viewport.add_feature<ORL::RuntimeHudFeature>();
 
     ORL::CameraNavigator navigator(camera, world_frame, viewport_frame.right_handed);
     navigator.update_ubo();

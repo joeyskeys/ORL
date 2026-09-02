@@ -16,6 +16,7 @@
 #include "comps/joint.hpp"
 #include "concepts/mesh.h"
 #include "orl_exec.hpp"
+#include "runtime_config.hpp"
 #include "vk_ins/types.h"
 #include "asset_mgr/drawable_mgr.h"
 
@@ -23,6 +24,12 @@ namespace ORL
 {
 namespace
 {
+
+exec::Backend backend_from_config() {
+    return runtime_config.device == ComputeDevice::Gpu
+        ? exec::Backend::Cuda
+        : exec::Backend::Cpu;
+}
 
 constexpr const char* kAlgorithms[] = {
     "closest_bone",
@@ -245,8 +252,10 @@ void AutoWeightFeature::on_update(vkkk::Context& context, const vkkk::Context::F
 }
 
 bool AutoWeightFeature::ensure_program() {
+    const auto backend = backend_from_config();
     if (compiled == algorithm_name && program.has_value() && program->valid()
-        && execution.has_value() && execution->valid())
+        && execution.has_value() && execution->valid()
+        && execution->backend() == backend)
     {
         execution->clear_bindings();
         return true;
@@ -266,8 +275,10 @@ bool AutoWeightFeature::ensure_program() {
         return false;
     }
 
-    auto compiled_execution = exec::OrlExecution::Create(compiled_program, exec::Backend::Cpu);
+    auto compiled_execution = exec::OrlExecution::Create(compiled_program, backend);
     if (!compiled_execution.valid()) {
+        std::cerr << "Auto weight: " << compute_device_label()
+            << " backend requested, execution init failed\n";
         print_exec_errors("jit", compiled_execution.errors());
         return false;
     }
@@ -275,6 +286,8 @@ bool AutoWeightFeature::ensure_program() {
     program = std::move(compiled_program);
     execution = std::move(compiled_execution);
     compiled = algorithm_name;
+    std::cout << "Auto weight: execution backend "
+        << (execution->backend() == exec::Backend::Cuda ? "CUDA" : "CPU") << '\n';
     write_text_file("orl_debug_auto_weight.ll", execution->ir());
     return true;
 }
