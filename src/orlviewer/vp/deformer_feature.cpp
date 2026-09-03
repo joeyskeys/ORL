@@ -385,7 +385,7 @@ bool DeformerFeature::setup() {
         return false;
     }
 
-    const auto captured = capture_execution->evaluate(static_cast<std::uint32_t>(packed.size()));
+    const auto captured = capture_execution->evaluate(1);
     if (!captured.has_value()) {
         print_exec_errors("capture", capture_execution->errors());
         return false;

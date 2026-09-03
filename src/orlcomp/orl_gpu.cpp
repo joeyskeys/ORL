@@ -83,7 +83,9 @@ struct OrlGpuEngine::Impl {
         llvm::InitializeAllAsmParsers();
     }
 
-    ~Impl() = default;
+    ~Impl() {
+        UnloadDriverModule();
+    }
 
     bool LowerCudaGlobalId(llvm::Module &module) {
         llvm::Function *global_id = module.getFunction("__orl_global_id");
@@ -332,20 +334,29 @@ struct OrlGpuEngine::Impl {
             return;
         }
 
-        ReleaseCudaBuffers();
         bound_kernel_ = nullptr;
         bound_argument_values_.clear();
         bound_argument_pointers_.clear();
+
+        if (cuda_context_ != nullptr && cuCtxSetCurrent_ != nullptr) {
+            cuCtxSetCurrent_(cuda_context_);
+        }
+        ReleaseCudaBuffers();
 
         if (cuda_module_ != nullptr && cuModuleUnload_ != nullptr) {
             cuModuleUnload_(cuda_module_);
         }
         cuda_module_ = nullptr;
 
-        if (cuda_context_ != nullptr && cuCtxDestroy_ != nullptr) {
+        if (primary_context_retained_ && cuDevicePrimaryCtxRelease_ != nullptr) {
+            cuDevicePrimaryCtxRelease_(cuda_device_);
+        } else if (owned_cuda_context_ && cuda_context_ != nullptr && cuCtxDestroy_ != nullptr) {
             cuCtxDestroy_(cuda_context_);
         }
+        primary_context_retained_ = false;
+        owned_cuda_context_ = false;
         cuda_context_ = nullptr;
+        cuda_device_ = 0;
 
         CloseCudaLibrary();
 #endif
@@ -356,6 +367,9 @@ struct OrlGpuEngine::Impl {
     using CuDeviceGetFn = CUresult(CUDAAPI *)(CUdevice *, int);
     using CuCtxCreateFn = CUresult(CUDAAPI *)(CUcontext *, unsigned int, CUdevice);
     using CuCtxDestroyFn = CUresult(CUDAAPI *)(CUcontext);
+    using CuCtxSetCurrentFn = CUresult(CUDAAPI *)(CUcontext);
+    using CuDevicePrimaryCtxRetainFn = CUresult(CUDAAPI *)(CUcontext *, CUdevice);
+    using CuDevicePrimaryCtxReleaseFn = CUresult(CUDAAPI *)(CUdevice);
     using CuModuleLoadDataExFn = CUresult(CUDAAPI *)(CUmodule *, const void *, unsigned int, CUjit_option *, void **);
     using CuModuleUnloadFn = CUresult(CUDAAPI *)(CUmodule);
     using CuModuleGetFunctionFn = CUresult(CUDAAPI *)(CUfunction *, CUmodule, const char *);
@@ -388,6 +402,10 @@ struct OrlGpuEngine::Impl {
     std::optional<OrlGpuBuffer> AllocateCudaBuffer(std::size_t bytes) {
         if (bytes == 0) {
             errors_.push_back("AllocateBuffer requires a non-zero size");
+            return std::nullopt;
+        }
+
+        if (!ActivateCudaContext()) {
             return std::nullopt;
         }
 
@@ -435,6 +453,9 @@ struct OrlGpuEngine::Impl {
         if (buffer == nullptr) {
             return false;
         }
+        if (!ActivateCudaContext()) {
+            return false;
+        }
         const CUresult rc = cuMemcpyHtoD_(buffer->address, source, bytes);
         if (rc != CUDA_SUCCESS) {
             AddCudaError("cuMemcpyHtoD failed", rc);
@@ -452,6 +473,9 @@ struct OrlGpuEngine::Impl {
         if (buffer == nullptr) {
             return false;
         }
+        if (!ActivateCudaContext()) {
+            return false;
+        }
         const CUresult rc = cuMemcpyDtoH_(destination, buffer->address, bytes);
         if (rc != CUDA_SUCCESS) {
             AddCudaError("cuMemcpyDtoH failed", rc);
@@ -467,6 +491,9 @@ struct OrlGpuEngine::Impl {
             return false;
         }
         if (buffer->second.owned) {
+            if (!ActivateCudaContext()) {
+                return false;
+            }
             const CUresult rc = cuMemFree_(buffer->second.address);
             if (rc != CUDA_SUCCESS) {
                 AddCudaError("cuMemFree failed", rc);
@@ -478,6 +505,9 @@ struct OrlGpuEngine::Impl {
     }
 
     bool SynchronizeCudaContext() {
+        if (!ActivateCudaContext()) {
+            return false;
+        }
         const CUresult rc = cuCtxSynchronize_();
         if (rc != CUDA_SUCCESS) {
             AddCudaError("cuCtxSynchronize failed", rc);
@@ -488,6 +518,9 @@ struct OrlGpuEngine::Impl {
 
     bool SetupCudaKernelArguments(const std::string &kernel_name,
                                   const std::vector<OrlGpuKernelArgument> &arguments) {
+        if (!ActivateCudaContext()) {
+            return false;
+        }
         CUfunction kernel = nullptr;
         const CUresult rc = cuModuleGetFunction_(&kernel, cuda_module_, kernel_name.c_str());
         if (rc != CUDA_SUCCESS) {
@@ -558,6 +591,9 @@ struct OrlGpuEngine::Impl {
             errors_.push_back("block_count and threads_per_block must be greater than zero");
             return false;
         }
+        if (!ActivateCudaContext()) {
+            return false;
+        }
 
         const CUresult rc = cuLaunchKernel_(bound_kernel_,
                                             block_count,
@@ -589,9 +625,22 @@ struct OrlGpuEngine::Impl {
         cuda_buffers_.clear();
     }
 
-    bool LoadCudaDriverModule() {
-        if (!EnsureCudaApiLoaded()) {
+    bool ActivateCudaContext() {
+        if (cuda_context_ == nullptr || cuCtxSetCurrent_ == nullptr) {
+            errors_.push_back("CUDA context is not initialized");
             return false;
+        }
+        const CUresult rc = cuCtxSetCurrent_(cuda_context_);
+        if (rc != CUDA_SUCCESS) {
+            AddCudaError("cuCtxSetCurrent failed", rc);
+            return false;
+        }
+        return true;
+    }
+
+    bool EnsureCudaContext() {
+        if (cuda_context_ != nullptr) {
+            return ActivateCudaContext();
         }
 
         CUresult rc = cuInit_(0);
@@ -600,25 +649,45 @@ struct OrlGpuEngine::Impl {
             return false;
         }
 
-        CUdevice device = 0;
-        rc = cuDeviceGet_(&device, 0);
+        rc = cuDeviceGet_(&cuda_device_, 0);
         if (rc != CUDA_SUCCESS) {
             AddCudaError("cuDeviceGet failed", rc);
             return false;
         }
 
-        rc = cuCtxCreate_(&cuda_context_, 0, device);
+        rc = cuDevicePrimaryCtxRetain_(&cuda_context_, cuda_device_);
+        if (rc == CUDA_SUCCESS) {
+            primary_context_retained_ = true;
+            owned_cuda_context_ = false;
+            return ActivateCudaContext();
+        }
+
+        rc = cuCtxCreate_(&cuda_context_, 0, cuda_device_);
         if (rc != CUDA_SUCCESS) {
             AddCudaError("cuCtxCreate failed", rc);
             cuda_context_ = nullptr;
             return false;
         }
+        owned_cuda_context_ = true;
+        return ActivateCudaContext();
+    }
 
-        rc = cuModuleLoadDataEx_(&cuda_module_, device_code_.data(), 0, nullptr, nullptr);
+    bool LoadCudaDriverModule() {
+        if (!EnsureCudaApiLoaded()) {
+            return false;
+        }
+        if (!EnsureCudaContext()) {
+            return false;
+        }
+
+        if (cuda_module_ != nullptr && cuModuleUnload_ != nullptr) {
+            cuModuleUnload_(cuda_module_);
+            cuda_module_ = nullptr;
+        }
+
+        const CUresult rc = cuModuleLoadDataEx_(&cuda_module_, device_code_.data(), 0, nullptr, nullptr);
         if (rc != CUDA_SUCCESS) {
             AddCudaError("cuModuleLoadDataEx failed", rc);
-            cuCtxDestroy_(cuda_context_);
-            cuda_context_ = nullptr;
             cuda_module_ = nullptr;
             return false;
         }
@@ -665,6 +734,9 @@ struct OrlGpuEngine::Impl {
             !LoadCudaSymbol(cuDeviceGet_, "cuDeviceGet") ||
             !LoadCudaSymbol(cuCtxCreate_, "cuCtxCreate_v2") ||
             !LoadCudaSymbol(cuCtxDestroy_, "cuCtxDestroy_v2") ||
+            !LoadCudaSymbol(cuCtxSetCurrent_, "cuCtxSetCurrent") ||
+            !LoadCudaSymbol(cuDevicePrimaryCtxRetain_, "cuDevicePrimaryCtxRetain") ||
+            !LoadCudaSymbol(cuDevicePrimaryCtxRelease_, "cuDevicePrimaryCtxRelease") ||
             !LoadCudaSymbol(cuModuleLoadDataEx_, "cuModuleLoadDataEx") ||
             !LoadCudaSymbol(cuModuleUnload_, "cuModuleUnload") ||
             !LoadCudaSymbol(cuModuleGetFunction_, "cuModuleGetFunction") ||
@@ -730,14 +802,20 @@ struct OrlGpuEngine::Impl {
 #if ORL_HAS_CUDA_HEADERS
     void *cuda_library_ = nullptr;
     bool cuda_loaded_ = false;
+    CUdevice cuda_device_ = 0;
     CUcontext cuda_context_ = nullptr;
     CUmodule cuda_module_ = nullptr;
     CUfunction bound_kernel_ = nullptr;
+    bool primary_context_retained_ = false;
+    bool owned_cuda_context_ = false;
 
     CuInitFn cuInit_ = nullptr;
     CuDeviceGetFn cuDeviceGet_ = nullptr;
     CuCtxCreateFn cuCtxCreate_ = nullptr;
     CuCtxDestroyFn cuCtxDestroy_ = nullptr;
+    CuCtxSetCurrentFn cuCtxSetCurrent_ = nullptr;
+    CuDevicePrimaryCtxRetainFn cuDevicePrimaryCtxRetain_ = nullptr;
+    CuDevicePrimaryCtxReleaseFn cuDevicePrimaryCtxRelease_ = nullptr;
     CuModuleLoadDataExFn cuModuleLoadDataEx_ = nullptr;
     CuModuleUnloadFn cuModuleUnload_ = nullptr;
     CuModuleGetFunctionFn cuModuleGetFunction_ = nullptr;
@@ -1012,6 +1090,9 @@ bool OrlGpuEngine::RunCudaInt32AddKernel(const std::string &kernel_name,
     if (!IsDriverModuleLoaded() && !LoadToDriver()) {
         return false;
     }
+    if (!impl_->ActivateCudaContext()) {
+        return false;
+    }
 
     CUfunction kernel = nullptr;
     CUresult rc = impl_->cuModuleGetFunction_(&kernel, impl_->cuda_module_, kernel_name.c_str());
@@ -1102,6 +1183,9 @@ bool OrlGpuEngine::RunCudaKernelNoArgs(const std::string &kernel_name,
     if (!IsDriverModuleLoaded() && !LoadToDriver()) {
         return false;
     }
+    if (!impl_->ActivateCudaContext()) {
+        return false;
+    }
 
     CUfunction kernel = nullptr;
     CUresult rc = impl_->cuModuleGetFunction_(&kernel, impl_->cuda_module_, kernel_name.c_str());
@@ -1155,6 +1239,9 @@ bool OrlGpuEngine::ReadCudaGlobalInt32(const std::string &symbol_name, std::int3
 
 #if ORL_HAS_CUDA_HEADERS
     if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return false;
+    }
+    if (!impl_->ActivateCudaContext()) {
         return false;
     }
 
