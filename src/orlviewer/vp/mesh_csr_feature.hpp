@@ -32,6 +32,7 @@ public:
     bool available() const { return ready; }
     const MeshCsr* find(const std::string& mesh_name) const;
     bool build(vkkk::Context& context, const std::string& mesh_name, const vkkk::Mesh& mesh);
+    void clear();
 
 private:
     bool prepare_buffers(vkkk::Context& context, std::uint32_t vertex_count,

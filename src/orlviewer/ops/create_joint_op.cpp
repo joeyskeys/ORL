@@ -55,6 +55,12 @@ void CreateJointOp::exit() {
     std::cout << "Joint create: done\n";
 }
 
+void CreateJointOp::on_cancel() {
+    if (active_) {
+        exit();
+    }
+}
+
 void CreateJointOp::place(double cursor_x, double cursor_y) {
     glm::vec3 world{};
     if (!hit_pivot_plane(cursor_x, cursor_y, world)) {

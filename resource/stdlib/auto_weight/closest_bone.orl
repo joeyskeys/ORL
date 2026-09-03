@@ -2,8 +2,8 @@
 //   use auto_weight/closest_bone;
 //
 // Each non-root joint is a segment from its parent world position to its own.
-// Root joints are points. Slot 0 is a hard bind (weight 1) to the nearest
-// segment; remaining weight_cnt slots are empty.
+// Root joints are points. Each vertex blends the two nearest bones with
+// 1/d^4 weights, then normalizes the pair to sum to 1.
 
 use auto_weight/common;
 
@@ -19,27 +19,27 @@ int auto_weight_closest_bone(point positions[],
                              int weight_cnt) {
     parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
         point p = positions[vertex];
-        int best = 0;
-        float best_dist = 1.0e30;
+        int best0 = -1;
+        int best1 = -1;
+        float d0 = 1000000000.0;
+        float d1 = 1000000000.0;
         int j = 0;
         while (j < joint_count) {
-            Joint joint = joints[j];
-            matrix world = joint_world_matrix(joints, j);
-            point child = world * point(0.0, 0.0, 0.0);
-            point start = child;
-            int parent = joint.parent;
-            if (parent >= 0) {
-                matrix parent_world = joint_world_matrix(joints, parent);
-                start = parent_world * point(0.0, 0.0, 0.0);
-            }
-            float dist = closest_bone_segment_distance2(p, start, child);
-            if (dist < best_dist) {
-                best_dist = dist;
-                best = j;
+            float d = auto_weight_joint_bone_distance(p, joints, j);
+            if (d < d0) {
+                d1 = d0;
+                best1 = best0;
+                d0 = d;
+                best0 = j;
+            } else {
+                if (d < d1) {
+                    d1 = d;
+                    best1 = j;
+                }
             }
             j = j + 1;
         }
-        auto_weight_write_hard(weights, vertex, best, weight_cnt);
+        auto_weight_write_two_dropoff(weights, vertex, weight_cnt, best0, d0, best1, d1);
     }
     return vertex_count;
 }

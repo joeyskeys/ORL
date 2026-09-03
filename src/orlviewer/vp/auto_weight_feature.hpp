@@ -27,6 +27,7 @@ public:
     std::string_view algorithm() const { return algorithm_name; }
 
     void request();
+    void cancel_request() { pending = false; }
     void on_update(vkkk::Context& context, const vkkk::Context::Frame&);
 
 private:

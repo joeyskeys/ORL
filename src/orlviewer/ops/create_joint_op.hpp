@@ -22,6 +22,8 @@ public:
 
     void on_eval(const InputEvent& event);
     bool active() const { return active_; }
+    bool is_active() const { return active_; }
+    void on_cancel();
 
 private:
     void enter();

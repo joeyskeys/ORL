@@ -49,6 +49,15 @@
       }
     },
     {
+      "op": "clear_scene",
+      "input": {
+        "type": "key",
+        "key": "N",
+        "action": "press",
+        "mods": ["ctrl"]
+      }
+    },
+    {
       "op": "display_mode_switch",
       "input": {
         "type": "key",

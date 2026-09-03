@@ -25,6 +25,7 @@ public:
     void set_mesh(std::string name);
 
     void request();
+    void unbind();
     void on_update(vkkk::Context& context, const vkkk::Context::Frame&);
 
 private:

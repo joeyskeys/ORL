@@ -19,6 +19,7 @@
 #include "control_map.hpp"
 #include "selection.hpp"
 #include "ops/camera_switch_op.hpp"
+#include "ops/clear_scene_op.hpp"
 #include "ops/create_joint_op.hpp"
 #include "ops/display_mode_switch.hpp"
 #include "ops/load_model_op.hpp"
@@ -180,6 +181,7 @@ int main() {
     const auto ortho_grid_handle = viewport.add_feature<ORL::OrthoGridFeature>(
         navigator, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     ORL::LoadModelOp load_model(scene, context, window, world_frame);
+    ORL::ClearSceneOp clear_scene(scene, context, components, selection, weight_id, deformer_id);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, window, selection);
     ORL::SelectOp select_op(selection, components, scene, camera, window, create_joint);
     const auto joint_pick_handle = viewport.add_feature<ORL::JointPickingFeature>(
@@ -193,6 +195,17 @@ int main() {
         select_op.set_mesh_picking(*mesh_pick);
     }
     ORL::MoveOp move_op(selection, navigator, window);
+    if (auto* csr = viewport.find_feature(csr_handle)) {
+        clear_scene.set_csr(*csr);
+    }
+    if (auto* deformer = viewport.find_feature(deformer_handle)) {
+        clear_scene.set_deformer(*deformer);
+    }
+    if (auto* auto_weight = viewport.find_feature(auto_weight_handle)) {
+        clear_scene.set_auto_weight(*auto_weight);
+    }
+    clear_scene.set_create_joint(create_joint);
+    clear_scene.set_move(move_op);
     ORL::CameraSwitchOp camera_switch(navigator);
     ORL::DisplayModeSwitch display_mode;
     display_mode.register_mode("phong", [&] {
@@ -227,6 +240,7 @@ int main() {
         navigator.zoom(static_cast<float>(event.scroll_y));
     });
     controls.bind_op("load_model", load_model);
+    controls.bind_op("clear_scene", clear_scene);
     controls.bind_op("create_joint", create_joint);
     controls.bind_op("select", select_op);
     controls.bind_op("move", move_op);

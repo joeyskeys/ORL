@@ -254,6 +254,17 @@ void DeformerFeature::request() {
     pending = true;
 }
 
+void DeformerFeature::unbind() {
+    pending = false;
+    if (auto* deformer = components.deformer(deformer_id)) {
+        deformer->bound = false;
+        deformer->mesh_name.clear();
+        deformer->bind_positions.clear();
+        deformer->inverse_binds.clear();
+        deformer->bind_model = glm::mat4{1.0f};
+    }
+}
+
 void DeformerFeature::on_update(vkkk::Context& context, const vkkk::Context::Frame&) {
     if (pending) {
         pending = false;

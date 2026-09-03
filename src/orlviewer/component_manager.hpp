@@ -101,6 +101,7 @@ public:
 
     bool destroy(ComponentId id);
     bool destroy(std::string_view name);
+    void destroy_kind(ComponentKind kind);
     bool rename(ComponentId id, std::string new_name);
 
     bool bind_display(ComponentId id, DisplayLink display);

@@ -60,6 +60,18 @@ bool ComponentManager::destroy(std::string_view name) {
     return comp != nullptr && destroy(comp->id);
 }
 
+void ComponentManager::destroy_kind(ComponentKind kind) {
+    std::vector<ComponentId> ids;
+    for (const auto& [_, rec] : records) {
+        if (rec.meta.kind == kind) {
+            ids.push_back(rec.meta.id);
+        }
+    }
+    for (const ComponentId id : ids) {
+        destroy(id);
+    }
+}
+
 bool ComponentManager::rename(ComponentId id, std::string new_name) {
     auto* rec = record(id);
     if (rec == nullptr || new_name.empty()) {

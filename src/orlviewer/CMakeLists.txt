@@ -7,6 +7,7 @@ add_executable(orl_viewer
     comps/weight.hpp
     comps/deformer.hpp
     ops/load_model_op.cpp
+    ops/clear_scene_op.cpp
     ops/create_joint_op.cpp
     vp/mesh_csr_feature.cpp
     vp/auto_weight_feature.cpp

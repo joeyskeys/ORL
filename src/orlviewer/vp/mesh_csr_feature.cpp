@@ -72,6 +72,11 @@ const MeshCsr* MeshCsrFeature::find(const std::string& mesh_name) const {
     return it == csrs.end() ? nullptr : &it->second;
 }
 
+void MeshCsrFeature::clear() {
+    csrs.clear();
+    failed.clear();
+}
+
 bool MeshCsrFeature::build(vkkk::Context& context, const std::string& mesh_name,
     const vkkk::Mesh& mesh)
 {
