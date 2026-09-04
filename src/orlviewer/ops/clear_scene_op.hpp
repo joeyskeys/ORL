@@ -18,6 +18,7 @@ class DeformerFeature;
 class AutoWeightFeature;
 class CreateJointOp;
 class MoveOp;
+class RotateOp;
 
 // Immediate reset: drop scene objects, meshes, joints, and bind state.
 class ClearSceneOp : public VpOperation<ClearSceneOp> {
@@ -30,6 +31,7 @@ public:
     void set_auto_weight(AutoWeightFeature& feature) { auto_weight = &feature; }
     void set_create_joint(CreateJointOp& op) { create_joint = &op; }
     void set_move(MoveOp& op) { move = &op; }
+    void set_rotate(RotateOp& op) { rotate = &op; }
 
     void on_eval(const InputEvent& event);
 
@@ -45,6 +47,7 @@ private:
     AutoWeightFeature* auto_weight = nullptr;
     CreateJointOp* create_joint = nullptr;
     MoveOp* move = nullptr;
+    RotateOp* rotate = nullptr;
 };
 
 } // namespace ORL

@@ -9,6 +9,7 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
@@ -118,6 +119,20 @@ struct CameraNavigator {
         const float t = glm::dot(pivot - ray_origin, normal) / denom;
         world = ray_origin + ray_dir * t;
         return glm::dot(world - camera.pos, camera.front) > 0.0f;
+    }
+
+    bool project_window(const glm::vec3& world, int width, int height, glm::vec2& window) const {
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+        const glm::vec4 clip = camera.ubo_data.proj * camera.ubo_data.view * glm::vec4{world, 1.0f};
+        if (std::abs(clip.w) < 1e-8f) {
+            return false;
+        }
+        const glm::vec3 ndc = glm::vec3{clip / clip.w};
+        window.x = (ndc.x * 0.5f + 0.5f) * static_cast<float>(width);
+        window.y = (ndc.y * 0.5f + 0.5f) * static_cast<float>(height);
+        return true;
     }
 
     static constexpr float kMinOrthoFov = 0.5f;

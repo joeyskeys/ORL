@@ -32,7 +32,6 @@ exec::Backend backend_from_config() {
 }
 
 constexpr const char* kAlgorithms[] = {
-    "closest_bone",
     "closest_joint",
     "envelope",
     "heat",
@@ -421,6 +420,9 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
         }
         else if (parameter.name == "weight_cnt") {
             ok = execution->bind_int("weight_cnt", weight_cnt);
+        }
+        else if (parameter.name == "dropoff") {
+            ok = execution->bind_float("dropoff", dropoff);
         }
         else {
             std::cerr << "Auto weight: unhandled parameter '" << parameter.name << "'\n";

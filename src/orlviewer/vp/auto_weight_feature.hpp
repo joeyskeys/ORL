@@ -15,7 +15,7 @@ namespace ORL
 {
 
 // Runs an ORL stdlib auto-weight entry against the scene mesh and joints,
-// writing into a Weight component. Default algorithm is closest_bone.
+// writing into a Weight component. Default algorithm is closest_joint.
 class AutoWeightFeature final : public vkkk::vp::ViewportFeature<vkkk::vp::ViewportPhase::Scene> {
 public:
     AutoWeightFeature(vkkk::Scene& scene, ComponentManager& components, ComponentId weight_id,
@@ -25,6 +25,7 @@ public:
     bool set_algorithm(std::string_view name);
     bool cycle_algorithm();
     std::string_view algorithm() const { return algorithm_name; }
+    void set_dropoff(double value) { dropoff = value; }
 
     void request();
     void cancel_request() { pending = false; }
@@ -39,7 +40,8 @@ private:
     ComponentId weight_id;
     const Selection& selection;
     MeshCsrFeature* csr = nullptr;
-    std::string algorithm_name{"closest_bone"};
+    std::string algorithm_name{"closest_joint"};
+    double dropoff = 4.0;
     std::string compiled;
     std::optional<exec::OrlProgram> program;
     std::optional<exec::OrlExecution> execution;

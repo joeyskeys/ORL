@@ -307,24 +307,23 @@ TEST_CASE("llvm codegen lowers type constructors in expressions", "[orl][codegen
     REQUIRE(ir.find("matvec") != std::string::npos);
 }
 
-TEST_CASE("llvm codegen lowers closest-bone auto-weight", "[orl][codegen][stdlib][auto_weight]") {
+TEST_CASE("llvm codegen lowers closest-joint auto-weight", "[orl][codegen][stdlib][auto_weight]") {
     const std::string src =
-        "use auto_weight/closest_bone;\n"
-        "int bind(point positions[], Joint joints[], Weight weights[], int vcount, int jcount, int wcnt) {\n"
-        "    return auto_weight_closest_bone(positions, joints, weights, vcount, jcount, wcnt);\n"
+        "use auto_weight/closest_joint;\n"
+        "int bind(point positions[], Joint joints[], Weight weights[], int vcount, int jcount, int wcnt, float dropoff) {\n"
+        "    return auto_weight_closest_joint(positions, joints, weights, vcount, jcount, wcnt, dropoff);\n"
         "}\n";
 
     Parser parser(src);
     REQUIRE(parser.Parse());
     REQUIRE(parser.Errors().empty());
 
-    LlvmIrCodegen codegen("orl_stdlib_closest_bone_module");
+    LlvmIrCodegen codegen("orl_stdlib_closest_joint_module");
     REQUIRE(codegen.Generate(*parser.Ast()));
     REQUIRE(codegen.Errors().empty());
 
     const std::string ir = codegen.DumpIR();
-    REQUIRE(ir.find("define i64 @auto_weight_closest_bone") != std::string::npos);
-    REQUIRE(ir.find("define double @closest_bone_segment_distance2") != std::string::npos);
+    REQUIRE(ir.find("define i64 @auto_weight_closest_joint") != std::string::npos);
 }
 
 TEST_CASE("llvm codegen lowers remaining auto-weight algorithms", "[orl][codegen][stdlib][auto_weight]") {
@@ -335,8 +334,8 @@ TEST_CASE("llvm codegen lowers remaining auto-weight algorithms", "[orl][codegen
         "use auto_weight/geodesic;\n"
         "use auto_weight/harmonic;\n"
         "use auto_weight/bounded_biharmonic;\n"
-        "int bind_joint(point positions[], Joint joints[], Weight weights[], int vcount, int jcount, int wcnt) {\n"
-        "    return auto_weight_closest_joint(positions, joints, weights, vcount, jcount, wcnt);\n"
+        "int bind_joint(point positions[], Joint joints[], Weight weights[], int vcount, int jcount, int wcnt, float dropoff) {\n"
+        "    return auto_weight_closest_joint(positions, joints, weights, vcount, jcount, wcnt, dropoff);\n"
         "}\n";
 
     Parser parser(src);

@@ -29,11 +29,16 @@ float auto_weight_segment_distance(point p, point a, point b) {
     return length(p - closest);
 }
 
-// Inverse-distance^4, then callers normalize so weights sum to 1.
-float auto_weight_dropoff(float d) {
+// Inverse-distance^dropoff, then callers normalize so weights sum to 1.
+float auto_weight_dropoff(float d, float dropoff) {
     float x = d + 0.0001;
-    float x2 = x * x;
-    return 1.0 / (x2 * x2);
+    float w = 1.0;
+    float n = 0.0;
+    while (n < dropoff) {
+        w = w / x;
+        n = n + 1.0;
+    }
+    return w;
 }
 
 point auto_weight_joint_origin(Joint joints[], int index) {
@@ -73,19 +78,19 @@ int auto_weight_write_hard(Weight weights[], int vertex, int bone, int weight_cn
     return weight_cnt;
 }
 
-// Two nearest influences: 1/d^4, then normalize so the pair sums to 1.
+// Two nearest influences: 1/d^dropoff, then normalize so the pair sums to 1.
 int auto_weight_write_two_dropoff(Weight weights[], int vertex, int weight_cnt,
-                                  int j0, float d0, int j1, float d1) {
+                                  int j0, float d0, int j1, float d1, float dropoff) {
     if (j0 < 0) {
         auto_weight_write_hard(weights, vertex, 0, weight_cnt);
         return weight_cnt;
     }
 
-    float w0 = auto_weight_dropoff(d0);
+    float w0 = auto_weight_dropoff(d0, dropoff);
     float w1 = 0.0;
     if (j1 >= 0) {
         if (weight_cnt >= 2) {
-            w1 = auto_weight_dropoff(d1);
+            w1 = auto_weight_dropoff(d1, dropoff);
         }
     }
 
