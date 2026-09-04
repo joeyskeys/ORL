@@ -25,6 +25,7 @@
 #include "ops/load_model_op.hpp"
 #include "ops/move_op.hpp"
 #include "ops/rotate_op.hpp"
+#include "ops/scale_op.hpp"
 #include "ops/select_op.hpp"
 #include "vp/auto_weight_feature.hpp"
 #include "vp/deformer_feature.hpp"
@@ -197,6 +198,7 @@ int main() {
     }
     ORL::MoveOp move_op(selection, navigator, window);
     ORL::RotateOp rotate_op(selection, navigator, window);
+    ORL::ScaleOp scale_op(selection, navigator, window);
     if (auto* csr = viewport.find_feature(csr_handle)) {
         clear_scene.set_csr(*csr);
     }
@@ -209,6 +211,7 @@ int main() {
     clear_scene.set_create_joint(create_joint);
     clear_scene.set_move(move_op);
     clear_scene.set_rotate(rotate_op);
+    clear_scene.set_scale(scale_op);
     ORL::CameraSwitchOp camera_switch(navigator);
     ORL::DisplayModeSwitch display_mode;
     display_mode.register_mode("phong", [&] {
@@ -248,6 +251,7 @@ int main() {
     controls.bind_op("select", select_op);
     controls.bind_op("move", move_op);
     controls.bind_op("rotate", rotate_op);
+    controls.bind_op("scale", scale_op);
     controls.bind_op("camera_switch", camera_switch);
     controls.bind_op("display_mode_switch", display_mode);
     controls.bind_op("auto_weight", [&](const ORL::InputEvent&) {

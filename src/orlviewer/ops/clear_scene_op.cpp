@@ -7,6 +7,7 @@
 #include "ops/create_joint_op.hpp"
 #include "ops/move_op.hpp"
 #include "ops/rotate_op.hpp"
+#include "ops/scale_op.hpp"
 #include "selection.hpp"
 #include "vk_ins/context.hpp"
 #include "vp/auto_weight_feature.hpp"
@@ -36,6 +37,9 @@ void ClearSceneOp::on_eval(const InputEvent&) {
     }
     if (rotate != nullptr) {
         rotate->cancel();
+    }
+    if (scale != nullptr) {
+        scale->cancel();
     }
     if (auto_weight != nullptr) {
         auto_weight->cancel_request();

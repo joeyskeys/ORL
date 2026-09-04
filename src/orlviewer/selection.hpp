@@ -31,6 +31,7 @@ struct XformAttr {
     glm::vec3* vector = nullptr;
     double* translation = nullptr;
     double* rotation = nullptr;
+    double* scale = nullptr;
     glm::mat4 to_world{1.0f};
 
     explicit operator bool() const { return kind != XformAttrKind::None; }
@@ -93,6 +94,26 @@ struct XformAttr {
         rotation[1] = q.y;
         rotation[2] = q.z;
         rotation[3] = q.w;
+    }
+
+    glm::vec3 local_scale() const {
+        if (scale == nullptr) {
+            return glm::vec3{1.0f};
+        }
+        return {
+            static_cast<float>(scale[0]),
+            static_cast<float>(scale[1]),
+            static_cast<float>(scale[2]),
+        };
+    }
+
+    void set_local_scale(const glm::vec3& local) {
+        if (scale == nullptr) {
+            return;
+        }
+        scale[0] = local.x;
+        scale[1] = local.y;
+        scale[2] = local.z;
     }
 };
 
@@ -293,6 +314,7 @@ private:
             attr.kind = XformAttrKind::Vector;
             attr.translation = joint->translation;
             attr.rotation = joint->rotation;
+            attr.scale = joint->scale;
             const auto packed = components.packed_joints();
             const auto index = components.joint_index(ref.component);
             if (index >= 0 && static_cast<std::size_t>(index) < packed.size()) {

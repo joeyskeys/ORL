@@ -122,6 +122,14 @@
       }
     },
     {
+      "op": "scale",
+      "input": {
+        "type": "key",
+        "key": "S",
+        "action": "press"
+      }
+    },
+    {
       "op": "camera_switch",
       "input": {
         "type": "key",
