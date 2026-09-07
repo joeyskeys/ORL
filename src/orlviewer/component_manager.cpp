@@ -26,6 +26,10 @@ ComponentId ComponentManager::create_joint(std::string name, orlviewer::Joint jo
     return create(std::move(name), ComponentKind::Joint, std::move(joint));
 }
 
+ComponentId ComponentManager::create_controller(std::string name, orlviewer::Controller controller) {
+    return create(std::move(name), ComponentKind::Controller, std::move(controller));
+}
+
 ComponentId ComponentManager::create_curve(std::string name, CurveLink curve) {
     return create(std::move(name), ComponentKind::Curve, std::move(curve));
 }
@@ -134,6 +138,14 @@ orlviewer::Joint* ComponentManager::joint(ComponentId id) {
 
 const orlviewer::Joint* ComponentManager::joint(ComponentId id) const {
     return payload_as<orlviewer::Joint>(id);
+}
+
+orlviewer::Controller* ComponentManager::controller(ComponentId id) {
+    return payload_as<orlviewer::Controller>(id);
+}
+
+const orlviewer::Controller* ComponentManager::controller(ComponentId id) const {
+    return payload_as<orlviewer::Controller>(id);
 }
 
 CurveLink* ComponentManager::curve(ComponentId id) {

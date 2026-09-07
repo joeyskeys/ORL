@@ -2,8 +2,8 @@
 //   use solver/ik_two_bone;
 //
 // Rotates root and mid so the end reaches target. pole aims the bend.
-// Translations and the end joint are left alone. pole < 0 uses the current
-// mid position (keeps the existing plane).
+// target[] and pole[] are locator xforms (one matrix each). Translations
+// and the end joint are left alone.
 
 use joint;
 
@@ -88,8 +88,8 @@ int solver_ik_two_bone(Joint joints[],
                        int root,
                        int mid,
                        int end,
-                       int target,
-                       int pole,
+                       matrix target[],
+                       matrix pole[],
                        int joint_count) {
     if (root < 0) {
         return 0;
@@ -100,9 +100,6 @@ int solver_ik_two_bone(Joint joints[],
     if (end < 0) {
         return 0;
     }
-    if (target < 0) {
-        return 0;
-    }
     if (root >= joint_count) {
         return 0;
     }
@@ -110,9 +107,6 @@ int solver_ik_two_bone(Joint joints[],
         return 0;
     }
     if (end >= joint_count) {
-        return 0;
-    }
-    if (target >= joint_count) {
         return 0;
     }
 
@@ -138,7 +132,7 @@ int solver_ik_two_bone(Joint joints[],
     }
 
     point root_pos = solver_joint_origin(joints, root);
-    point target_pos = solver_joint_origin(joints, target);
+    point target_pos = target[0] * point(0.0, 0.0, 0.0);
     vector reach = target_pos - root_pos;
     float d = length(reach);
     if (d < 0.000001) {
@@ -153,12 +147,7 @@ int solver_ik_two_bone(Joint joints[],
     }
 
     vector axis = normalize(reach);
-    point pole_pos = solver_joint_origin(joints, mid);
-    if (pole >= 0) {
-        if (pole < joint_count) {
-            pole_pos = solver_joint_origin(joints, pole);
-        }
-    }
+    point pole_pos = pole[0] * point(0.0, 0.0, 0.0);
 
     vector pole_dir = pole_pos - root_pos;
     vector side = pole_dir - axis * dot(pole_dir, axis);

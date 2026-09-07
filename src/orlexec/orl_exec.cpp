@@ -1,7 +1,11 @@
 #include "orl_exec.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <unordered_map>
 #include <utility>
@@ -63,6 +67,104 @@ bool parse_source(const std::string& source, orlcomp::Parser& parser,
         errors.emplace_back("ORL parser did not produce an AST");
     }
     return false;
+}
+
+using Clock = std::chrono::steady_clock;
+
+double elapsed_ms(Clock::time_point start, Clock::time_point end = Clock::now()) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+const char* backend_label(Backend backend) {
+    return backend == Backend::Cuda ? "CUDA" : "CPU";
+}
+
+std::string fmt_ms(double ms) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.2f", ms);
+    return buf;
+}
+
+void print_jit(const std::string& entry, Backend backend, const std::string& source_name,
+    double parse_ms, double codegen_ms, double compile_ms, double load_ms, bool ok)
+{
+    std::cout << "ORL JIT '" << entry << "' " << backend_label(backend)
+        << " (" << source_name << "): parse " << fmt_ms(parse_ms) << "ms  codegen "
+        << fmt_ms(codegen_ms) << "ms  ";
+    if (backend == Backend::Cpu) {
+        std::cout << "jit " << fmt_ms(compile_ms) << "ms";
+    } else {
+        std::cout << "ptx " << fmt_ms(compile_ms) << "ms  load " << fmt_ms(load_ms) << "ms";
+    }
+    const double total = parse_ms + codegen_ms + compile_ms + load_ms;
+    std::cout << "  total " << fmt_ms(total) << "ms";
+    if (!ok) {
+        std::cout << "  FAILED";
+    }
+    std::cout << '\n';
+}
+
+struct KernelTiming {
+    double upload_ms = 0;
+    double kernel_ms = 0;
+    double download_ms = 0;
+    double total_ms = 0;
+};
+
+struct ExecStats {
+    std::uint64_t count = 0;
+    double sum_ms = 0;
+    double min_ms = 1.0e300;
+    double max_ms = 0;
+    Clock::time_point last_print{};
+};
+
+void print_kernel(const std::string& entry, Backend backend, std::uint32_t element_count,
+    const KernelTiming& timing, const ExecStats& stats, bool detail)
+{
+    std::cout << "ORL exec '" << entry << "' " << backend_label(backend);
+    if (detail) {
+        std::cout << " elems=" << element_count
+            << " kernel=" << fmt_ms(timing.kernel_ms) << "ms";
+        if (backend == Backend::Cuda) {
+            std::cout << " upload=" << fmt_ms(timing.upload_ms) << "ms"
+                << " download=" << fmt_ms(timing.download_ms) << "ms";
+        }
+        std::cout << " total=" << fmt_ms(timing.total_ms) << "ms\n";
+        return;
+    }
+    const double avg = stats.count == 0 ? 0.0 : stats.sum_ms / static_cast<double>(stats.count);
+    std::cout << " n=" << stats.count
+        << " last=" << fmt_ms(timing.total_ms) << "ms";
+    if (backend == Backend::Cuda) {
+        std::cout << " (kernel " << fmt_ms(timing.kernel_ms)
+            << " upload " << fmt_ms(timing.upload_ms)
+            << " download " << fmt_ms(timing.download_ms) << ")";
+    }
+    std::cout << " avg=" << fmt_ms(avg) << "ms min=" << fmt_ms(stats.min_ms)
+        << "ms max=" << fmt_ms(stats.max_ms) << "ms\n";
+}
+
+void record_kernel(const std::string& entry, Backend backend, std::uint32_t element_count,
+    const KernelTiming& timing, ExecStats& stats)
+{
+    ++stats.count;
+    stats.sum_ms += timing.total_ms;
+    if (timing.total_ms < stats.min_ms) {
+        stats.min_ms = timing.total_ms;
+    }
+    if (timing.total_ms > stats.max_ms) {
+        stats.max_ms = timing.total_ms;
+    }
+    const auto now = Clock::now();
+    const bool first = stats.count <= 3;
+    const bool periodic = stats.last_print.time_since_epoch().count() == 0
+        || (now - stats.last_print) >= std::chrono::seconds(1);
+    if (!first && !periodic) {
+        return;
+    }
+    print_kernel(entry, backend, element_count, timing, stats, first);
+    stats.last_print = now;
 }
 
 } // namespace
@@ -235,6 +337,7 @@ struct OrlExecution::Impl {
     std::vector<std::string> errors;
     std::string ir;
     bool initialized = false;
+    ExecStats exec_stats;
 
     ~Impl() {
         release_device_bindings();
@@ -366,10 +469,14 @@ struct OrlExecution::Impl {
     }
 
     bool initialize() {
+        const auto t0 = Clock::now();
         orlcomp::Parser parser(program->source);
         if (!parse_source(program->source, parser, errors)) {
+            print_jit(program->options.entry_function, backend, program->options.source_name,
+                elapsed_ms(t0), 0, 0, 0, false);
             return false;
         }
+        const auto t1 = Clock::now();
 
         const auto target = backend == Backend::Cpu
             ? orlcomp::OrlCodegenTarget::Host
@@ -377,16 +484,23 @@ struct OrlExecution::Impl {
         orlcomp::LlvmIrCodegen codegen(program->options.source_name, target);
         if (!codegen.Generate(*parser.Ast())) {
             append_errors(errors, codegen.Errors());
+            print_jit(program->options.entry_function, backend, program->options.source_name,
+                elapsed_ms(t0, t1), elapsed_ms(t1), 0, 0, false);
             return false;
         }
         ir = codegen.DumpIR();
+        const auto t2 = Clock::now();
 
         if (backend == Backend::Cpu) {
             jit = std::make_unique<orlcomp::OrlJitEngine>(orlcomp::OrlJitTarget::Native);
             if (!jit->LoadModuleWithOptimization(codegen.ReleaseModule(), codegen.ReleaseContext())) {
                 append_errors(errors, jit->Errors());
+                print_jit(program->options.entry_function, backend, program->options.source_name,
+                    elapsed_ms(t0, t1), elapsed_ms(t1, t2), elapsed_ms(t2), 0, false);
                 return false;
             }
+            print_jit(program->options.entry_function, backend, program->options.source_name,
+                elapsed_ms(t0, t1), elapsed_ms(t1, t2), elapsed_ms(t2), 0, true);
             initialized = true;
             return true;
         }
@@ -395,12 +509,19 @@ struct OrlExecution::Impl {
         gpu->SetCudaEntryFunction(program->options.entry_function);
         if (!gpu->CompileModuleWithOptimization(codegen.ReleaseModule(), codegen.ReleaseContext())) {
             append_errors(errors, gpu->Errors());
+            print_jit(program->options.entry_function, backend, program->options.source_name,
+                elapsed_ms(t0, t1), elapsed_ms(t1, t2), elapsed_ms(t2), 0, false);
             return false;
         }
+        const auto t3 = Clock::now();
         if (!gpu->LoadToDriver()) {
             append_errors(errors, gpu->Errors());
+            print_jit(program->options.entry_function, backend, program->options.source_name,
+                elapsed_ms(t0, t1), elapsed_ms(t1, t2), elapsed_ms(t2, t3), elapsed_ms(t3), false);
             return false;
         }
+        print_jit(program->options.entry_function, backend, program->options.source_name,
+            elapsed_ms(t0, t1), elapsed_ms(t1, t2), elapsed_ms(t2, t3), elapsed_ms(t3), true);
         initialized = true;
         return true;
     }
@@ -545,16 +666,25 @@ std::optional<std::int64_t> OrlExecution::evaluate(std::uint32_t element_count) 
         return std::nullopt;
     }
 
+    const auto& entry = impl_->program->options.entry_function;
+    KernelTiming timing;
+    const auto t0 = Clock::now();
+
     if (impl_->backend == Backend::Cpu) {
-        const std::string wrapper = "__orl_host_entry_" + impl_->program->options.entry_function;
+        const std::string wrapper = "__orl_host_entry_" + entry;
         const auto result = impl_->jit->InvokeInt64WithRuntimeArgs(
             wrapper, host_buffers.data(), integers.data(), floats.data());
+        timing.kernel_ms = elapsed_ms(t0);
+        timing.total_ms = timing.kernel_ms;
         if (!result.has_value()) {
             append_errors(impl_->errors, impl_->jit->Errors());
+            return result;
         }
+        record_kernel(entry, impl_->backend, element_count, timing, impl_->exec_stats);
         return result;
     }
 
+    const auto t_upload = Clock::now();
     std::vector<orlcomp::OrlGpuKernelArgument> arguments;
     arguments.reserve(impl_->program->parameters.size());
     for (const auto& parameter : impl_->program->parameters) {
@@ -589,14 +719,23 @@ std::optional<std::int64_t> OrlExecution::evaluate(std::uint32_t element_count) 
     }
 
     if (!impl_->gpu->SetupCudaKernelArguments(orlcomp::OrlGpuEngine::CudaEntryKernelName,
-            std::move(arguments))
-        || !impl_->gpu->LaunchCudaKernelForElements(element_count)
+            std::move(arguments)))
+    {
+        append_errors(impl_->errors, impl_->gpu->Errors());
+        return std::nullopt;
+    }
+    timing.upload_ms = elapsed_ms(t_upload);
+
+    const auto t_kernel = Clock::now();
+    if (!impl_->gpu->LaunchCudaKernelForElements(element_count)
         || !impl_->gpu->Synchronize())
     {
         append_errors(impl_->errors, impl_->gpu->Errors());
         return std::nullopt;
     }
+    timing.kernel_ms = elapsed_ms(t_kernel);
 
+    const auto t_download = Clock::now();
     for (const auto& [name, buffer] : impl_->buffers) {
         if (impl_->device_bindings.contains(name)) {
             continue;
@@ -618,6 +757,9 @@ std::optional<std::int64_t> OrlExecution::evaluate(std::uint32_t element_count) 
         append_errors(impl_->errors, impl_->gpu->Errors());
         return std::nullopt;
     }
+    timing.download_ms = elapsed_ms(t_download);
+    timing.total_ms = elapsed_ms(t0);
+    record_kernel(entry, impl_->backend, element_count, timing, impl_->exec_stats);
     return static_cast<std::int64_t>(result);
 }
 

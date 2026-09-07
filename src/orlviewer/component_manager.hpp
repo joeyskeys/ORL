@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "comps/joint.hpp"
+#include "comps/controller.hpp"
 #include "comps/weight.hpp"
 #include "comps/deformer.hpp"
 #include "concepts/curve.hpp"
@@ -30,6 +31,7 @@ enum class ComponentKind {
     Curve,
     Constraint,
     Deformer,
+    Controller,
 };
 
 // Named handle into vkkk draw storage. ComponentManager never owns GPU
@@ -79,8 +81,8 @@ struct CurveLink {
     bool empty() const { return std::holds_alternative<std::monostate>(handle); }
 };
 
-// Solver-owned transform constraint. IK writes joint rotations; the target
-// and pole are ordinary joints the user can move.
+// Solver-owned transform constraint. IK writes joint rotations; target and
+// pole are controller locators whose xforms are passed into ORL as matrices.
 struct ConstraintData {
     std::string type = "ik_two_bone";
     ComponentId root;
@@ -104,6 +106,8 @@ struct Component {
 class ComponentManager {
 public:
     ComponentId create_joint(std::string name, orlviewer::Joint joint = orlviewer::make_identity_joint());
+    ComponentId create_controller(std::string name,
+        orlviewer::Controller controller = orlviewer::Controller{});
     ComponentId create_curve(std::string name, CurveLink curve = {});
     ComponentId create_weight(std::string name, WeightData weight = {});
     ComponentId create_constraint(std::string name, ConstraintData constraint = {});
@@ -124,6 +128,8 @@ public:
 
     orlviewer::Joint* joint(ComponentId id);
     const orlviewer::Joint* joint(ComponentId id) const;
+    orlviewer::Controller* controller(ComponentId id);
+    const orlviewer::Controller* controller(ComponentId id) const;
     CurveLink* curve(ComponentId id);
     const CurveLink* curve(ComponentId id) const;
     WeightData* weight(ComponentId id);
@@ -152,6 +158,7 @@ public:
 private:
     using Payload = std::variant<
         orlviewer::Joint,
+        orlviewer::Controller,
         CurveLink,
         WeightData,
         ConstraintData,

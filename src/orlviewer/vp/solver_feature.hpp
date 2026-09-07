@@ -26,6 +26,8 @@ private:
     std::optional<exec::OrlProgram> program;
     std::optional<exec::OrlExecution> execution;
     exec::OrlBuffer joints;
+    exec::OrlBuffer target_xform;
+    exec::OrlBuffer pole_xform;
 };
 
 } // namespace ORL

@@ -123,6 +123,7 @@ struct SelectionRef {
         Joint,
         SceneObject,
         Vector,
+        Controller,
     };
 
     Kind kind = Kind::None;
@@ -150,6 +151,13 @@ struct SelectionRef {
         SelectionRef ref;
         ref.kind = Kind::Vector;
         ref.vector = position;
+        return ref;
+    }
+
+    static SelectionRef controller(ComponentId id) {
+        SelectionRef ref;
+        ref.kind = Kind::Controller;
+        ref.component = id;
         return ref;
     }
 };
@@ -330,6 +338,15 @@ private:
             }
             attr.kind = XformAttrKind::Matrix;
             attr.matrix = &object->model;
+            return attr;
+        }
+        if (ref.kind == SelectionRef::Kind::Controller) {
+            auto* controller = components.controller(ref.component);
+            if (controller == nullptr) {
+                return {};
+            }
+            attr.kind = XformAttrKind::Matrix;
+            attr.matrix = &controller->xform;
             return attr;
         }
         if (ref.kind == SelectionRef::Kind::Vector && ref.vector != nullptr) {

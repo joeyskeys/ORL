@@ -15,6 +15,7 @@
 #include <glm/vec4.hpp>
 
 #include "comps/joint.hpp"
+#include "ops/create_controller_op.hpp"
 #include "ops/create_joint_op.hpp"
 #include "selection.hpp"
 #include "vp/joint_picking_feature.hpp"
@@ -27,13 +28,15 @@ namespace ORL
 class SelectOp : public VpOperation<SelectOp> {
 public:
     SelectOp(Selection& selection, ComponentManager& components, vkkk::Scene& scene,
-        const vkkk::Camera& camera, GLFWwindow* window, const CreateJointOp& create_joint)
+        const vkkk::Camera& camera, GLFWwindow* window, const CreateJointOp& create_joint,
+        const CreateControllerOp& create_controller)
         : selection(selection)
         , components(components)
         , scene(scene)
         , camera(camera)
         , window(window)
         , create_joint(create_joint)
+        , create_controller(create_controller)
     {
     }
 
@@ -52,7 +55,7 @@ public:
     }
 
     void on_eval(const InputEvent& event) {
-        if (create_joint.active()) {
+        if (create_joint.active() || create_controller.active()) {
             return;
         }
         if (event.kind != InputEvent::Kind::MouseButton
@@ -64,6 +67,9 @@ public:
 
         fallback_x = event.x;
         fallback_y = event.y;
+        if (pick_cpu_controllers(event.x, event.y)) {
+            return;
+        }
         awaiting_joint = gpu_picking != nullptr && gpu_picking->request(event.x, event.y);
         awaiting_mesh = mesh_picking != nullptr && mesh_picking->request(event.x, event.y);
         joint_hit = false;
@@ -71,7 +77,7 @@ public:
         if (awaiting_joint || awaiting_mesh) {
             return;
         }
-        pick_cpu_joints(event.x, event.y);
+        pick_cpu(event.x, event.y);
     }
 
 private:
@@ -107,7 +113,7 @@ private:
                 return;
             }
         }
-        pick_cpu_joints(fallback_x, fallback_y);
+        pick_cpu(fallback_x, fallback_y);
     }
 
     bool choose_gpu_joint(const std::vector<uint32_t>& ids) {
@@ -136,6 +142,73 @@ private:
         }
         selection.set(chosen);
         return true;
+    }
+
+    bool pick_cpu_controllers(double cursor_x, double cursor_y) {
+        SelectionRef chosen;
+        if (!closest_controller(cursor_x, cursor_y, chosen)) {
+            return false;
+        }
+        selection.set(chosen);
+        return true;
+    }
+
+    void pick_cpu(double cursor_x, double cursor_y) {
+        if (window == nullptr) {
+            selection.set({});
+            return;
+        }
+        SelectionRef chosen;
+        float best = kPickPixels * kPickPixels;
+        if (closest_controller(cursor_x, cursor_y, chosen, &best)) {
+            selection.set(chosen);
+            return;
+        }
+        pick_cpu_joints(cursor_x, cursor_y);
+    }
+
+    bool closest_controller(double cursor_x, double cursor_y, SelectionRef& chosen,
+        float* best_dist = nullptr)
+    {
+        if (window == nullptr) {
+            return false;
+        }
+        int width = 0;
+        int height = 0;
+        glfwGetWindowSize(window, &width, &height);
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+        float best = best_dist != nullptr ? *best_dist : kPickPixels * kPickPixels;
+        bool found = false;
+        components.for_each([&](const Component& meta) {
+            if (meta.kind != ComponentKind::Controller) {
+                return;
+            }
+            const auto* controller = components.controller(meta.id);
+            if (controller == nullptr) {
+                return;
+            }
+            const auto points = orlviewer::controller_shape_points(*controller);
+            for (const auto& local : points) {
+                glm::vec2 pixel{};
+                if (!project(orlviewer::controller_world(*controller, local), width, height, pixel)) {
+                    continue;
+                }
+                const float dx = pixel.x - static_cast<float>(cursor_x);
+                const float dy = pixel.y - static_cast<float>(cursor_y);
+                const float dist = dx * dx + dy * dy;
+                if (dist < best) {
+                    best = dist;
+                    chosen = SelectionRef::controller(meta.id);
+                    found = true;
+                }
+            }
+        });
+        if (found && best_dist != nullptr) {
+            *best_dist = best;
+        }
+        return found;
     }
 
     void pick_cpu_joints(double cursor_x, double cursor_y) {
@@ -193,6 +266,7 @@ private:
     const vkkk::Camera& camera;
     GLFWwindow* window = nullptr;
     const CreateJointOp& create_joint;
+    const CreateControllerOp& create_controller;
     JointPickingFeature* gpu_picking = nullptr;
     MeshPickingFeature* mesh_picking = nullptr;
     double fallback_x = 0.0;

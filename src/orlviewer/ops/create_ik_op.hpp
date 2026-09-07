@@ -14,8 +14,9 @@
 namespace ORL
 {
 
-// Immediate two-bone IK: select the end joint, press I. Creates an unparented
-// target and pole the user can move with G. The solver owns root/mid rotation.
+// Immediate two-bone IK: select the end joint, press I. Creates a curve
+// target and polygon pole the user can move with G. The solver owns
+// root/mid rotation.
 class CreateIkOp : public VpOperation<CreateIkOp> {
 public:
     CreateIkOp(ComponentManager& components, Selection& selection)
@@ -61,10 +62,11 @@ public:
         const glm::vec3 mid_w{orlviewer::joint_world_matrix(packed, mid_index)[3]};
         const glm::vec3 end_w{orlviewer::joint_world_matrix(packed, end_index)[3]};
 
-        const auto target_id = create_handle("ik_target", end_w);
-        const auto pole_id = create_handle("ik_pole", pole_position(root_w, mid_w, end_w));
+        const auto target_id = create_handle("ik_target", end_w, orlviewer::ControllerShape::Curve);
+        const auto pole_id = create_handle("ik_pole", pole_position(root_w, mid_w, end_w),
+            orlviewer::ControllerShape::Polygon);
         if (!target_id || !pole_id) {
-            std::cerr << "IK: failed to create handle joints\n";
+            std::cerr << "IK: failed to create controllers\n";
             return;
         }
 
@@ -83,7 +85,7 @@ public:
             return;
         }
 
-        selection.set(SelectionRef::joint(target_id));
+        selection.set(SelectionRef::controller(target_id));
         const auto* end_meta = components.find(end_id);
         const auto* target_meta = components.find(target_id);
         const auto* pole_meta = components.find(pole_id);
@@ -131,12 +133,11 @@ private:
         }
     }
 
-    ComponentId create_handle(const char* prefix, const glm::vec3& world) {
-        orlviewer::Joint joint = orlviewer::make_identity_joint();
-        joint.translation[0] = world.x;
-        joint.translation[1] = world.y;
-        joint.translation[2] = world.z;
-        return components.create_joint(unique_name(prefix), joint);
+    ComponentId create_handle(const char* prefix, const glm::vec3& world,
+        orlviewer::ControllerShape shape)
+    {
+        return components.create_controller(unique_name(prefix),
+            orlviewer::make_controller(world, shape));
     }
 
     static glm::vec3 pole_position(const glm::vec3& root, const glm::vec3& mid, const glm::vec3& end) {

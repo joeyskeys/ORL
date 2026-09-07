@@ -106,6 +106,39 @@
       }
     },
     {
+      "op": "create_controller",
+      "input": {
+        "type": "key",
+        "key": "C",
+        "action": "press"
+      }
+    },
+    {
+      "op": "create_controller",
+      "input": {
+        "type": "key",
+        "key": "C",
+        "action": "press",
+        "mods": ["shift"]
+      }
+    },
+    {
+      "op": "create_controller",
+      "input": {
+        "type": "mouse_button",
+        "button": "left",
+        "action": "press"
+      }
+    },
+    {
+      "op": "create_controller",
+      "input": {
+        "type": "key",
+        "key": "enter",
+        "action": "press"
+      }
+    },
+    {
       "op": "select",
       "input": {
         "type": "mouse_button",

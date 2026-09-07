@@ -5,6 +5,7 @@
 #include <iostream>
 #include <vector>
 
+#include "comps/controller.hpp"
 #include "comps/joint.hpp"
 
 namespace ORL
@@ -28,6 +29,14 @@ bool fill_joints(exec::OrlBuffer& joints, const std::vector<orlviewer::Joint>& p
     return true;
 }
 
+bool fill_xform(exec::OrlBuffer& buffer, const orlviewer::Controller& controller) {
+    if (!buffer.resize(1)) {
+        return false;
+    }
+    orlviewer::pack_xform(controller, static_cast<double*>(buffer.data()));
+    return true;
+}
+
 void write_rotation(orlviewer::Joint& dst, const orlviewer::Joint& src) {
     dst.rotation[0] = src.rotation[0];
     dst.rotation[1] = src.rotation[1];
@@ -40,6 +49,8 @@ void write_rotation(orlviewer::Joint& dst, const orlviewer::Joint& src) {
 SolverFeature::SolverFeature(ComponentManager& components)
     : components(components)
     , joints("Joint", orlviewer::kJointStride)
+    , target_xform(orlviewer::kControllerOrlType, orlviewer::kControllerXformStride)
+    , pole_xform(orlviewer::kControllerOrlType, orlviewer::kControllerXformStride)
 {
 }
 
@@ -99,9 +110,14 @@ bool SolverFeature::ensure_program() {
 bool SolverFeature::evaluate_two_bone(ConstraintData& constraint) {
     if (components.joint(constraint.root) == nullptr
         || components.joint(constraint.mid) == nullptr
-        || components.joint(constraint.end) == nullptr
-        || components.joint(constraint.target) == nullptr)
+        || components.joint(constraint.end) == nullptr)
     {
+        constraint.bound = false;
+        return false;
+    }
+    const auto* target = components.controller(constraint.target);
+    const auto* pole = components.controller(constraint.pole);
+    if (target == nullptr || pole == nullptr) {
         constraint.bound = false;
         return false;
     }
@@ -110,15 +126,13 @@ bool SolverFeature::evaluate_two_bone(ConstraintData& constraint) {
     const auto root = components.joint_index(constraint.root);
     const auto mid = components.joint_index(constraint.mid);
     const auto end = components.joint_index(constraint.end);
-    const auto target = components.joint_index(constraint.target);
-    const auto pole = constraint.pole
-        ? components.joint_index(constraint.pole)
-        : static_cast<std::int64_t>(-1);
-    if (root < 0 || mid < 0 || end < 0 || target < 0) {
+    if (root < 0 || mid < 0 || end < 0) {
         constraint.bound = false;
         return false;
     }
-    if (!fill_joints(joints, packed)) {
+    if (!fill_joints(joints, packed) || !fill_xform(target_xform, *target)
+        || !fill_xform(pole_xform, *pole))
+    {
         return false;
     }
 
@@ -127,8 +141,8 @@ bool SolverFeature::evaluate_two_bone(ConstraintData& constraint) {
         || !execution->bind_int("root", root)
         || !execution->bind_int("mid", mid)
         || !execution->bind_int("end", end)
-        || !execution->bind_int("target", target)
-        || !execution->bind_int("pole", pole)
+        || !execution->bind_buffer("target", target_xform)
+        || !execution->bind_buffer("pole", pole_xform)
         || !execution->bind_int("joint_count", joint_count))
     {
         print_exec_errors("bind", execution->errors());

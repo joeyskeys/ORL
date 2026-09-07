@@ -253,7 +253,7 @@ TEST_CASE("syntax includes nested stdlib auto-weight modules", "[orl][syntax][st
 TEST_CASE("syntax includes stdlib two-bone IK solver", "[orl][syntax][stdlib][solver]") {
     const std::string src =
         "use solver/ik_two_bone;\n"
-        "int solve(Joint joints[], int root, int mid, int end, int target, int pole, int jcount) {\n"
+        "int solve(Joint joints[], int root, int mid, int end, matrix target[], matrix pole[], int jcount) {\n"
         "    return solver_ik_two_bone(joints, root, mid, end, target, pole, jcount);\n"
         "}\n";
 

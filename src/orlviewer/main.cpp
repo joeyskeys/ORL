@@ -20,6 +20,7 @@
 #include "selection.hpp"
 #include "ops/camera_switch_op.hpp"
 #include "ops/clear_scene_op.hpp"
+#include "ops/create_controller_op.hpp"
 #include "ops/create_ik_op.hpp"
 #include "ops/create_joint_op.hpp"
 #include "ops/display_mode_switch.hpp"
@@ -29,6 +30,7 @@
 #include "ops/scale_op.hpp"
 #include "ops/select_op.hpp"
 #include "vp/auto_weight_feature.hpp"
+#include "vp/controller_feature.hpp"
 #include "vp/deformer_feature.hpp"
 #include "vp/solver_feature.hpp"
 #include "vp/frame_axis.hpp"
@@ -148,6 +150,7 @@ int main() {
         ORL::OrthoGridFeature,
         ORL::SceneMeshFeature,
         ORL::JointFeature,
+        ORL::ControllerFeature,
         ORL::JointPickingFeature,
         ORL::MeshPickingFeature,
         ORL::MeshCsrFeature,
@@ -177,6 +180,8 @@ int main() {
         scene, components, deformer_id, weight_id, selection);
     viewport.add_feature<ORL::JointFeature>(
         components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    viewport.add_feature<ORL::ControllerFeature>(
+        components, camera, selection, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
         camera, font_path, make_coordinate_system(viewport_frame));
     viewport.add_feature<ORL::RuntimeHudFeature>();
@@ -189,8 +194,11 @@ int main() {
     ORL::LoadModelOp load_model(scene, context, window, world_frame);
     ORL::ClearSceneOp clear_scene(scene, context, components, selection, weight_id, deformer_id);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, window, selection);
+    ORL::CreateControllerOp create_controller(components, camera, navigator.target, window,
+        selection, &create_joint);
     ORL::CreateIkOp create_ik(components, selection);
-    ORL::SelectOp select_op(selection, components, scene, camera, window, create_joint);
+    ORL::SelectOp select_op(selection, components, scene, camera, window, create_joint,
+        create_controller);
     const auto joint_pick_handle = viewport.add_feature<ORL::JointPickingFeature>(
         components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     if (auto* gpu_pick = viewport.find_feature(joint_pick_handle)) {
@@ -214,6 +222,7 @@ int main() {
         clear_scene.set_auto_weight(*auto_weight);
     }
     clear_scene.set_create_joint(create_joint);
+    clear_scene.set_create_controller(create_controller);
     clear_scene.set_move(move_op);
     clear_scene.set_rotate(rotate_op);
     clear_scene.set_scale(scale_op);
@@ -253,6 +262,7 @@ int main() {
     controls.bind_op("load_model", load_model);
     controls.bind_op("clear_scene", clear_scene);
     controls.bind_op("create_joint", create_joint);
+    controls.bind_op("create_controller", create_controller);
     controls.bind_op("create_ik", create_ik);
     controls.bind_op("select", select_op);
     controls.bind_op("move", move_op);
