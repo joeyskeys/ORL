@@ -68,6 +68,27 @@ int auto_weight_bone_taken(Weight weights[], int vertex, int weight_cnt, int slo
     return 0;
 }
 
+// Maya Closest in Hierarchy: the next influence after the closest joint
+// must be that joint's parent or one of its children.
+int auto_weight_is_relative(Joint joints[], int closest, int j) {
+    if (closest < 0) {
+        return 0;
+    }
+    if (j < 0) {
+        return 0;
+    }
+    if (j == closest) {
+        return 1;
+    }
+    if (joints[j].parent == closest) {
+        return 1;
+    }
+    if (joints[closest].parent == j) {
+        return 1;
+    }
+    return 0;
+}
+
 int auto_weight_write_hard(Weight weights[], int vertex, int bone, int weight_cnt) {
     weights[vertex * weight_cnt] = weight_bind(bone);
     int slot = 1;

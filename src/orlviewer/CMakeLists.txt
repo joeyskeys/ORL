@@ -11,6 +11,7 @@ add_executable(orl_viewer
     ops/create_joint_op.cpp
     vp/mesh_csr_feature.cpp
     vp/auto_weight_feature.cpp
+    vp/solver_feature.cpp
     vp/deformer_feature.cpp
 )
 set_source_files_properties(comps/joint.hpp comps/joint.glsl comps/weight.hpp comps/deformer.hpp PROPERTIES HEADER_FILE_ONLY TRUE)

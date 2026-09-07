@@ -32,12 +32,10 @@ exec::Backend backend_from_config() {
 }
 
 constexpr const char* kAlgorithms[] = {
-    "closest_joint",
-    "envelope",
+    "closest_distance",
+    "closest_hierarchy",
     "heat",
     "geodesic",
-    "harmonic",
-    "bounded_biharmonic",
 };
 
 bool known_algorithm(std::string_view name) {

@@ -15,7 +15,7 @@ namespace ORL
 {
 
 // Runs an ORL stdlib auto-weight entry against the scene mesh and joints,
-// writing into a Weight component. Default algorithm is closest_joint.
+// writing into a Weight component. Default is Maya Closest Distance.
 class AutoWeightFeature final : public vkkk::vp::ViewportFeature<vkkk::vp::ViewportPhase::Scene> {
 public:
     AutoWeightFeature(vkkk::Scene& scene, ComponentManager& components, ComponentId weight_id,
@@ -40,7 +40,7 @@ private:
     ComponentId weight_id;
     const Selection& selection;
     MeshCsrFeature* csr = nullptr;
-    std::string algorithm_name{"closest_joint"};
+    std::string algorithm_name{"closest_distance"};
     double dropoff = 4.0;
     std::string compiled;
     std::optional<exec::OrlProgram> program;

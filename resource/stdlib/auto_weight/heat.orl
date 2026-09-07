@@ -1,9 +1,10 @@
-// Heat-diffusion auto-weight (Baran & Popović Pinocchio / Maya heat map).
+// Maya Heat Map (Baran & Popović Pinocchio-style heat diffusion).
 //   use auto_weight/heat;
 //
-// Pins vertices near a bone, then Gauss-Seidel on the combinatorial mesh
-// Laplacian. scratch[v * joint_count + j] holds bone j's heat at vertex v.
-// Pin joint is stored in weights[v * weight_cnt].joint until top-k write.
+// Pins vertices near a bone, then Gauss-Seidel on the mesh-graph Laplacian.
+// This is the same family as Maya Heat Map (joints as heat sources on the
+// surface). Maya's solver is a fuller linear solve; this uses a fixed number
+// of neighbor averages. scratch[v * joint_count + j] is bone j's heat at v.
 
 use auto_weight/common;
 

@@ -98,6 +98,14 @@
       }
     },
     {
+      "op": "create_ik",
+      "input": {
+        "type": "key",
+        "key": "I",
+        "action": "press"
+      }
+    },
+    {
       "op": "select",
       "input": {
         "type": "mouse_button",

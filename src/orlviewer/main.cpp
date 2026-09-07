@@ -20,6 +20,7 @@
 #include "selection.hpp"
 #include "ops/camera_switch_op.hpp"
 #include "ops/clear_scene_op.hpp"
+#include "ops/create_ik_op.hpp"
 #include "ops/create_joint_op.hpp"
 #include "ops/display_mode_switch.hpp"
 #include "ops/load_model_op.hpp"
@@ -29,6 +30,7 @@
 #include "ops/select_op.hpp"
 #include "vp/auto_weight_feature.hpp"
 #include "vp/deformer_feature.hpp"
+#include "vp/solver_feature.hpp"
 #include "vp/frame_axis.hpp"
 #include "vp/grid.hpp"
 #include "vp/joint_feature.hpp"
@@ -150,6 +152,7 @@ int main() {
         ORL::MeshPickingFeature,
         ORL::MeshCsrFeature,
         ORL::AutoWeightFeature,
+        ORL::SolverFeature,
         ORL::DeformerFeature,
         vkkk::vp::FrameAxisFeature,
         ORL::RuntimeHudFeature>;
@@ -169,6 +172,7 @@ int main() {
             auto_weight->set_csr(*csr);
         }
     }
+    viewport.add_feature<ORL::SolverFeature>(components);
     const auto deformer_handle = viewport.add_feature<ORL::DeformerFeature>(
         scene, components, deformer_id, weight_id, selection);
     viewport.add_feature<ORL::JointFeature>(
@@ -185,6 +189,7 @@ int main() {
     ORL::LoadModelOp load_model(scene, context, window, world_frame);
     ORL::ClearSceneOp clear_scene(scene, context, components, selection, weight_id, deformer_id);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, window, selection);
+    ORL::CreateIkOp create_ik(components, selection);
     ORL::SelectOp select_op(selection, components, scene, camera, window, create_joint);
     const auto joint_pick_handle = viewport.add_feature<ORL::JointPickingFeature>(
         components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
@@ -248,6 +253,7 @@ int main() {
     controls.bind_op("load_model", load_model);
     controls.bind_op("clear_scene", clear_scene);
     controls.bind_op("create_joint", create_joint);
+    controls.bind_op("create_ik", create_ik);
     controls.bind_op("select", select_op);
     controls.bind_op("move", move_op);
     controls.bind_op("rotate", rotate_op);

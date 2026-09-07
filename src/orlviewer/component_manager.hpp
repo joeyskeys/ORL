@@ -79,7 +79,17 @@ struct CurveLink {
     bool empty() const { return std::holds_alternative<std::monostate>(handle); }
 };
 
-struct ConstraintData {};
+// Solver-owned transform constraint. IK writes joint rotations; the target
+// and pole are ordinary joints the user can move.
+struct ConstraintData {
+    std::string type = "ik_two_bone";
+    ComponentId root;
+    ComponentId mid;
+    ComponentId end;
+    ComponentId target;
+    ComponentId pole;
+    bool bound = false;
+};
 
 struct Component {
     ComponentId id;

@@ -1,0 +1,60 @@
+// Maya Closest in Hierarchy.
+//   use auto_weight/closest_hierarchy;
+//
+// Same 1/d^dropoff as Closest Distance, but the second influence must be a
+// parent or child of the closest joint so a nearby unrelated bone (other
+// limb, hip vs forearm) cannot take weight.
+
+use auto_weight/common;
+
+int auto_weight_closest_hierarchy(point positions[],
+                                  Joint joints[],
+                                  Weight weights[],
+                                  int vertex_count,
+                                  int joint_count,
+                                  int weight_cnt,
+                                  float dropoff) {
+    parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
+        point p = positions[vertex];
+        int closest = -1;
+        float closest_d = 1000000000.0;
+        int j = 0;
+        while (j < joint_count) {
+            point origin = auto_weight_joint_origin(joints, j);
+            float d = length(p - origin);
+            if (d < closest_d) {
+                closest_d = d;
+                closest = j;
+            }
+            j = j + 1;
+        }
+
+        int best0 = -1;
+        int best1 = -1;
+        float d0 = 1000000000.0;
+        float d1 = 1000000000.0;
+        j = 0;
+        while (j < joint_count) {
+            int related = auto_weight_is_relative(joints, closest, j);
+            if (related != 0) {
+                point origin = auto_weight_joint_origin(joints, j);
+                float d = length(p - origin);
+                if (d < d0) {
+                    d1 = d0;
+                    best1 = best0;
+                    d0 = d;
+                    best0 = j;
+                } else {
+                    if (d < d1) {
+                        d1 = d;
+                        best1 = j;
+                    }
+                }
+            }
+            j = j + 1;
+        }
+        auto_weight_write_two_dropoff(weights, vertex, weight_cnt, best0, d0, best1, d1,
+            dropoff);
+    }
+    return vertex_count;
+}

@@ -1,9 +1,11 @@
-// Surface-geodesic auto-weight.
+// Surface-geodesic auto-weight (stand-in for Maya Geodesic Voxel).
 //   use auto_weight/geodesic;
 //
 // Relaxes graph distance on the mesh CSR (edge length |vi-vj|), starting from
 // Euclidean bone-segment distance. Inverse-square of that distance becomes the
-// weight. Voxel/volume geodesic is a later viewer precompute.
+// weight. Maya Geodesic Voxel walks through a filled voxel volume so influence
+// cannot jump through empty space; this walks the surface only. A voxel
+// precompute would need a Context volume API.
 
 use auto_weight/common;
 

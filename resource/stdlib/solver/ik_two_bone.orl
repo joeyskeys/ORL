@@ -1,0 +1,190 @@
+// Analytic two-bone IK.
+//   use solver/ik_two_bone;
+//
+// Rotates root and mid so the end reaches target. pole aims the bend.
+// Translations and the end joint are left alone. pole < 0 uses the current
+// mid position (keeps the existing plane).
+
+use joint;
+
+float solver_abs(float x) {
+    if (x < 0.0) {
+        return 0.0 - x;
+    }
+    return x;
+}
+
+float solver_sqrt(float x) {
+    if (x <= 0.0) {
+        return 0.0;
+    }
+    float g = x;
+    if (g < 1.0) {
+        g = 1.0;
+    }
+    int i = 0;
+    while (i < 8) {
+        g = 0.5 * (g + x / g);
+        i = i + 1;
+    }
+    return g;
+}
+
+vector solver_joint_offset(Joint joint) {
+    vector offset(joint.translation.x, joint.translation.y, joint.translation.z);
+    return offset;
+}
+
+point solver_joint_origin(Joint joints[], int index) {
+    matrix world = joint_world_matrix(joints, index);
+    return world * point(0.0, 0.0, 0.0);
+}
+
+point solver_world_to_local(Joint joints[], int parent, point world) {
+    if (parent < 0) {
+        return world;
+    }
+    matrix inv = mat_inverse(joint_world_matrix(joints, parent));
+    return inv * world;
+}
+
+vector solver_any_perpendicular(vector axis) {
+    vector up(0.0, 1.0, 0.0);
+    vector side = cross(axis, up);
+    if (length(side) < 0.000001) {
+        vector right(1.0, 0.0, 0.0);
+        side = cross(axis, right);
+    }
+    return normalize(side);
+}
+
+quat solver_quat_from_to(vector from, vector to) {
+    if (length(from) < 0.000001) {
+        quat identity(0.0, 0.0, 0.0, 1.0);
+        return identity;
+    }
+    if (length(to) < 0.000001) {
+        quat identity(0.0, 0.0, 0.0, 1.0);
+        return identity;
+    }
+    vector f = normalize(from);
+    vector t = normalize(to);
+    float d = dot(f, t);
+    if (d > 0.999999) {
+        quat identity(0.0, 0.0, 0.0, 1.0);
+        return identity;
+    }
+    if (d < -0.999999) {
+        vector axis = solver_any_perpendicular(f);
+        quat half(axis.x, axis.y, axis.z, 0.0);
+        return quat_normalize(half);
+    }
+    vector c = cross(f, t);
+    quat q(c.x, c.y, c.z, 1.0 + d);
+    return quat_normalize(q);
+}
+
+int solver_ik_two_bone(Joint joints[],
+                       int root,
+                       int mid,
+                       int end,
+                       int target,
+                       int pole,
+                       int joint_count) {
+    if (root < 0) {
+        return 0;
+    }
+    if (mid < 0) {
+        return 0;
+    }
+    if (end < 0) {
+        return 0;
+    }
+    if (target < 0) {
+        return 0;
+    }
+    if (root >= joint_count) {
+        return 0;
+    }
+    if (mid >= joint_count) {
+        return 0;
+    }
+    if (end >= joint_count) {
+        return 0;
+    }
+    if (target >= joint_count) {
+        return 0;
+    }
+
+    Joint root_joint = joints[root];
+    Joint mid_joint = joints[mid];
+    Joint end_joint = joints[end];
+    if (mid_joint.parent != root) {
+        return 0;
+    }
+    if (end_joint.parent != mid) {
+        return 0;
+    }
+
+    vector upper = solver_joint_offset(mid_joint);
+    vector lower = solver_joint_offset(end_joint);
+    float L1 = length(upper);
+    float L2 = length(lower);
+    if (L1 < 0.000001) {
+        return 0;
+    }
+    if (L2 < 0.000001) {
+        return 0;
+    }
+
+    point root_pos = solver_joint_origin(joints, root);
+    point target_pos = solver_joint_origin(joints, target);
+    vector reach = target_pos - root_pos;
+    float d = length(reach);
+    if (d < 0.000001) {
+        return 0;
+    }
+
+    float max_reach = L1 + L2;
+    float min_reach = solver_abs(L1 - L2);
+    float d_clamped = clamp(d, min_reach, max_reach);
+    if (d_clamped < 0.000001) {
+        return 0;
+    }
+
+    vector axis = normalize(reach);
+    point pole_pos = solver_joint_origin(joints, mid);
+    if (pole >= 0) {
+        if (pole < joint_count) {
+            pole_pos = solver_joint_origin(joints, pole);
+        }
+    }
+
+    vector pole_dir = pole_pos - root_pos;
+    vector side = pole_dir - axis * dot(pole_dir, axis);
+    if (length(side) < 0.000001) {
+        side = solver_any_perpendicular(axis);
+    }
+    side = normalize(side);
+
+    float x = (d_clamped * d_clamped + L1 * L1 - L2 * L2) / (2.0 * d_clamped);
+    float h2 = L1 * L1 - x * x;
+    if (h2 < 0.0) {
+        h2 = 0.0;
+    }
+    float h = solver_sqrt(h2);
+    point elbow = root_pos + axis * x + side * h;
+    point reach_target = root_pos + axis * d_clamped;
+
+    point elbow_local = solver_world_to_local(joints, root_joint.parent, elbow);
+    vector root_offset = solver_joint_offset(root_joint);
+    vector desired_root = elbow_local - root_offset;
+    root_joint.rotation = solver_quat_from_to(upper, desired_root);
+    joints[root] = root_joint;
+
+    point target_local = solver_world_to_local(joints, root, reach_target);
+    vector desired_mid = target_local - upper;
+    mid_joint.rotation = solver_quat_from_to(lower, desired_mid);
+    joints[mid] = mid_joint;
+    return 1;
+}

@@ -235,6 +235,8 @@ TEST_CASE("syntax includes stdlib joint definitions", "[orl][syntax][stdlib][joi
 
 TEST_CASE("syntax includes nested stdlib auto-weight modules", "[orl][syntax][stdlib][auto_weight]") {
     const std::string src =
+        "use auto_weight/closest_distance;\n"
+        "use auto_weight/closest_hierarchy;\n"
         "use auto_weight/closest_joint;\n"
         "use auto_weight/envelope;\n"
         "use auto_weight/heat;\n"
@@ -242,7 +244,17 @@ TEST_CASE("syntax includes nested stdlib auto-weight modules", "[orl][syntax][st
         "use auto_weight/harmonic;\n"
         "use auto_weight/bounded_biharmonic;\n"
         "int bind(point positions[], Joint joints[], Weight weights[], int vcount, int jcount, int wcnt, float dropoff) {\n"
-        "    return auto_weight_closest_joint(positions, joints, weights, vcount, jcount, wcnt, dropoff);\n"
+        "    return auto_weight_closest_distance(positions, joints, weights, vcount, jcount, wcnt, dropoff);\n"
+        "}\n";
+
+    RequireParses(src);
+}
+
+TEST_CASE("syntax includes stdlib two-bone IK solver", "[orl][syntax][stdlib][solver]") {
+    const std::string src =
+        "use solver/ik_two_bone;\n"
+        "int solve(Joint joints[], int root, int mid, int end, int target, int pole, int jcount) {\n"
+        "    return solver_ik_two_bone(joints, root, mid, end, target, pole, jcount);\n"
         "}\n";
 
     RequireParses(src);

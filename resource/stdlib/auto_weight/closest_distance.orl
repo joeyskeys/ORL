@@ -1,0 +1,18 @@
+// Maya Closest Distance.
+//   use auto_weight/closest_distance;
+//
+// Same bind as closest_joint: inverse-distance^dropoff on the two nearest
+// joints, ignoring hierarchy.
+
+use auto_weight/closest_joint;
+
+int auto_weight_closest_distance(point positions[],
+                                 Joint joints[],
+                                 Weight weights[],
+                                 int vertex_count,
+                                 int joint_count,
+                                 int weight_cnt,
+                                 float dropoff) {
+    return auto_weight_closest_joint(positions, joints, weights, vertex_count,
+        joint_count, weight_cnt, dropoff);
+}
