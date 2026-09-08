@@ -3,7 +3,6 @@
 #include <cmath>
 #include <vector>
 
-#include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/mat4x4.hpp>
@@ -12,6 +11,7 @@
 #include <glm/vec4.hpp>
 
 #include "camera_navigator.hpp"
+#include "gui/window_backend.hpp"
 #include "selection.hpp"
 #include "vp_operation.hpp"
 
@@ -25,7 +25,7 @@ class RotateOp : public VpOperation<RotateOp> {
 public:
     static constexpr OpMode kMode = OpMode::Modal;
 
-    RotateOp(Selection& selection, CameraNavigator& navigator, GLFWwindow* window)
+    RotateOp(Selection& selection, CameraNavigator& navigator, vkkk::WindowBackend* window)
         : selection(selection)
         , navigator(navigator)
         , window(window)
@@ -68,18 +68,16 @@ public:
         }
 
         pivot = pivot_sum / static_cast<float>(starts.size());
-        int width = 0;
-        int height = 0;
-        glfwGetWindowSize(window, &width, &height);
+        const auto size = window->window_size();
+        const int width = static_cast<int>(size.width);
+        const int height = static_cast<int>(size.height);
         if (!navigator.project_window(pivot, width, height, pivot_screen)) {
             engaged = false;
             return;
         }
 
-        double cursor_x = 0.0;
-        double cursor_y = 0.0;
-        glfwGetCursorPos(window, &cursor_x, &cursor_y);
-        grab_angle = screen_angle(cursor_x, cursor_y);
+        const auto pointer = window->pointer();
+        grab_angle = screen_angle(pointer.x, pointer.y);
         accum = 0.0f;
         engaged = true;
         apply();
@@ -165,7 +163,7 @@ private:
 
     Selection& selection;
     CameraNavigator& navigator;
-    GLFWwindow* window = nullptr;
+    vkkk::WindowBackend* window = nullptr;
     bool engaged = false;
     float accum = 0.0f;
     float grab_angle = 0.0f;

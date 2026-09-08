@@ -7,7 +7,6 @@
 #include <utility>
 #include <vector>
 
-#include <GLFW/glfw3.h>
 #include <glm/geometric.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
@@ -15,6 +14,8 @@
 #include <glm/vec4.hpp>
 
 #include "comps/joint.hpp"
+#include "gui/input.hpp"
+#include "gui/window_backend.hpp"
 #include "ops/create_controller_op.hpp"
 #include "ops/create_joint_op.hpp"
 #include "selection.hpp"
@@ -28,7 +29,7 @@ namespace ORL
 class SelectOp : public VpOperation<SelectOp> {
 public:
     SelectOp(Selection& selection, ComponentManager& components, vkkk::Scene& scene,
-        const vkkk::Camera& camera, GLFWwindow* window, const CreateJointOp& create_joint,
+        const vkkk::Camera& camera, vkkk::WindowBackend* window, const CreateJointOp& create_joint,
         const CreateControllerOp& create_controller)
         : selection(selection)
         , components(components)
@@ -59,8 +60,8 @@ public:
             return;
         }
         if (event.kind != InputEvent::Kind::MouseButton
-            || event.button != GLFW_MOUSE_BUTTON_LEFT
-            || event.action != GLFW_PRESS)
+            || event.button != vkkk::MouseButton::Left
+            || event.action != vkkk::InputAction::Press)
         {
             return;
         }
@@ -70,8 +71,12 @@ public:
         if (pick_cpu_controllers(event.x, event.y)) {
             return;
         }
-        awaiting_joint = gpu_picking != nullptr && gpu_picking->request(event.x, event.y);
-        awaiting_mesh = mesh_picking != nullptr && mesh_picking->request(event.x, event.y);
+        awaiting_joint = gpu_picking != nullptr && gpu_picking->request(
+            vkkk::mouse_button_event(vkkk::MouseButton::Left, vkkk::InputAction::Press,
+                event.x, event.y));
+        awaiting_mesh = mesh_picking != nullptr && mesh_picking->request(
+            vkkk::mouse_button_event(vkkk::MouseButton::Left, vkkk::InputAction::Press,
+                event.x, event.y));
         joint_hit = false;
         mesh_id = 0;
         if (awaiting_joint || awaiting_mesh) {
@@ -173,9 +178,9 @@ private:
         if (window == nullptr) {
             return false;
         }
-        int width = 0;
-        int height = 0;
-        glfwGetWindowSize(window, &width, &height);
+        const auto size = window->window_size();
+        const int width = static_cast<int>(size.width);
+        const int height = static_cast<int>(size.height);
         if (width <= 0 || height <= 0) {
             return false;
         }
@@ -216,9 +221,9 @@ private:
             selection.set({});
             return;
         }
-        int width = 0;
-        int height = 0;
-        glfwGetWindowSize(window, &width, &height);
+        const auto size = window->window_size();
+        const int width = static_cast<int>(size.width);
+        const int height = static_cast<int>(size.height);
         if (width <= 0 || height <= 0) {
             selection.set({});
             return;
@@ -264,7 +269,7 @@ private:
     ComponentManager& components;
     vkkk::Scene& scene;
     const vkkk::Camera& camera;
-    GLFWwindow* window = nullptr;
+    vkkk::WindowBackend* window = nullptr;
     const CreateJointOp& create_joint;
     const CreateControllerOp& create_controller;
     JointPickingFeature* gpu_picking = nullptr;

@@ -15,15 +15,19 @@
 #include "asset_mgr/drawable_mgr.h"
 #include "vk_ins/types.h"
 
-#ifdef _WIN32
+#if ORL_USE_QT6
+#include <QFileDialog>
+#include <QString>
+#include <QWidget>
+
+#include "gui/qt_backend.hpp"
+#elif defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
 #include <windows.h>
 #include <commdlg.h>
 #endif
@@ -98,7 +102,7 @@ void transform_mesh_to_frame(vkkk::Mesh& mesh, const Frame& from, const Frame& t
 
 } // namespace
 
-LoadModelOp::LoadModelOp(vkkk::Scene& scene, vkkk::Context& context, GLFWwindow* window,
+LoadModelOp::LoadModelOp(vkkk::Scene& scene, vkkk::Context& context, vkkk::WindowBackend* window,
     Frame world_frame, Frame file_frame)
     : scene(scene)
     , context(context)
@@ -187,11 +191,26 @@ std::string LoadModelOp::unique_object_name(std::string base) const {
 }
 
 std::filesystem::path LoadModelOp::open_obj_dialog() const {
+#if ORL_USE_QT6
+    QWidget* parent = nullptr;
+    if (auto* qt = dynamic_cast<vkkk::QtBackend*>(window)) {
+        parent = qt->main_window();
+    }
+    const QString selected = QFileDialog::getOpenFileName(parent, QStringLiteral("Open Model"),
+        QString(), QStringLiteral("Wavefront OBJ (*.obj);;All Files (*)"));
+    if (selected.isEmpty()) {
+        return {};
+    }
 #ifdef _WIN32
+    return std::filesystem::path(selected.toStdWString());
+#else
+    return std::filesystem::path(selected.toStdString());
+#endif
+#elif defined(_WIN32)
     wchar_t file_buffer[32768] = {};
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = window != nullptr ? glfwGetWin32Window(window) : nullptr;
+    ofn.hwndOwner = window != nullptr ? reinterpret_cast<HWND>(window->native_handle()) : nullptr;
     ofn.lpstrFilter = L"Wavefront OBJ (*.obj)\0*.obj\0";
     ofn.lpstrFile = file_buffer;
     ofn.nMaxFile = static_cast<DWORD>(sizeof(file_buffer) / sizeof(file_buffer[0]));

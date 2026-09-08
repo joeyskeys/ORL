@@ -1,11 +1,13 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "gui/input.hpp"
 #include "vp_operation.hpp"
 
 namespace ORL
@@ -43,6 +45,9 @@ public:
     std::string_view current_mode() const { return current; }
 
     void on_eval(const InputEvent& event) {
+        if (event.kind != InputEvent::Kind::Key || event.action != vkkk::InputAction::Press) {
+            return;
+        }
         const int index = mode_index_from_key(event.key);
         if (index < 0 || static_cast<std::size_t>(index) >= modes.size()) {
             return;
@@ -56,9 +61,12 @@ private:
         ApplyFn apply;
     };
 
-    static int mode_index_from_key(int key) {
-        if (key >= GLFW_KEY_1 && key <= GLFW_KEY_9) {
-            return key - GLFW_KEY_1;
+    static int mode_index_from_key(vkkk::Key key) {
+        const auto value = static_cast<std::uint16_t>(key);
+        const auto first = static_cast<std::uint16_t>(vkkk::Key::Digit1);
+        const auto last = static_cast<std::uint16_t>(vkkk::Key::Digit9);
+        if (value >= first && value <= last) {
+            return static_cast<int>(value - first);
         }
         return -1;
     }

@@ -29,8 +29,10 @@ target_link_libraries(orl_viewer
         Eigen3::Eigen
         RapidJSON
 )
-if(WIN32)
+if(WIN32 AND NOT ORL_USE_QT6)
     target_link_libraries(orl_viewer PRIVATE comdlg32)
+endif()
+if(WIN32)
     target_compile_definitions(orl_viewer PRIVATE NOMINMAX)
 endif()
 
@@ -39,7 +41,6 @@ target_include_directories(orl_viewer
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_SOURCE_DIR}/src/include"
         "${CMAKE_SOURCE_DIR}/thirdparty/vkkk/src"
-        "${CMAKE_SOURCE_DIR}/thirdparty/vkkk/thirdparty/imgui"
 )
 
 target_compile_definitions(orl_viewer
@@ -47,3 +48,18 @@ target_compile_definitions(orl_viewer
         ORL_VKKK_SOURCE_DIR="${CMAKE_SOURCE_DIR}/thirdparty/vkkk"
         ORL_RESOURCE_DIR="${CMAKE_SOURCE_DIR}/resource"
 )
+
+if(ORL_USE_QT6)
+    target_compile_definitions(orl_viewer PRIVATE ORL_USE_QT6=1)
+    if(NOT TARGET Qt6::Widgets)
+        find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+    endif()
+    target_link_libraries(orl_viewer PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+    if(MSVC)
+        target_compile_options(orl_viewer PRIVATE /Zc:__cplusplus)
+    endif()
+else()
+    target_compile_definitions(orl_viewer PRIVATE ORL_USE_QT6=0)
+    target_include_directories(orl_viewer PRIVATE
+        "${CMAKE_SOURCE_DIR}/thirdparty/vkkk/thirdparty/imgui")
+endif()

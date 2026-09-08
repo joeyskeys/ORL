@@ -1,10 +1,12 @@
 #pragma once
 
-#include <GLFW/glfw3.h>
+#include <string>
+
 #include <glm/vec3.hpp>
 
 #include "component_manager.hpp"
 #include "concepts/camera.h"
+#include "gui/window_backend.hpp"
 #include "vp_operation.hpp"
 
 namespace ORL
@@ -18,7 +20,7 @@ class Selection;
 class CreateJointOp : public VpOperation<CreateJointOp> {
 public:
     CreateJointOp(ComponentManager& components, vkkk::Camera& camera, const glm::vec3& pivot,
-        GLFWwindow* window, Selection& selection);
+        vkkk::WindowBackend* window, Selection& selection);
 
     void on_eval(const InputEvent& event);
     bool active() const { return active_; }
@@ -35,7 +37,7 @@ private:
     ComponentManager& components;
     vkkk::Camera& camera;
     const glm::vec3& pivot;
-    GLFWwindow* window = nullptr;
+    vkkk::WindowBackend* window = nullptr;
     Selection& selection;
     bool active_ = false;
     ComponentId last_in_chain;

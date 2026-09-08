@@ -9,12 +9,11 @@
 #include <string>
 #include <vector>
 
-#include <GLFW/glfw3.h>
-
 #include "built_in_shader/common.h"
 #include "component_manager.hpp"
 #include "concepts/camera.h"
 #include "concepts/point.h"
+#include "gui/input.hpp"
 #include "vk_ins/shader_module_pack.hpp"
 #include "vp/feature.hpp"
 #include "vp/joint_feature.hpp"
@@ -72,19 +71,13 @@ public:
             pick_pending = false;
         }
 
-        if (!want_pick || context.get_window() == nullptr) {
+        if (!want_pick || context.window() == nullptr) {
             return;
         }
 
-        int window_width = 0;
-        int window_height = 0;
-        glfwGetWindowSize(context.get_window(), &window_width, &window_height);
-        const auto extent = context.extent();
-        if (window_width > 0 && window_height > 0 && extent.width > 0 && extent.height > 0) {
-            pending_x = std::min(static_cast<uint32_t>(std::floor(
-                cursor_x * static_cast<double>(extent.width) / window_width)), extent.width - 1);
-            pending_y = std::min(static_cast<uint32_t>(std::floor(
-                cursor_y * static_cast<double>(extent.height) / window_height)), extent.height - 1);
+        if (context.window()->map_cursor(pick_event.x, pick_event.y, context.extent(),
+                pending_x, pending_y))
+        {
             pending_serial = frame.serial;
             pick_pending = true;
         }
@@ -125,12 +118,11 @@ public:
 
     bool available() const { return ready && enabled; }
 
-    bool request(double x, double y) {
+    bool request(const vkkk::InputEvent& event) {
         if (!available()) {
             return false;
         }
-        cursor_x = x;
-        cursor_y = y;
+        pick_event = event;
         want_pick = true;
         return true;
     }
@@ -206,8 +198,7 @@ private:
     uint64_t pending_serial = 0;
     uint64_t last_render_serial = 0;
     uint64_t current_serial = 0;
-    double cursor_x = 0.0;
-    double cursor_y = 0.0;
+    vkkk::InputEvent pick_event;
     bool want_pick = false;
     bool pick_pending = false;
     bool ready = false;

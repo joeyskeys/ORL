@@ -8,8 +8,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
-#include <GLFW/glfw3.h>
-
 #include "ORL/frame.h"
 
 #include "asset_mgr/scene.h"
@@ -18,6 +16,11 @@
 #include "concepts/camera.h"
 #include "control_map.hpp"
 #include "selection.hpp"
+#if ORL_USE_QT6
+#include "gui/qt_backend.hpp"
+#else
+#include "gui/glfw_backend.hpp"
+#endif
 #include "ops/camera_switch_op.hpp"
 #include "ops/clear_scene_op.hpp"
 #include "ops/create_controller_op.hpp"
@@ -111,17 +114,20 @@ vkkk::vp::CoordinateSystem make_coordinate_system(const ViewportFrame& viewport_
 } // namespace
 
 int main() {
+#if ORL_USE_QT6
+    vkkk::QtBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport");
+#else
+    vkkk::GlfwBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport", true);
+#endif
     vkkk::Context context;
-    GLFWwindow *window = context.init_glfw(kViewportWidth, kViewportHeight, "ORL Viewport", true);
-    const auto glfw_extensions = vkkk::Context::get_glfw_instance_extensions();
-    context.init(window,
+    context.init(window_backend,
                  "ORL",
                  VK_MAKE_VERSION(0, 1, 0),
                  "ORL Viewport",
                  vk::ApiVersion13,
                  true,
                  {},
-                 glfw_extensions);
+                 {});
 
     // Viewport world follows the provided ORL Frame. frame_dx is left-handed:
     // +X right, +Y up, +Z out (DirectX-style).
@@ -191,13 +197,13 @@ int main() {
     bool show_grid = true;
     const auto ortho_grid_handle = viewport.add_feature<ORL::OrthoGridFeature>(
         navigator, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
-    ORL::LoadModelOp load_model(scene, context, window, world_frame);
+    ORL::LoadModelOp load_model(scene, context, &window_backend, world_frame);
     ORL::ClearSceneOp clear_scene(scene, context, components, selection, weight_id, deformer_id);
-    ORL::CreateJointOp create_joint(components, camera, navigator.target, window, selection);
-    ORL::CreateControllerOp create_controller(components, camera, navigator.target, window,
+    ORL::CreateJointOp create_joint(components, camera, navigator.target, &window_backend, selection);
+    ORL::CreateControllerOp create_controller(components, camera, navigator.target, &window_backend,
         selection, &create_joint);
     ORL::CreateIkOp create_ik(components, selection);
-    ORL::SelectOp select_op(selection, components, scene, camera, window, create_joint,
+    ORL::SelectOp select_op(selection, components, scene, camera, &window_backend, create_joint,
         create_controller);
     const auto joint_pick_handle = viewport.add_feature<ORL::JointPickingFeature>(
         components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
@@ -209,9 +215,9 @@ int main() {
     if (auto* mesh_pick = viewport.find_feature(mesh_pick_handle)) {
         select_op.set_mesh_picking(*mesh_pick);
     }
-    ORL::MoveOp move_op(selection, navigator, window);
-    ORL::RotateOp rotate_op(selection, navigator, window);
-    ORL::ScaleOp scale_op(selection, navigator, window);
+    ORL::MoveOp move_op(selection, navigator, &window_backend);
+    ORL::RotateOp rotate_op(selection, navigator, &window_backend);
+    ORL::ScaleOp scale_op(selection, navigator, &window_backend);
     if (auto* csr = viewport.find_feature(csr_handle)) {
         clear_scene.set_csr(*csr);
     }
@@ -294,10 +300,10 @@ int main() {
         std::cerr << "Failed to load control map: " << error.what() << '\n';
         return 1;
     }
-    controls.attach(window);
+    controls.attach(window_backend);
 
-    while (!glfwWindowShouldClose(window)) {
-        glfwPollEvents();
+    while (!window_backend.should_close()) {
+        window_backend.poll_events();
         controls.poll();
 
         vkkk::Context::Frame frame{};
@@ -320,7 +326,5 @@ int main() {
 
     context.wait_idle();
     controls.detach();
-    glfwDestroyWindow(window);
-    glfwTerminate();
     return 0;
 }

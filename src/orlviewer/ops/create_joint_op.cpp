@@ -15,7 +15,7 @@ namespace ORL
 {
 
 CreateJointOp::CreateJointOp(ComponentManager& components, vkkk::Camera& camera,
-    const glm::vec3& pivot, GLFWwindow* window, Selection& selection)
+    const glm::vec3& pivot, vkkk::WindowBackend* window, Selection& selection)
     : components(components)
     , camera(camera)
     , pivot(pivot)
@@ -25,19 +25,19 @@ CreateJointOp::CreateJointOp(ComponentManager& components, vkkk::Camera& camera,
 }
 
 void CreateJointOp::on_eval(const InputEvent& event) {
-    if (event.kind == InputEvent::Kind::Key && event.action == GLFW_PRESS) {
-        if (event.key == GLFW_KEY_J && !active_) {
+    if (event.kind == InputEvent::Kind::Key && event.action == vkkk::InputAction::Press) {
+        if (event.key == vkkk::Key::J && !active_) {
             enter();
             return;
         }
-        if (active_ && (event.key == GLFW_KEY_ENTER || event.key == GLFW_KEY_KP_ENTER)) {
+        if (active_ && (event.key == vkkk::Key::Enter || event.key == vkkk::Key::NumpadEnter)) {
             exit();
         }
         return;
     }
 
     if (active_ && event.kind == InputEvent::Kind::MouseButton
-        && event.button == GLFW_MOUSE_BUTTON_LEFT && event.action == GLFW_PRESS)
+        && event.button == vkkk::MouseButton::Left && event.action == vkkk::InputAction::Press)
     {
         place(event.x, event.y);
     }
@@ -93,9 +93,9 @@ bool CreateJointOp::hit_pivot_plane(double cursor_x, double cursor_y, glm::vec3&
         return false;
     }
 
-    int width = 0;
-    int height = 0;
-    glfwGetWindowSize(window, &width, &height);
+    const auto size = window->window_size();
+    const int width = static_cast<int>(size.width);
+    const int height = static_cast<int>(size.height);
     if (width <= 0 || height <= 0) {
         return false;
     }

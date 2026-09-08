@@ -11,16 +11,20 @@
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
 
+#if ORL_USE_QT6
+#include <QGuiApplication>
+
+#include "gui/qt_backend.hpp"
+#endif
+
 namespace ORL
 {
 namespace
 {
 
+#if !ORL_USE_QT6
 std::unordered_map<GLFWwindow*, ControlMap*> g_window_maps;
-
-int mask_lock_mods(int mods) {
-    return mods & ~(GLFW_MOD_CAPS_LOCK | GLFW_MOD_NUM_LOCK);
-}
+#endif
 
 std::string to_lower(std::string_view text) {
     std::string out(text);
@@ -30,59 +34,63 @@ std::string to_lower(std::string_view text) {
     return out;
 }
 
-const std::unordered_map<std::string, int> kNamedKeys = {
-    {"space", GLFW_KEY_SPACE},
-    {"escape", GLFW_KEY_ESCAPE},
-    {"esc", GLFW_KEY_ESCAPE},
-    {"enter", GLFW_KEY_ENTER},
-    {"return", GLFW_KEY_ENTER},
-    {"tab", GLFW_KEY_TAB},
-    {"backspace", GLFW_KEY_BACKSPACE},
-    {"delete", GLFW_KEY_DELETE},
-    {"insert", GLFW_KEY_INSERT},
-    {"home", GLFW_KEY_HOME},
-    {"end", GLFW_KEY_END},
-    {"pageup", GLFW_KEY_PAGE_UP},
-    {"pagedown", GLFW_KEY_PAGE_DOWN},
-    {"left", GLFW_KEY_LEFT},
-    {"right", GLFW_KEY_RIGHT},
-    {"up", GLFW_KEY_UP},
-    {"down", GLFW_KEY_DOWN},
-    {"leftshift", GLFW_KEY_LEFT_SHIFT},
-    {"rightshift", GLFW_KEY_RIGHT_SHIFT},
-    {"leftctrl", GLFW_KEY_LEFT_CONTROL},
-    {"leftcontrol", GLFW_KEY_LEFT_CONTROL},
-    {"rightctrl", GLFW_KEY_RIGHT_CONTROL},
-    {"leftalt", GLFW_KEY_LEFT_ALT},
-    {"rightalt", GLFW_KEY_RIGHT_ALT},
-    {"leftsuper", GLFW_KEY_LEFT_SUPER},
-    {"rightsuper", GLFW_KEY_RIGHT_SUPER},
-    {"minus", GLFW_KEY_MINUS},
-    {"equal", GLFW_KEY_EQUAL},
-    {"comma", GLFW_KEY_COMMA},
-    {"period", GLFW_KEY_PERIOD},
-    {"slash", GLFW_KEY_SLASH},
-    {"semicolon", GLFW_KEY_SEMICOLON},
-    {"apostrophe", GLFW_KEY_APOSTROPHE},
-    {"grave", GLFW_KEY_GRAVE_ACCENT},
-    {"leftbracket", GLFW_KEY_LEFT_BRACKET},
-    {"rightbracket", GLFW_KEY_RIGHT_BRACKET},
-    {"backslash", GLFW_KEY_BACKSLASH},
+const std::unordered_map<std::string, vkkk::Key> kNamedKeys = {
+    {"space", vkkk::Key::Space},
+    {"escape", vkkk::Key::Escape},
+    {"esc", vkkk::Key::Escape},
+    {"enter", vkkk::Key::Enter},
+    {"return", vkkk::Key::Enter},
+    {"tab", vkkk::Key::Tab},
+    {"backspace", vkkk::Key::Backspace},
+    {"delete", vkkk::Key::Delete},
+    {"insert", vkkk::Key::Insert},
+    {"home", vkkk::Key::Home},
+    {"end", vkkk::Key::End},
+    {"pageup", vkkk::Key::PageUp},
+    {"pagedown", vkkk::Key::PageDown},
+    {"left", vkkk::Key::Left},
+    {"right", vkkk::Key::Right},
+    {"up", vkkk::Key::Up},
+    {"down", vkkk::Key::Down},
+    {"leftshift", vkkk::Key::LeftShift},
+    {"rightshift", vkkk::Key::RightShift},
+    {"leftctrl", vkkk::Key::LeftCtrl},
+    {"leftcontrol", vkkk::Key::LeftCtrl},
+    {"rightctrl", vkkk::Key::RightCtrl},
+    {"leftalt", vkkk::Key::LeftAlt},
+    {"rightalt", vkkk::Key::RightAlt},
+    {"leftsuper", vkkk::Key::LeftSuper},
+    {"rightsuper", vkkk::Key::RightSuper},
+    {"minus", vkkk::Key::Minus},
+    {"equal", vkkk::Key::Equal},
+    {"comma", vkkk::Key::Comma},
+    {"period", vkkk::Key::Period},
+    {"slash", vkkk::Key::Slash},
+    {"semicolon", vkkk::Key::Semicolon},
+    {"apostrophe", vkkk::Key::Apostrophe},
+    {"grave", vkkk::Key::Grave},
+    {"leftbracket", vkkk::Key::LeftBracket},
+    {"rightbracket", vkkk::Key::RightBracket},
+    {"backslash", vkkk::Key::Backslash},
+    {"kpenter", vkkk::Key::NumpadEnter},
+    {"numpadenter", vkkk::Key::NumpadEnter},
+    {"kpadd", vkkk::Key::NumpadAdd},
+    {"kpsubtract", vkkk::Key::NumpadSubtract},
 };
 
-int parse_mod_name(std::string_view name) {
+std::uint32_t parse_mod_name(std::string_view name) {
     const std::string key = to_lower(name);
     if (key == "shift") {
-        return GLFW_MOD_SHIFT;
+        return vkkk::input_mod::shift;
     }
     if (key == "ctrl" || key == "control") {
-        return GLFW_MOD_CONTROL;
+        return vkkk::input_mod::ctrl;
     }
     if (key == "alt") {
-        return GLFW_MOD_ALT;
+        return vkkk::input_mod::alt;
     }
     if (key == "super" || key == "cmd" || key == "meta") {
-        return GLFW_MOD_SUPER;
+        return vkkk::input_mod::super;
     }
     throw std::runtime_error("unknown modifier '" + std::string(name) + "'");
 }
@@ -178,10 +186,10 @@ int ControlMap::parse_key(std::string_view name) {
     if (name.size() == 1) {
         const char c = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
         if (c >= 'A' && c <= 'Z') {
-            return GLFW_KEY_A + (c - 'A');
+            return static_cast<int>(vkkk::Key::A) + (c - 'A');
         }
         if (c >= '0' && c <= '9') {
-            return GLFW_KEY_0 + (c - '0');
+            return static_cast<int>(vkkk::Key::Digit0) + (c - '0');
         }
     }
 
@@ -195,8 +203,8 @@ int ControlMap::parse_key(std::string_view name) {
         }
         if (digits) {
             const int index = std::stoi(key.substr(1));
-            if (index >= 1 && index <= 25) {
-                return GLFW_KEY_F1 + (index - 1);
+            if (index >= 1 && index <= 12) {
+                return static_cast<int>(vkkk::Key::F1) + (index - 1);
             }
         }
     }
@@ -212,38 +220,32 @@ int ControlMap::parse_key(std::string_view name) {
         keypad = key.substr(2);
     }
     if (keypad.size() == 1 && keypad[0] >= '0' && keypad[0] <= '9') {
-        return GLFW_KEY_KP_0 + (keypad[0] - '0');
+        return static_cast<int>(vkkk::Key::Numpad0) + (keypad[0] - '0');
     }
 
     const auto it = kNamedKeys.find(key);
     if (it == kNamedKeys.end()) {
         throw std::runtime_error("unknown key '" + std::string(name) + "'");
     }
-    return it->second;
+    return static_cast<int>(it->second);
 }
 
 int ControlMap::parse_mouse_button(std::string_view name) {
     const std::string key = to_lower(name);
     if (key == "left" || key == "0") {
-        return GLFW_MOUSE_BUTTON_LEFT;
+        return static_cast<int>(vkkk::MouseButton::Left);
     }
     if (key == "right" || key == "1") {
-        return GLFW_MOUSE_BUTTON_RIGHT;
+        return static_cast<int>(vkkk::MouseButton::Right);
     }
     if (key == "middle" || key == "2") {
-        return GLFW_MOUSE_BUTTON_MIDDLE;
-    }
-    if (key == "button4" || key == "4") {
-        return GLFW_MOUSE_BUTTON_4;
-    }
-    if (key == "button5" || key == "5") {
-        return GLFW_MOUSE_BUTTON_5;
+        return static_cast<int>(vkkk::MouseButton::Middle);
     }
     throw std::runtime_error("unknown mouse button '" + std::string(name) + "'");
 }
 
-int ControlMap::parse_mods(const std::vector<std::string>& names) {
-    int mods = 0;
+std::uint32_t ControlMap::parse_mods(const std::vector<std::string>& names) {
+    std::uint32_t mods = 0;
     for (const auto& name : names) {
         mods |= parse_mod_name(name);
     }
@@ -253,13 +255,13 @@ int ControlMap::parse_mods(const std::vector<std::string>& names) {
 int ControlMap::parse_action(std::string_view name) {
     const std::string key = to_lower(name);
     if (key == "press" || key == "down") {
-        return GLFW_PRESS;
+        return static_cast<int>(vkkk::InputAction::Press);
     }
     if (key == "release" || key == "up") {
-        return GLFW_RELEASE;
+        return static_cast<int>(vkkk::InputAction::Release);
     }
     if (key == "repeat") {
-        return GLFW_REPEAT;
+        return static_cast<int>(vkkk::InputAction::Repeat);
     }
     if (key == "hold") {
         return InputSpec::kHold;
@@ -271,34 +273,60 @@ ControlMap::~ControlMap() {
     detach();
 }
 
-void ControlMap::attach(GLFWwindow* window) {
-    detach();
-    if (window == nullptr) {
+void ControlMap::sync_cursor() {
+    if (backend_ == nullptr) {
         return;
     }
-    window_ = window;
-    g_window_maps[window_] = this;
-    glfwSetKeyCallback(window_, key_callback);
-    glfwSetMouseButtonCallback(window_, mouse_button_callback);
-    glfwSetCursorPosCallback(window_, cursor_pos_callback);
-    glfwSetScrollCallback(window_, scroll_callback);
-    glfwGetCursorPos(window_, &cursor_x_, &cursor_y_);
+    const auto pointer = backend_->pointer();
+    cursor_x_ = pointer.x;
+    cursor_y_ = pointer.y;
     cursor_valid_ = true;
 }
 
-void ControlMap::detach() {
-    if (window_ == nullptr) {
+void ControlMap::attach(vkkk::WindowBackend& backend) {
+    detach();
+    backend_ = &backend;
+    sync_cursor();
+
+#if ORL_USE_QT6
+    qt_synced_ = false;
+    snapshot_qt_state();
+#else
+    auto* glfw = dynamic_cast<vkkk::GlfwBackend*>(backend_);
+    if (glfw == nullptr) {
         return;
     }
-    const auto it = g_window_maps.find(window_);
-    if (it != g_window_maps.end() && it->second == this) {
-        glfwSetKeyCallback(window_, nullptr);
-        glfwSetMouseButtonCallback(window_, nullptr);
-        glfwSetCursorPosCallback(window_, nullptr);
-        glfwSetScrollCallback(window_, nullptr);
-        g_window_maps.erase(it);
+    glfw_window_ = glfw->glfw_window();
+    if (glfw_window_ == nullptr) {
+        return;
     }
-    window_ = nullptr;
+    g_window_maps[glfw_window_] = this;
+    glfwSetKeyCallback(glfw_window_, key_callback);
+    glfwSetMouseButtonCallback(glfw_window_, mouse_button_callback);
+    glfwSetCursorPosCallback(glfw_window_, cursor_pos_callback);
+    glfwSetScrollCallback(glfw_window_, scroll_callback);
+#endif
+}
+
+void ControlMap::detach() {
+#if ORL_USE_QT6
+    qt_synced_ = false;
+    prev_keys_.fill(false);
+    prev_mouse_[0] = prev_mouse_[1] = prev_mouse_[2] = false;
+#else
+    if (glfw_window_ != nullptr) {
+        const auto it = g_window_maps.find(glfw_window_);
+        if (it != g_window_maps.end() && it->second == this) {
+            glfwSetKeyCallback(glfw_window_, nullptr);
+            glfwSetMouseButtonCallback(glfw_window_, nullptr);
+            glfwSetCursorPosCallback(glfw_window_, nullptr);
+            glfwSetScrollCallback(glfw_window_, nullptr);
+            g_window_maps.erase(it);
+        }
+        glfw_window_ = nullptr;
+    }
+#endif
+    backend_ = nullptr;
     modal.clear();
     buttons_down_ = 0;
     cursor_valid_ = false;
@@ -413,12 +441,12 @@ void ControlMap::load_config(const std::filesystem::path& path, ControlMapLoadMo
     }
 }
 
-void ControlMap::poll() {
-    if (window_ == nullptr) {
+void ControlMap::poll_holds() {
+    if (backend_ == nullptr) {
         return;
     }
 
-    const int mods = current_mods();
+    const std::uint32_t mods = current_mods();
     for (const auto& binding : bindings_) {
         if (binding.input.type != InputSpec::Type::Key
             || binding.input.action != InputSpec::kHold)
@@ -428,18 +456,181 @@ void ControlMap::poll() {
         if (binding.input.mods != mods) {
             continue;
         }
-        if (glfwGetKey(window_, binding.input.code) != GLFW_PRESS) {
+        const auto key = static_cast<vkkk::Key>(binding.input.code);
+        if (!backend_->key_down(key)) {
             continue;
         }
 
         InputEvent event;
         event.kind = InputEvent::Kind::Hold;
-        event.key = binding.input.code;
+        event.key = key;
         event.mods = mods;
         event.x = cursor_x_;
         event.y = cursor_y_;
         dispatch(event);
     }
+}
+
+#if ORL_USE_QT6
+
+bool qt_key_active(vkkk::WindowBackend& backend, vkkk::Key key) {
+    switch (key) {
+    case vkkk::Key::RightShift:
+    case vkkk::Key::RightCtrl:
+    case vkkk::Key::RightAlt:
+    case vkkk::Key::RightSuper:
+        return false;
+    default:
+        break;
+    }
+    if (!backend.key_down(key)) {
+        return false;
+    }
+    const bool keypad = QGuiApplication::queryKeyboardModifiers().testFlag(Qt::KeypadModifier);
+    const auto value = static_cast<std::uint16_t>(key);
+    if (value >= static_cast<std::uint16_t>(vkkk::Key::Digit0)
+        && value <= static_cast<std::uint16_t>(vkkk::Key::Digit9))
+    {
+        return !keypad;
+    }
+    if (value >= static_cast<std::uint16_t>(vkkk::Key::Numpad0)
+        && value <= static_cast<std::uint16_t>(vkkk::Key::Numpad9))
+    {
+        return keypad;
+    }
+    if (key == vkkk::Key::Minus) {
+        return !keypad;
+    }
+    if (key == vkkk::Key::NumpadSubtract) {
+        return keypad;
+    }
+    return true;
+}
+
+void ControlMap::snapshot_qt_state() {
+    if (backend_ == nullptr) {
+        return;
+    }
+    for (std::size_t i = 1; i < kKeyCount; ++i) {
+        prev_keys_[i] = qt_key_active(*backend_, static_cast<vkkk::Key>(i));
+    }
+    buttons_down_ = 0;
+    for (int i = 0; i < 3; ++i) {
+        const auto button = static_cast<vkkk::MouseButton>(i);
+        prev_mouse_[i] = backend_->mouse_down(button);
+        if (prev_mouse_[i]) {
+            buttons_down_ |= (1u << i);
+        }
+    }
+    sync_cursor();
+    qt_synced_ = true;
+}
+
+void ControlMap::poll_qt_events() {
+    if (backend_ == nullptr) {
+        return;
+    }
+    if (!qt_synced_) {
+        snapshot_qt_state();
+        return;
+    }
+
+    const std::uint32_t mods = current_mods();
+
+    for (int i = 0; i < 3; ++i) {
+        const auto button = static_cast<vkkk::MouseButton>(i);
+        const bool down = backend_->mouse_down(button);
+        if (down == prev_mouse_[i]) {
+            continue;
+        }
+        prev_mouse_[i] = down;
+        if (down) {
+            buttons_down_ |= (1u << i);
+        }
+        else {
+            buttons_down_ &= ~(1u << i);
+        }
+        InputEvent event;
+        event.kind = InputEvent::Kind::MouseButton;
+        event.button = button;
+        event.action = down ? vkkk::InputAction::Press : vkkk::InputAction::Release;
+        event.mods = mods;
+        event.x = cursor_x_;
+        event.y = cursor_y_;
+        dispatch(event);
+    }
+
+    const auto pointer = backend_->pointer();
+    const double dx = cursor_valid_ ? pointer.x - cursor_x_ : 0.0;
+    const double dy = cursor_valid_ ? pointer.y - cursor_y_ : 0.0;
+    const bool moved = !cursor_valid_ || dx != 0.0 || dy != 0.0;
+    cursor_x_ = pointer.x;
+    cursor_y_ = pointer.y;
+    cursor_valid_ = true;
+    if (moved) {
+        InputEvent event;
+        event.mods = mods;
+        event.x = pointer.x;
+        event.y = pointer.y;
+        event.dx = dx;
+        event.dy = dy;
+        event.kind = InputEvent::Kind::MouseMove;
+        dispatch(event);
+        if (buttons_down_ != 0) {
+            event.kind = InputEvent::Kind::MouseDrag;
+            for (int i = 0; i < 3; ++i) {
+                if ((buttons_down_ & (1u << i)) == 0) {
+                    continue;
+                }
+                event.button = static_cast<vkkk::MouseButton>(i);
+                dispatch(event);
+            }
+        }
+    }
+
+    for (std::size_t i = 1; i < kKeyCount; ++i) {
+        const auto key = static_cast<vkkk::Key>(i);
+        const bool down = qt_key_active(*backend_, key);
+        if (down == prev_keys_[i]) {
+            continue;
+        }
+        prev_keys_[i] = down;
+        InputEvent event;
+        event.kind = InputEvent::Kind::Key;
+        event.key = key;
+        event.action = down ? vkkk::InputAction::Press : vkkk::InputAction::Release;
+        event.mods = mods;
+        event.x = cursor_x_;
+        event.y = cursor_y_;
+        dispatch(event);
+    }
+
+    if (auto* qt = dynamic_cast<vkkk::QtBackend*>(backend_)) {
+        const float scroll = qt->take_scroll_delta();
+        if (scroll != 0.0f) {
+            InputEvent event;
+            event.kind = InputEvent::Kind::Scroll;
+            event.mods = mods;
+            event.x = cursor_x_;
+            event.y = cursor_y_;
+            event.scroll_y = static_cast<double>(scroll);
+            dispatch(event);
+        }
+    }
+}
+
+#endif
+
+void ControlMap::poll() {
+    if (backend_ == nullptr) {
+        return;
+    }
+#if ORL_USE_QT6
+    poll_qt_events();
+#else
+    sync_cursor();
+#endif
+    poll_holds();
 }
 
 void ControlMap::dispatch(const InputEvent& event) {
@@ -482,22 +673,24 @@ void ControlMap::dispatch(const InputEvent& event) {
 }
 
 void ControlMap::invoke_modal(BoundOp& op, const InputEvent& event) {
-    if (event.kind == InputEvent::Kind::MouseButton && event.action == GLFW_PRESS) {
-        if (event.button == GLFW_MOUSE_BUTTON_LEFT) {
+    if (event.kind == InputEvent::Kind::MouseButton
+        && event.action == vkkk::InputAction::Press)
+    {
+        if (event.button == vkkk::MouseButton::Left) {
             if (op.confirm) {
                 op.confirm();
             }
             return;
         }
-        if (event.button == GLFW_MOUSE_BUTTON_RIGHT) {
+        if (event.button == vkkk::MouseButton::Right) {
             if (op.cancel) {
                 op.cancel();
             }
             return;
         }
     }
-    if (event.kind == InputEvent::Kind::Key && event.action == GLFW_PRESS
-        && event.key == GLFW_KEY_ESCAPE)
+    if (event.kind == InputEvent::Kind::Key && event.action == vkkk::InputAction::Press
+        && event.key == vkkk::Key::Escape)
     {
         if (op.cancel) {
             op.cancel();
@@ -522,59 +715,37 @@ ControlMap::BoundOp* ControlMap::find_op(std::string_view name) {
 }
 
 bool ControlMap::matches(const InputSpec& spec, const InputEvent& event) const {
-    const int mods = mask_lock_mods(event.mods);
-    if (spec.mods != mods) {
+    if (spec.mods != event.mods) {
         return false;
     }
 
     switch (spec.type) {
     case InputSpec::Type::Key:
         if (event.kind == InputEvent::Kind::Hold) {
-            return spec.action == InputSpec::kHold && spec.code == event.key;
+            return spec.action == InputSpec::kHold
+                && spec.code == static_cast<int>(event.key);
         }
         return event.kind == InputEvent::Kind::Key
-            && spec.code == event.key
-            && spec.action == event.action;
+            && spec.code == static_cast<int>(event.key)
+            && spec.action == static_cast<int>(event.action);
     case InputSpec::Type::MouseButton:
         return event.kind == InputEvent::Kind::MouseButton
-            && spec.code == event.button
-            && spec.action == event.action;
+            && spec.code == static_cast<int>(event.button)
+            && spec.action == static_cast<int>(event.action);
     case InputSpec::Type::MouseDrag:
         return event.kind == InputEvent::Kind::MouseDrag
-            && spec.code == event.button;
+            && spec.code == static_cast<int>(event.button);
     case InputSpec::Type::Scroll:
         return event.kind == InputEvent::Kind::Scroll;
     }
     return false;
 }
 
-int ControlMap::current_mods() const {
-    if (window_ == nullptr) {
-        return 0;
-    }
-    int mods = 0;
-    if (glfwGetKey(window_, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
-        || glfwGetKey(window_, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS)
-    {
-        mods |= GLFW_MOD_SHIFT;
-    }
-    if (glfwGetKey(window_, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS
-        || glfwGetKey(window_, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS)
-    {
-        mods |= GLFW_MOD_CONTROL;
-    }
-    if (glfwGetKey(window_, GLFW_KEY_LEFT_ALT) == GLFW_PRESS
-        || glfwGetKey(window_, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS)
-    {
-        mods |= GLFW_MOD_ALT;
-    }
-    if (glfwGetKey(window_, GLFW_KEY_LEFT_SUPER) == GLFW_PRESS
-        || glfwGetKey(window_, GLFW_KEY_RIGHT_SUPER) == GLFW_PRESS)
-    {
-        mods |= GLFW_MOD_SUPER;
-    }
-    return mods;
+std::uint32_t ControlMap::current_mods() const {
+    return backend_ != nullptr ? backend_->modifiers() : 0;
 }
+
+#if !ORL_USE_QT6
 
 ControlMap* ControlMap::map_for(GLFWwindow* window) {
     const auto it = g_window_maps.find(window);
@@ -588,9 +759,9 @@ void ControlMap::key_callback(GLFWwindow* window, int key, int, int action, int 
     }
     InputEvent event;
     event.kind = InputEvent::Kind::Key;
-    event.key = key;
-    event.action = action;
-    event.mods = mask_lock_mods(mods);
+    event.key = vkkk::key_from_glfw(key);
+    event.action = vkkk::action_from_glfw(action);
+    event.mods = vkkk::mods_from_glfw(mods);
     event.x = map->cursor_x_;
     event.y = map->cursor_y_;
     map->dispatch(event);
@@ -601,18 +772,20 @@ void ControlMap::mouse_button_callback(GLFWwindow* window, int button, int actio
     if (map == nullptr) {
         return;
     }
+    const auto mapped = vkkk::mouse_from_glfw(button);
+    const auto index = static_cast<unsigned>(mapped);
     if (action == GLFW_PRESS) {
-        map->buttons_down_ |= (1 << button);
+        map->buttons_down_ |= (1u << index);
     }
     else if (action == GLFW_RELEASE) {
-        map->buttons_down_ &= ~(1 << button);
+        map->buttons_down_ &= ~(1u << index);
     }
 
     InputEvent event;
     event.kind = InputEvent::Kind::MouseButton;
-    event.button = button;
-    event.action = action;
-    event.mods = mask_lock_mods(mods);
+    event.button = mapped;
+    event.action = vkkk::action_from_glfw(action);
+    event.mods = vkkk::mods_from_glfw(mods);
     event.x = map->cursor_x_;
     event.y = map->cursor_y_;
     map->dispatch(event);
@@ -644,11 +817,11 @@ void ControlMap::cursor_pos_callback(GLFWwindow* window, double x, double y) {
     }
 
     event.kind = InputEvent::Kind::MouseDrag;
-    for (int button = 0; button <= GLFW_MOUSE_BUTTON_LAST; ++button) {
-        if ((map->buttons_down_ & (1 << button)) == 0) {
+    for (int button = 0; button < 3; ++button) {
+        if ((map->buttons_down_ & (1u << button)) == 0) {
             continue;
         }
-        event.button = button;
+        event.button = static_cast<vkkk::MouseButton>(button);
         map->dispatch(event);
     }
 }
@@ -667,5 +840,7 @@ void ControlMap::scroll_callback(GLFWwindow* window, double xoffset, double yoff
     event.scroll_y = yoffset;
     map->dispatch(event);
 }
+
+#endif
 
 } // namespace ORL

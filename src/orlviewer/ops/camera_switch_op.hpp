@@ -1,8 +1,7 @@
 #pragma once
 
-#include <GLFW/glfw3.h>
-
 #include "camera_navigator.hpp"
+#include "gui/input.hpp"
 #include "vp_operation.hpp"
 
 namespace ORL
@@ -18,17 +17,17 @@ public:
     }
 
     void on_eval(const InputEvent& event) {
-        if (event.kind != InputEvent::Kind::Key || event.action != GLFW_PRESS) {
+        if (event.kind != InputEvent::Kind::Key || event.action != vkkk::InputAction::Press) {
             return;
         }
         switch (event.key) {
-        case GLFW_KEY_KP_1:
+        case vkkk::Key::Numpad1:
             navigator.look_front();
             break;
-        case GLFW_KEY_KP_3:
+        case vkkk::Key::Numpad3:
             navigator.look_right();
             break;
-        case GLFW_KEY_KP_7:
+        case vkkk::Key::Numpad7:
             navigator.look_top();
             break;
         default:

@@ -4,7 +4,6 @@
 #include <iostream>
 #include <string>
 
-#include <GLFW/glfw3.h>
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/mat4x4.hpp>
@@ -13,6 +12,7 @@
 
 #include "component_manager.hpp"
 #include "concepts/camera.h"
+#include "gui/window_backend.hpp"
 #include "ops/create_joint_op.hpp"
 #include "selection.hpp"
 #include "vp_operation.hpp"
@@ -25,7 +25,7 @@ namespace ORL
 class CreateControllerOp : public VpOperation<CreateControllerOp> {
 public:
     CreateControllerOp(ComponentManager& components, vkkk::Camera& camera, const glm::vec3& pivot,
-        GLFWwindow* window, Selection& selection, CreateJointOp* create_joint = nullptr)
+        vkkk::WindowBackend* window, Selection& selection, CreateJointOp* create_joint = nullptr)
         : components(components)
         , camera(camera)
         , pivot(pivot)
@@ -36,22 +36,22 @@ public:
     }
 
     void on_eval(const InputEvent& event) {
-        if (event.kind == InputEvent::Kind::Key && event.action == GLFW_PRESS) {
-            if (event.key == GLFW_KEY_C && !active_) {
-                shape = (event.mods & GLFW_MOD_SHIFT)
+        if (event.kind == InputEvent::Kind::Key && event.action == vkkk::InputAction::Press) {
+            if (event.key == vkkk::Key::C && !active_) {
+                shape = (event.mods & vkkk::input_mod::shift)
                     ? orlviewer::ControllerShape::Polygon
                     : orlviewer::ControllerShape::Curve;
                 enter();
                 return;
             }
-            if (active_ && (event.key == GLFW_KEY_ENTER || event.key == GLFW_KEY_KP_ENTER)) {
+            if (active_ && (event.key == vkkk::Key::Enter || event.key == vkkk::Key::NumpadEnter)) {
                 exit();
             }
             return;
         }
 
         if (active_ && event.kind == InputEvent::Kind::MouseButton
-            && event.button == GLFW_MOUSE_BUTTON_LEFT && event.action == GLFW_PRESS)
+            && event.button == vkkk::MouseButton::Left && event.action == vkkk::InputAction::Press)
         {
             place(event.x, event.y);
         }
@@ -100,9 +100,9 @@ private:
         if (window == nullptr) {
             return false;
         }
-        int width = 0;
-        int height = 0;
-        glfwGetWindowSize(window, &width, &height);
+        const auto size = window->window_size();
+        const int width = static_cast<int>(size.width);
+        const int height = static_cast<int>(size.height);
         if (width <= 0 || height <= 0) {
             return false;
         }
@@ -154,7 +154,7 @@ private:
     ComponentManager& components;
     vkkk::Camera& camera;
     const glm::vec3& pivot;
-    GLFWwindow* window = nullptr;
+    vkkk::WindowBackend* window = nullptr;
     Selection& selection;
     CreateJointOp* create_joint = nullptr;
     orlviewer::ControllerShape shape = orlviewer::ControllerShape::Curve;

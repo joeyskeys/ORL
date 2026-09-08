@@ -4,7 +4,6 @@
 #include <cmath>
 #include <vector>
 
-#include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
@@ -12,6 +11,7 @@
 #include <glm/vec4.hpp>
 
 #include "camera_navigator.hpp"
+#include "gui/window_backend.hpp"
 #include "selection.hpp"
 #include "vp_operation.hpp"
 
@@ -25,7 +25,7 @@ class ScaleOp : public VpOperation<ScaleOp> {
 public:
     static constexpr OpMode kMode = OpMode::Modal;
 
-    ScaleOp(Selection& selection, CameraNavigator& navigator, GLFWwindow* window)
+    ScaleOp(Selection& selection, CameraNavigator& navigator, vkkk::WindowBackend* window)
         : selection(selection)
         , navigator(navigator)
         , window(window)
@@ -68,18 +68,16 @@ public:
         }
 
         pivot = pivot_sum / static_cast<float>(starts.size());
-        int width = 0;
-        int height = 0;
-        glfwGetWindowSize(window, &width, &height);
+        const auto size = window->window_size();
+        const int width = static_cast<int>(size.width);
+        const int height = static_cast<int>(size.height);
         if (!navigator.project_window(pivot, width, height, pivot_screen)) {
             engaged = false;
             return;
         }
 
-        double cursor_x = 0.0;
-        double cursor_y = 0.0;
-        glfwGetCursorPos(window, &cursor_x, &cursor_y);
-        grab_radius = std::max(8.0f, screen_radius(cursor_x, cursor_y));
+        const auto pointer = window->pointer();
+        grab_radius = std::max(8.0f, screen_radius(pointer.x, pointer.y));
         accum = 1.0f;
         engaged = true;
         apply();
@@ -153,7 +151,7 @@ private:
 
     Selection& selection;
     CameraNavigator& navigator;
-    GLFWwindow* window = nullptr;
+    vkkk::WindowBackend* window = nullptr;
     bool engaged = false;
     float accum = 1.0f;
     float grab_radius = 8.0f;

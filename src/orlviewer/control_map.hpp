@@ -1,38 +1,28 @@
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include <GLFW/glfw3.h>
+#include "gui/input.hpp"
+#include "gui/window_backend.hpp"
+
+#ifndef ORL_USE_QT6
+#define ORL_USE_QT6 0
+#endif
+
+#if !ORL_USE_QT6
+#include "gui/glfw_backend.hpp"
+#endif
 
 namespace ORL
 {
 
-struct InputEvent {
-    enum class Kind {
-        Key,
-        MouseButton,
-        MouseDrag,
-        MouseMove,
-        Scroll,
-        Hold,
-    };
-
-    Kind kind = Kind::Key;
-    int key = 0;
-    int button = 0;
-    int action = GLFW_PRESS;
-    int mods = 0;
-    double x = 0.0;
-    double y = 0.0;
-    double dx = 0.0;
-    double dy = 0.0;
-    double scroll_x = 0.0;
-    double scroll_y = 0.0;
-};
+using InputEvent = vkkk::InputEvent;
 
 struct InputSpec {
     enum class Type {
@@ -46,8 +36,8 @@ struct InputSpec {
 
     Type type = Type::Key;
     int code = 0;
-    int action = GLFW_PRESS;
-    int mods = 0;
+    int action = static_cast<int>(vkkk::InputAction::Press);
+    std::uint32_t mods = 0;
 };
 
 struct ControlBinding {
@@ -69,7 +59,7 @@ enum class OpMode {
 // Bindings can be loaded from JSON and changed at runtime. A binding's
 // `op` may be a string or an array; one trigger invokes every named op
 // in order. Operation handlers are registered in code and invoked from
-// GLFW callbacks.
+// GLFW callbacks or Qt per-frame polling, depending on the viewer backend.
 class ControlMap {
 public:
     using OpHandler = std::function<void(const InputEvent&)>;
@@ -81,9 +71,9 @@ public:
     ControlMap& operator=(ControlMap&&) = delete;
     ~ControlMap();
 
-    void attach(GLFWwindow* window);
+    void attach(vkkk::WindowBackend& backend);
     void detach();
-    GLFWwindow* window() const { return window_; }
+    vkkk::WindowBackend* window() const { return backend_; }
 
     void bind_op(std::string op, OpHandler handler);
 
@@ -131,12 +121,13 @@ public:
 
     const std::vector<ControlBinding>& bindings() const { return bindings_; }
 
-    // Dispatch hold-style key bindings. Call once per frame after glfwPollEvents.
+    // Dispatch hold-style key bindings, and Qt edge events when that backend
+    // is compiled in. Call once per frame after WindowBackend::poll_events.
     void poll();
 
     static int parse_key(std::string_view name);
     static int parse_mouse_button(std::string_view name);
-    static int parse_mods(const std::vector<std::string>& names);
+    static std::uint32_t parse_mods(const std::vector<std::string>& names);
     static int parse_action(std::string_view name);
 
 private:
@@ -154,19 +145,35 @@ private:
     void invoke_modal(BoundOp& op, const InputEvent& event);
     BoundOp* find_op(std::string_view name);
     bool matches(const InputSpec& spec, const InputEvent& event) const;
-    int current_mods() const;
+    std::uint32_t current_mods() const;
+    void sync_cursor();
+    void poll_holds();
 
+#if ORL_USE_QT6
+    static constexpr std::size_t kKeyCount =
+        static_cast<std::size_t>(vkkk::Key::NumpadSubtract) + 1;
+
+    void poll_qt_events();
+    void snapshot_qt_state();
+
+    std::array<bool, kKeyCount> prev_keys_{};
+    bool prev_mouse_[3] = {};
+    bool qt_synced_ = false;
+#else
     static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
     static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
     static void cursor_pos_callback(GLFWwindow* window, double x, double y);
     static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
     static ControlMap* map_for(GLFWwindow* window);
 
-    GLFWwindow* window_ = nullptr;
+    GLFWwindow* glfw_window_ = nullptr;
+#endif
+
+    vkkk::WindowBackend* backend_ = nullptr;
     std::vector<ControlBinding> bindings_;
     std::vector<BoundOp> ops;
     std::string modal;
-    int buttons_down_ = 0;
+    unsigned buttons_down_ = 0;
     bool cursor_valid_ = false;
     double cursor_x_ = 0.0;
     double cursor_y_ = 0.0;

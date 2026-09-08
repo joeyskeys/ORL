@@ -2,10 +2,10 @@
 
 #include <vector>
 
-#include <GLFW/glfw3.h>
 #include <glm/vec3.hpp>
 
 #include "camera_navigator.hpp"
+#include "gui/window_backend.hpp"
 #include "selection.hpp"
 #include "vp_operation.hpp"
 
@@ -19,7 +19,7 @@ class MoveOp : public VpOperation<MoveOp> {
 public:
     static constexpr OpMode kMode = OpMode::Modal;
 
-    MoveOp(Selection& selection, CameraNavigator& navigator, GLFWwindow* window)
+    MoveOp(Selection& selection, CameraNavigator& navigator, vkkk::WindowBackend* window)
         : selection(selection)
         , navigator(navigator)
         , window(window)
@@ -60,10 +60,8 @@ public:
         }
         plane_point /= static_cast<float>(starts.size());
 
-        double cursor_x = 0.0;
-        double cursor_y = 0.0;
-        glfwGetCursorPos(window, &cursor_x, &cursor_y);
-        if (!hit(cursor_x, cursor_y, grab_origin)) {
+        const auto pointer = window->pointer();
+        if (!hit(pointer.x, pointer.y, grab_origin)) {
             engaged = false;
             return;
         }
@@ -96,9 +94,9 @@ public:
 
 private:
     bool hit(double cursor_x, double cursor_y, glm::vec3& world) const {
-        int width = 0;
-        int height = 0;
-        glfwGetWindowSize(window, &width, &height);
+        const auto size = window->window_size();
+        const int width = static_cast<int>(size.width);
+        const int height = static_cast<int>(size.height);
         return navigator.view_plane_hit(cursor_x, cursor_y, width, height, plane_point, world);
     }
 
@@ -125,7 +123,7 @@ private:
 
     Selection& selection;
     CameraNavigator& navigator;
-    GLFWwindow* window = nullptr;
+    vkkk::WindowBackend* window = nullptr;
     bool engaged = false;
     glm::vec3 accum{0.0f};
     glm::vec3 plane_point{0.0f};
