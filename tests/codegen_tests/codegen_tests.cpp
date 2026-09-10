@@ -359,6 +359,94 @@ TEST_CASE("llvm codegen lowers remaining auto-weight algorithms", "[orl][codegen
     REQUIRE(ir.find("define i64 @auto_weight_bounded_biharmonic") != std::string::npos);
 }
 
+TEST_CASE("llvm codegen lowers stdlib FK solver", "[orl][codegen][stdlib][solver]") {
+    const std::string src =
+        "use solver/fk;\n"
+        "int solve(Joint joints[], matrix world[], int joint_count) {\n"
+        "    return solver_fk(joints, world, joint_count);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen("orl_stdlib_fk_solver_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("define [16 x double] @solver_fk_world_matrix") != std::string::npos);
+    REQUIRE(ir.find("define i64 @solver_fk") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen lowers advanced IK solvers", "[orl][codegen][stdlib][solver]") {
+    const std::string src =
+        "use solver/hd_id;\n"
+        "use solver/spline_ik;\n"
+        "use solver/full_body_ik;\n"
+        "int solve_hd(Joint joints[], Joint history[], int root, int end, matrix target[], int jcount, int iterations) {\n"
+        "    return solver_hd_id(joints, history, root, end, target, jcount, iterations);\n"
+        "}\n"
+        "int solve_spline(Joint joints[], int chain[], point spline[], int chain_count, int point_count, int jcount) {\n"
+        "    return solver_spline_ik(joints, chain, spline, chain_count, point_count, jcount);\n"
+        "}\n"
+        "int solve_body(Joint joints[], int effectors[], matrix targets[], int effector_count, int jcount, int iterations) {\n"
+        "    return solver_full_body_ik(joints, effectors, targets, effector_count, jcount, iterations);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen("orl_stdlib_advanced_ik_solver_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("define i64 @solver_hd_id") != std::string::npos);
+    REQUIRE(ir.find("define i64 @solver_spline_ik") != std::string::npos);
+    REQUIRE(ir.find("define i64 @solver_full_body_ik") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen lowers transform constraints", "[orl][codegen][stdlib][constraint]") {
+    const std::string src =
+        "use constraint/aim;\n"
+        "use constraint/copy_xform;\n"
+        "use constraint/copy_translation;\n"
+        "use constraint/copy_rotation;\n"
+        "use constraint/copy_scale;\n"
+        "int aim(matrix targets[], matrix subjects[], vector axes[], int target_index, int subject_index, int target_count, int subject_count) {\n"
+        "    return constraint_aim(targets, subjects, axes, target_index, subject_index, target_count, subject_count);\n"
+        "}\n"
+        "int copy_xform(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
+        "    return constraint_copy_xform(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "}\n"
+        "int copy_translation(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
+        "    return constraint_copy_translation(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "}\n"
+        "int copy_rotation(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
+        "    return constraint_copy_rotation(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "}\n"
+        "int copy_scale(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
+        "    return constraint_copy_scale(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen("orl_stdlib_transform_constraints_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("define i64 @constraint_aim") != std::string::npos);
+    REQUIRE(ir.find("define i64 @constraint_copy_xform") != std::string::npos);
+    REQUIRE(ir.find("define i64 @constraint_copy_translation") != std::string::npos);
+    REQUIRE(ir.find("define i64 @constraint_copy_rotation") != std::string::npos);
+    REQUIRE(ir.find("define i64 @constraint_copy_scale") != std::string::npos);
+}
+
 TEST_CASE("llvm codegen lowers lbs deformer", "[orl][codegen][stdlib][deformer]") {
     const std::string src =
         "use deformer/lbs;\n"

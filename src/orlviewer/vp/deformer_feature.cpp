@@ -268,7 +268,7 @@ void DeformerFeature::unbind() {
 void DeformerFeature::on_update(vkkk::Context& context, const vkkk::Context::Frame&) {
     if (pending) {
         pending = false;
-        setup();
+        setup(context);
     }
     if (const auto* deformer = components.deformer(deformer_id); deformer != nullptr && deformer->bound) {
         evaluate(context);
@@ -340,7 +340,7 @@ bool DeformerFeature::ensure_programs() {
     return true;
 }
 
-bool DeformerFeature::setup() {
+bool DeformerFeature::setup(vkkk::Context& context) {
     auto* deformer = components.deformer(deformer_id);
     const auto* weight = components.weight(weight_id);
     if (deformer == nullptr || weight == nullptr) {
@@ -377,6 +377,13 @@ bool DeformerFeature::setup() {
     }
 
     if (!ensure_programs()) {
+        return false;
+    }
+    if (backend_from_config() == exec::Backend::Cuda
+        && !context.make_mesh_deformable(mesh_name, *mesh))
+    {
+        std::cerr << "Deformer: failed to create rest/draw GPU buffers for '"
+            << mesh_name << "'\n";
         return false;
     }
     deformer->bind_model = selection.selected_mesh_model();
@@ -477,6 +484,46 @@ bool DeformerFeature::evaluate(vkkk::Context& context) {
             print_exec_errors("bind deform", deform_execution->errors());
             return false;
         }
+    }
+
+    if (deform_execution->backend() == exec::Backend::Cuda) {
+        if (!deform_execution->evaluate_device(static_cast<std::uint32_t>(mesh->vcnt))) {
+            print_exec_errors("evaluate", deform_execution->errors());
+            deformer->bound = false;
+            return false;
+        }
+        const auto output_device = deform_execution->device_buffer_view("output_positions");
+        const int vertex_offset = vertex_float_offset(*mesh);
+        if (!output_device.has_value() || vertex_offset < 0) {
+            std::cerr << "Deformer: CUDA output buffer is unavailable\n";
+            deformer->bound = false;
+            return false;
+        }
+
+        glm::mat4 aligned_model{1.0f};
+        std::memcpy(&aligned_model, &deformer->bind_model, sizeof(aligned_model));
+        const glm::mat4 to_object = glm::inverse(aligned_model);
+        float matrix_float[16] = {};
+        std::memcpy(matrix_float, &to_object, sizeof(matrix_float));
+        double world_to_object[16] = {};
+        for (int i = 0; i < 16; ++i) {
+            world_to_object[i] = static_cast<double>(matrix_float[i]);
+        }
+        if (!context.write_mesh_positions_from_cuda(mesh_name, output_device->device_ptr,
+                output_device->bytes, mesh->vcnt, mesh->comp_size,
+                static_cast<std::uint32_t>(vertex_offset),
+                world_to_object))
+        {
+            std::cerr << "Deformer: CUDA-Vulkan mesh update failed for '" << mesh_name
+                << "'; see vkkk CUDA interop diagnostics above\n";
+            deformer->bound = false;
+            return false;
+        }
+        if (!logged_rest) {
+            std::cout << "Deformer: GPU-resident output committed to mesh\n";
+            logged_rest = true;
+        }
+        return true;
     }
 
     const auto result = deform_execution->evaluate(static_cast<std::uint32_t>(mesh->vcnt));

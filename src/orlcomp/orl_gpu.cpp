@@ -431,6 +431,28 @@ struct OrlGpuEngine::Impl {
         return handle;
     }
 
+    std::optional<OrlGpuBufferView> DeviceBufferView(OrlGpuBuffer handle) {
+        const auto buffer = cuda_buffers_.find(handle);
+        if (buffer == cuda_buffers_.end()) {
+            errors_.push_back("Unknown GPU buffer handle");
+            return std::nullopt;
+        }
+        if (!ActivateCudaContext()) {
+            return std::nullopt;
+        }
+        return OrlGpuBufferView{
+            static_cast<std::uint64_t>(buffer->second.address),
+            buffer->second.bytes,
+        };
+    }
+
+    std::optional<std::uint64_t> DeviceBufferPointer(OrlGpuBuffer handle) {
+        const auto view = DeviceBufferView(handle);
+        return view.has_value()
+            ? std::optional<std::uint64_t>(view->device_ptr)
+            : std::nullopt;
+    }
+
     CudaBuffer *FindCudaBuffer(OrlGpuBuffer handle, std::size_t bytes) {
         const auto buffer = cuda_buffers_.find(handle);
         if (buffer == cuda_buffers_.end()) {
@@ -899,6 +921,42 @@ std::optional<OrlGpuBuffer> OrlGpuEngine::ImportBuffer(std::uint64_t device_ptr,
     (void)device_ptr;
     (void)bytes;
     impl_->errors_.push_back("CUDA headers not available; cannot import GPU buffers");
+    return std::nullopt;
+#endif
+}
+
+std::optional<std::uint64_t> OrlGpuEngine::DeviceBufferPointer(OrlGpuBuffer buffer) {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("DeviceBufferPointer currently requires the CUDA backend");
+        return std::nullopt;
+    }
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return std::nullopt;
+    }
+    return impl_->DeviceBufferPointer(buffer);
+#else
+    (void)buffer;
+    impl_->errors_.push_back("CUDA headers not available; cannot query GPU buffers");
+    return std::nullopt;
+#endif
+}
+
+std::optional<OrlGpuBufferView> OrlGpuEngine::DeviceBufferView(OrlGpuBuffer buffer) {
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back("DeviceBufferView currently requires the CUDA backend");
+        return std::nullopt;
+    }
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return std::nullopt;
+    }
+    return impl_->DeviceBufferView(buffer);
+#else
+    (void)buffer;
+    impl_->errors_.push_back("CUDA headers not available; cannot query GPU buffers");
     return std::nullopt;
 #endif
 }

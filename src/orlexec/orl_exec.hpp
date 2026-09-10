@@ -30,6 +30,11 @@ struct ParameterDesc {
     std::size_t element_stride = 0;
 };
 
+struct DeviceBufferView {
+    std::uint64_t device_ptr = 0;
+    std::size_t bytes = 0;
+};
+
 // Owning, growable host storage for one ORL buffer parameter. Applications
 // control capacity and element count; ORL only receives data() and count.
 class OrlBuffer {
@@ -130,6 +135,11 @@ public:
     // For CUDA, element_count selects the launch size. CPU execution ignores
     // it and relies on the entry function's bound scalar parameter.
     std::optional<std::int64_t> evaluate(std::uint32_t element_count = 1);
+    // Launch a CUDA entry without copying any bound buffers or the return value
+    // back to the host. Host-bound buffers are still uploaded when modified.
+    bool evaluate_device(std::uint32_t element_count = 1);
+    std::optional<DeviceBufferView> device_buffer_view(std::string_view parameter);
+    std::optional<std::uint64_t> device_buffer_pointer(std::string_view parameter);
     bool synchronize();
 
     Backend backend() const;
@@ -139,6 +149,8 @@ public:
 private:
     struct Impl;
     explicit OrlExecution(std::unique_ptr<Impl> impl);
+    std::optional<std::int64_t> evaluate_impl(std::uint32_t element_count,
+        bool host_readback);
 
     std::unique_ptr<Impl> impl_;
 };

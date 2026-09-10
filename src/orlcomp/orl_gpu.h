@@ -25,6 +25,11 @@ enum class OrlGpuBackend : std::uint8_t {
 
 using OrlGpuBuffer = std::uint64_t;
 
+struct OrlGpuBufferView {
+    std::uint64_t device_ptr = 0;
+    std::size_t bytes = 0;
+};
+
 enum class OrlGpuKernelParameterType : std::uint8_t {
     Buffer,
     Int64,
@@ -71,6 +76,8 @@ public:
     void UnloadDriverModule();
     std::optional<OrlGpuBuffer> AllocateBuffer(std::size_t bytes);
     std::optional<OrlGpuBuffer> ImportBuffer(std::uint64_t device_ptr, std::size_t bytes);
+    std::optional<OrlGpuBufferView> DeviceBufferView(OrlGpuBuffer buffer);
+    std::optional<std::uint64_t> DeviceBufferPointer(OrlGpuBuffer buffer);
     bool UploadBuffer(OrlGpuBuffer buffer, const void *source, std::size_t bytes);
     bool DownloadBuffer(OrlGpuBuffer buffer, void *destination, std::size_t bytes);
     bool FreeBuffer(OrlGpuBuffer buffer);

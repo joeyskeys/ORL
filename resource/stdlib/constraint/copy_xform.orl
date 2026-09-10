@@ -1,0 +1,23 @@
+// Copy-transform constraint.
+//   use constraint/copy_xform;
+//
+// Copies one complete source transform into one destination transform.
+// Source and destination may be different matrix buffers.
+
+use constraint/common;
+
+int constraint_copy_xform(matrix source[],
+                          matrix destination[],
+                          int source_index,
+                          int destination_index,
+                          int source_count,
+                          int destination_count) {
+    if (source_index < 0 || source_index >= source_count) {
+        return 0;
+    }
+    if (destination_index < 0 || destination_index >= destination_count) {
+        return 0;
+    }
+    destination[destination_index] = source[source_index];
+    return 1;
+}

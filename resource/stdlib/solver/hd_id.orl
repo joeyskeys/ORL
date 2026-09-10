@@ -1,0 +1,147 @@
+// History-dependent inverse kinematics.
+//   use solver/hd_id;
+//
+// Uses the previous local pose in history[] as the warm start for a
+// CCD solve. This makes the underconstrained bend choice
+// continuous across frames. history[] is both an input and an output; the
+// caller should preserve it between evaluations.
+
+use joint;
+
+point solver_hd_id_origin(Joint joints[], int index) {
+    return joint_world_matrix(joints, index) * point(0.0, 0.0, 0.0);
+}
+
+vector solver_hd_id_any_perpendicular(vector axis) {
+    vector up(0.0, 1.0, 0.0);
+    vector side = cross(axis, up);
+    if (length(side) < 0.000001) {
+        vector right(1.0, 0.0, 0.0);
+        side = cross(axis, right);
+    }
+    return normalize(side);
+}
+
+quat solver_hd_id_from_to(vector from, vector to) {
+    if (length(from) < 0.000001 || length(to) < 0.000001) {
+        quat identity(0.0, 0.0, 0.0, 1.0);
+        return identity;
+    }
+
+    vector f = normalize(from);
+    vector t = normalize(to);
+    float d = dot(f, t);
+    if (d > 0.999999) {
+        quat identity(0.0, 0.0, 0.0, 1.0);
+        return identity;
+    }
+    if (d < -0.999999) {
+        vector axis = solver_hd_id_any_perpendicular(f);
+        quat half(axis.x, axis.y, axis.z, 0.0);
+        return quat_normalize(half);
+    }
+    vector c = cross(f, t);
+    quat q(c.x, c.y, c.z, 1.0 + d);
+    return quat_normalize(q);
+}
+
+int solver_hd_id_has_chain(Joint joints[], int root, int end, int joint_count) {
+    int node = end;
+    int steps = 0;
+    int found = 0;
+    while (node >= 0 && node < joint_count && steps < joint_count) {
+        if (node == root) {
+            found = 1;
+            node = -1;
+        }
+        if (node >= 0) {
+            node = joints[node].parent;
+        }
+        steps = steps + 1;
+    }
+    return found;
+}
+
+int solver_hd_id(Joint joints[],
+                 Joint history[],
+                 int root,
+                 int end,
+                 matrix target[],
+                 int joint_count,
+                 int iterations) {
+    if (root < 0 || root >= joint_count || end < 0 || end >= joint_count) {
+        return 0;
+    }
+    if (iterations < 1) {
+        iterations = 1;
+    }
+    if (solver_hd_id_has_chain(joints, root, end, joint_count) == 0) {
+        return 0;
+    }
+    if (root == end) {
+        history[root] = joints[root];
+        return 1;
+    }
+
+    // Warm-start from the previous solution, but keep the current rig's
+    // translations, hierarchy, scale, and any non-history fields.
+    int index = 0;
+    while (index < joint_count) {
+        Joint current = joints[index];
+        Joint previous = history[index];
+        if (length(previous.rotation) > 0.000001) {
+            current.rotation = previous.rotation;
+            joints[index] = current;
+        }
+        index = index + 1;
+    }
+
+    point target_pos = target[0] * point(0.0, 0.0, 0.0);
+    int pass = 0;
+    while (pass < iterations) {
+        int pivot = joints[end].parent;
+        int depth = 0;
+        while (pivot >= 0 && pivot < joint_count && depth < joint_count) {
+            point end_pos = solver_hd_id_origin(joints, end);
+            point pivot_pos = solver_hd_id_origin(joints, pivot);
+            vector current_world = end_pos - pivot_pos;
+            vector desired_world = target_pos - pivot_pos;
+            if (length(current_world) > 0.000001
+                && length(desired_world) > 0.000001)
+            {
+                int parent = joints[pivot].parent;
+                point current_local = end_pos;
+                point pivot_local = pivot_pos;
+                point target_local = target_pos;
+                if (parent >= 0 && parent < joint_count) {
+                    matrix parent_inverse = mat_inverse(joint_world_matrix(joints, parent));
+                    current_local = parent_inverse * end_pos;
+                    pivot_local = parent_inverse * pivot_pos;
+                    target_local = parent_inverse * target_pos;
+                }
+                vector current_local_direction = current_local - pivot_local;
+                vector desired_local_direction = target_local - pivot_local;
+                quat delta = solver_hd_id_from_to(
+                    current_local_direction, desired_local_direction);
+                Joint solved = joints[pivot];
+                solved.rotation = quat_normalize(quat_mul(delta, solved.rotation));
+                joints[pivot] = solved;
+            }
+            if (pivot == root) {
+                pivot = -1;
+            }
+            if (pivot >= 0) {
+                pivot = joints[pivot].parent;
+            }
+            depth = depth + 1;
+        }
+        pass = pass + 1;
+    }
+
+    index = 0;
+    while (index < joint_count) {
+        history[index] = joints[index];
+        index = index + 1;
+    }
+    return 1;
+}

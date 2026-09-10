@@ -1,0 +1,113 @@
+// Full-body inverse kinematics.
+//   use solver/full_body_ik;
+//
+// effectors[] and targets[] describe multiple end-effectors in world space.
+// The solver performs sequential CCD over every ancestor of each
+// effector for the requested number of passes. It updates local rotations
+// while preserving translations, hierarchy, and scale.
+
+use joint;
+
+vector solver_full_body_ik_any_perpendicular(vector axis) {
+    vector up(0.0, 1.0, 0.0);
+    vector side = cross(axis, up);
+    if (length(side) < 0.000001) {
+        vector right(1.0, 0.0, 0.0);
+        side = cross(axis, right);
+    }
+    return normalize(side);
+}
+
+quat solver_full_body_ik_quat_from_to(vector from, vector to) {
+    if (length(from) < 0.000001 || length(to) < 0.000001) {
+        quat identity(0.0, 0.0, 0.0, 1.0);
+        return identity;
+    }
+
+    vector f = normalize(from);
+    vector t = normalize(to);
+    float d = dot(f, t);
+    if (d > 0.999999) {
+        quat identity(0.0, 0.0, 0.0, 1.0);
+        return identity;
+    }
+    if (d < -0.999999) {
+        vector axis = solver_full_body_ik_any_perpendicular(f);
+        quat half(axis.x, axis.y, axis.z, 0.0);
+        return quat_normalize(half);
+    }
+    vector c = cross(f, t);
+    quat q(c.x, c.y, c.z, 1.0 + d);
+    return quat_normalize(q);
+}
+
+int solver_full_body_ik(Joint joints[],
+                        int effectors[],
+                        matrix targets[],
+                        int effector_count,
+                        int joint_count,
+                        int iterations) {
+    if (effector_count < 1 || joint_count < 1) {
+        return 0;
+    }
+    if (iterations < 1) {
+        iterations = 1;
+    }
+
+    int effector = 0;
+    while (effector < effector_count) {
+        if (effectors[effector] < 0 || effectors[effector] >= joint_count) {
+            return 0;
+        }
+        effector = effector + 1;
+    }
+
+    int pass = 0;
+    while (pass < iterations) {
+        effector = 0;
+        while (effector < effector_count) {
+            int end = effectors[effector];
+            point target = targets[effector] * point(0.0, 0.0, 0.0);
+            int pivot = joints[end].parent;
+            int depth = 0;
+            while (pivot >= 0 && pivot < joint_count && depth < joint_count) {
+                point end_position = joint_world_matrix(joints, end)
+                    * point(0.0, 0.0, 0.0);
+                point pivot_position = joint_world_matrix(joints, pivot)
+                    * point(0.0, 0.0, 0.0);
+                vector current_world = end_position - pivot_position;
+                vector desired_world = target - pivot_position;
+
+                if (length(current_world) > 0.000001
+                    && length(desired_world) > 0.000001)
+                {
+                    int parent = joints[pivot].parent;
+                    point current_local = end_position;
+                    point pivot_local = pivot_position;
+                    point target_local = target;
+                    if (parent >= 0 && parent < joint_count) {
+                        matrix parent_inverse = mat_inverse(
+                            joint_world_matrix(joints, parent));
+                        current_local = parent_inverse * end_position;
+                        pivot_local = parent_inverse * pivot_position;
+                        target_local = parent_inverse * target;
+                    }
+
+                    vector current_local_direction = current_local - pivot_local;
+                    vector desired_local_direction = target_local - pivot_local;
+                    quat delta = solver_full_body_ik_quat_from_to(
+                        current_local_direction, desired_local_direction);
+                    Joint solved = joints[pivot];
+                    solved.rotation = quat_normalize(quat_mul(delta, solved.rotation));
+                    joints[pivot] = solved;
+                }
+
+                pivot = joints[pivot].parent;
+                depth = depth + 1;
+            }
+            effector = effector + 1;
+        }
+        pass = pass + 1;
+    }
+    return effector_count;
+}

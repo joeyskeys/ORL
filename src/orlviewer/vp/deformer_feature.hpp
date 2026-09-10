@@ -30,7 +30,7 @@ public:
 
 private:
     bool ensure_programs();
-    bool setup();
+    bool setup(vkkk::Context& context);
     bool evaluate(vkkk::Context& context);
 
     vkkk::Scene& scene;

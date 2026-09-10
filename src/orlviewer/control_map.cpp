@@ -12,8 +12,6 @@
 #include <rapidjson/error/en.h>
 
 #if ORL_USE_QT6
-#include <QGuiApplication>
-
 #include "gui/qt_backend.hpp"
 #endif
 
@@ -485,24 +483,6 @@ bool qt_key_active(vkkk::WindowBackend& backend, vkkk::Key key) {
     }
     if (!backend.key_down(key)) {
         return false;
-    }
-    const bool keypad = QGuiApplication::queryKeyboardModifiers().testFlag(Qt::KeypadModifier);
-    const auto value = static_cast<std::uint16_t>(key);
-    if (value >= static_cast<std::uint16_t>(vkkk::Key::Digit0)
-        && value <= static_cast<std::uint16_t>(vkkk::Key::Digit9))
-    {
-        return !keypad;
-    }
-    if (value >= static_cast<std::uint16_t>(vkkk::Key::Numpad0)
-        && value <= static_cast<std::uint16_t>(vkkk::Key::Numpad9))
-    {
-        return keypad;
-    }
-    if (key == vkkk::Key::Minus) {
-        return !keypad;
-    }
-    if (key == vkkk::Key::NumpadSubtract) {
-        return keypad;
     }
     return true;
 }

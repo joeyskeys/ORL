@@ -1,0 +1,134 @@
+// Spline inverse kinematics.
+//   use solver/spline_ik;
+//
+// chain[] contains joint indices in root-to-end order. spline[] contains
+// world-space Catmull-Rom control points. The solver preserves local
+// translations and rotates each chain bone to follow the spline tangent.
+
+use joint;
+
+point solver_spline_ik_catmull(point p0, point p1, point p2, point p3, float t) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    float h1 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    float h2 = t3 - 2.0 * t2 + t;
+    float h3 = -2.0 * t3 + 3.0 * t2;
+    float h4 = t3 - t2;
+    vector m1 = 0.5 * (p2 - p0);
+    vector m2 = 0.5 * (p3 - p1);
+    return h1 * p1 + h2 * m1 + h3 * p2 + h4 * m2;
+}
+
+point solver_spline_ik_sample(point spline[], int point_count, float t) {
+    if (point_count <= 0) {
+        return point(0.0, 0.0, 0.0);
+    }
+    if (point_count == 1) {
+        return spline[0];
+    }
+
+    float clamped = clamp(t, 0.0, 1.0);
+    float scaled = clamped * (point_count - 1);
+    int segment = scaled;
+    float local = scaled - segment;
+    if (segment >= point_count - 1) {
+        segment = point_count - 2;
+        local = 1.0;
+    }
+
+    int p0_index = segment - 1;
+    int p1_index = segment;
+    int p2_index = segment + 1;
+    int p3_index = segment + 2;
+    if (p0_index < 0) {
+        p0_index = 0;
+    }
+    if (p3_index >= point_count) {
+        p3_index = point_count - 1;
+    }
+    return solver_spline_ik_catmull(
+        spline[p0_index], spline[p1_index], spline[p2_index], spline[p3_index], local);
+}
+
+quat solver_spline_ik_quat_from_to(vector from, vector to) {
+    if (length(from) < 0.000001 || length(to) < 0.000001) {
+        quat identity(0.0, 0.0, 0.0, 1.0);
+        return identity;
+    }
+    vector f = normalize(from);
+    vector t = normalize(to);
+    float d = dot(f, t);
+    if (d > 0.999999) {
+        quat identity(0.0, 0.0, 0.0, 1.0);
+        return identity;
+    }
+    if (d < -0.999999) {
+        vector axis = vector(0.0, 1.0, 0.0);
+        if (length(cross(f, axis)) < 0.000001) {
+            axis = vector(1.0, 0.0, 0.0);
+        }
+        axis = normalize(cross(f, axis));
+        quat half(axis.x, axis.y, axis.z, 0.0);
+        return quat_normalize(half);
+    }
+    vector c = cross(f, t);
+    quat q(c.x, c.y, c.z, 1.0 + d);
+    return quat_normalize(q);
+}
+
+int solver_spline_ik(Joint joints[],
+                     int chain[],
+                     point spline[],
+                     int chain_count,
+                     int point_count,
+                     int joint_count) {
+    if (chain_count < 2 || point_count < 2) {
+        return 0;
+    }
+
+    int index = 0;
+    while (index < chain_count) {
+        int joint_index = chain[index];
+        if (joint_index < 0 || joint_index >= joint_count) {
+            return 0;
+        }
+        if (index > 0) {
+            int parent_index = chain[index - 1];
+            if (joints[joint_index].parent != parent_index) {
+                return 0;
+            }
+        }
+        index = index + 1;
+    }
+
+    index = 0;
+    while (index < chain_count - 1) {
+        int pivot_index = chain[index];
+        int child_index = chain[index + 1];
+        float t0 = index * 1.0 / (chain_count - 1);
+        float t1 = (index + 1) * 1.0 / (chain_count - 1);
+        point curve_start = solver_spline_ik_sample(spline, point_count, t0);
+        point curve_end = solver_spline_ik_sample(spline, point_count, t1);
+        vector tangent = curve_end - curve_start;
+
+        if (length(tangent) > 0.000001) {
+            int parent_index = joints[pivot_index].parent;
+            vector desired = tangent;
+            if (parent_index >= 0 && parent_index < joint_count) {
+                matrix parent_inverse = mat_inverse(
+                    joint_world_matrix(joints, parent_index));
+                point local_start = parent_inverse * curve_start;
+                point local_end = parent_inverse * curve_end;
+                desired = local_end - local_start;
+            }
+
+            Joint child = joints[child_index];
+            vector offset(child.translation.x, child.translation.y, child.translation.z);
+            Joint pivot = joints[pivot_index];
+            pivot.rotation = solver_spline_ik_quat_from_to(offset, desired);
+            joints[pivot_index] = pivot;
+        }
+        index = index + 1;
+    }
+    return 1;
+}

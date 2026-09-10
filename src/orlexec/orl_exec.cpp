@@ -652,7 +652,8 @@ bool OrlExecution::valid() const {
     return impl_ != nullptr && impl_->initialized;
 }
 
-std::optional<std::int64_t> OrlExecution::evaluate(std::uint32_t element_count) {
+std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_count,
+    bool host_readback) {
     if (!impl_->initialized) {
         if (impl_->errors.empty()) {
             impl_->errors.emplace_back("ORL execution was not initialized");
@@ -736,31 +737,102 @@ std::optional<std::int64_t> OrlExecution::evaluate(std::uint32_t element_count) 
     timing.kernel_ms = elapsed_ms(t_kernel);
 
     const auto t_download = Clock::now();
-    for (const auto& [name, buffer] : impl_->buffers) {
-        if (impl_->device_bindings.contains(name)) {
-            continue;
+    std::int32_t result = 0;
+    if (host_readback) {
+        for (const auto& [name, buffer] : impl_->buffers) {
+            if (impl_->device_bindings.contains(name)) {
+                continue;
+            }
+            const auto device = impl_->device_buffers.find(buffer);
+            if (device == impl_->device_buffers.end() || buffer->byte_size() == 0) {
+                continue;
+            }
+            if (!impl_->gpu->DownloadBuffer(device->second.handle,
+                    const_cast<void*>(static_cast<const OrlBuffer*>(buffer)->data()),
+                    buffer->byte_size()))
+            {
+                append_errors(impl_->errors, impl_->gpu->Errors());
+                return std::nullopt;
+            }
         }
-        const auto device = impl_->device_buffers.find(buffer);
-        if (device == impl_->device_buffers.end() || buffer->byte_size() == 0) {
-            continue;
-        }
-        if (!impl_->gpu->DownloadBuffer(device->second.handle,
-                const_cast<void*>(static_cast<const OrlBuffer*>(buffer)->data()), buffer->byte_size()))
+
+        if (!impl_->gpu->ReadCudaGlobalInt32(
+                orlcomp::OrlGpuEngine::CudaResultSymbolName, &result))
         {
             append_errors(impl_->errors, impl_->gpu->Errors());
             return std::nullopt;
         }
     }
-
-    std::int32_t result = 0;
-    if (!impl_->gpu->ReadCudaGlobalInt32(orlcomp::OrlGpuEngine::CudaResultSymbolName, &result)) {
-        append_errors(impl_->errors, impl_->gpu->Errors());
-        return std::nullopt;
-    }
     timing.download_ms = elapsed_ms(t_download);
     timing.total_ms = elapsed_ms(t0);
     record_kernel(entry, impl_->backend, element_count, timing, impl_->exec_stats);
     return static_cast<std::int64_t>(result);
+}
+
+std::optional<std::int64_t> OrlExecution::evaluate(std::uint32_t element_count) {
+    return evaluate_impl(element_count, true);
+}
+
+bool OrlExecution::evaluate_device(std::uint32_t element_count) {
+    if (impl_ == nullptr || impl_->backend != Backend::Cuda) {
+        if (impl_ != nullptr) {
+            impl_->errors.clear();
+            impl_->errors.emplace_back("evaluate_device requires the CUDA backend");
+        }
+        return false;
+    }
+    return evaluate_impl(element_count, false).has_value();
+}
+
+std::optional<DeviceBufferView> OrlExecution::device_buffer_view(
+    std::string_view parameter)
+{
+    if (impl_ == nullptr || !impl_->initialized
+        || impl_->backend != Backend::Cuda || impl_->gpu == nullptr)
+    {
+        if (impl_ == nullptr) {
+            return std::nullopt;
+        }
+        impl_->errors.clear();
+        impl_->errors.emplace_back("device_buffer_view requires initialized CUDA execution");
+        return std::nullopt;
+    }
+
+    const std::string name(parameter);
+    if (const auto external = impl_->device_bindings.find(name);
+        external != impl_->device_bindings.end())
+    {
+        return DeviceBufferView{external->second.device_ptr, external->second.bytes};
+    }
+
+    const auto host = impl_->buffers.find(name);
+    if (host == impl_->buffers.end()) {
+        impl_->errors.clear();
+        impl_->errors.emplace_back("No buffer binding for parameter '" + name + "'");
+        return std::nullopt;
+    }
+    const auto device = impl_->device_buffers.find(host->second);
+    if (device == impl_->device_buffers.end()) {
+        impl_->errors.clear();
+        impl_->errors.emplace_back("Device buffer for parameter '" + name
+            + "' has not been allocated");
+        return std::nullopt;
+    }
+    const auto view = impl_->gpu->DeviceBufferView(device->second.handle);
+    if (!view.has_value()) {
+        append_errors(impl_->errors, impl_->gpu->Errors());
+        return std::nullopt;
+    }
+    return DeviceBufferView{view->device_ptr, view->bytes};
+}
+
+std::optional<std::uint64_t> OrlExecution::device_buffer_pointer(
+    std::string_view parameter)
+{
+    const auto view = device_buffer_view(parameter);
+    return view.has_value()
+        ? std::optional<std::uint64_t>(view->device_ptr)
+        : std::nullopt;
 }
 
 bool OrlExecution::synchronize() {

@@ -1,0 +1,149 @@
+// Shared transform constraint helpers.
+// Matrix layout is ORL's row-major 4x4 layout with translation at 3, 7, 11.
+
+vector constraint_common_column(matrix value, int column) {
+    return vector(value[column], value[column + 4], value[column + 8]);
+}
+
+vector constraint_common_unit_or(vector value, vector fallback) {
+    if (length(value) < 0.000001) {
+        return fallback;
+    }
+    return normalize(value);
+}
+
+float constraint_common_axis_scale(vector axis) {
+    return length(axis);
+}
+
+quat constraint_common_quat_from_to(vector from, vector to) {
+    if (length(from) < 0.000001 || length(to) < 0.000001) {
+        quat identity(0.0, 0.0, 0.0, 1.0);
+        return identity;
+    }
+
+    vector f = normalize(from);
+    vector t = normalize(to);
+    float d = dot(f, t);
+    if (d > 0.999999) {
+        quat identity(0.0, 0.0, 0.0, 1.0);
+        return identity;
+    }
+    if (d < -0.999999) {
+        vector up(0.0, 1.0, 0.0);
+        vector axis = cross(f, up);
+        if (length(axis) < 0.000001) {
+            vector right(1.0, 0.0, 0.0);
+            axis = cross(f, right);
+        }
+        axis = normalize(axis);
+        quat half(axis.x, axis.y, axis.z, 0.0);
+        return quat_normalize(half);
+    }
+
+    vector cross_axis = cross(f, t);
+    quat result(cross_axis.x, cross_axis.y, cross_axis.z, 1.0 + d);
+    return quat_normalize(result);
+}
+
+matrix constraint_common_copy_translation_value(matrix source, matrix destination) {
+    destination[3] = source[3];
+    destination[7] = source[7];
+    destination[11] = source[11];
+    return destination;
+}
+
+matrix constraint_common_copy_scale_value(matrix source, matrix destination) {
+    vector source_x = constraint_common_column(source, 0);
+    vector source_y = constraint_common_column(source, 1);
+    vector source_z = constraint_common_column(source, 2);
+    vector destination_x = constraint_common_column(destination, 0);
+    vector destination_y = constraint_common_column(destination, 1);
+    vector destination_z = constraint_common_column(destination, 2);
+
+    float scale_x = constraint_common_axis_scale(source_x);
+    float scale_y = constraint_common_axis_scale(source_y);
+    float scale_z = constraint_common_axis_scale(source_z);
+    vector x = constraint_common_unit_or(destination_x, vector(1.0, 0.0, 0.0));
+    vector y = constraint_common_unit_or(destination_y, vector(0.0, 1.0, 0.0));
+    vector z = constraint_common_unit_or(destination_z, vector(0.0, 0.0, 1.0));
+
+    x = x * scale_x;
+    y = y * scale_y;
+    z = z * scale_z;
+    destination[0] = x.x;
+    destination[4] = x.y;
+    destination[8] = x.z;
+    destination[1] = y.x;
+    destination[5] = y.y;
+    destination[9] = y.z;
+    destination[2] = z.x;
+    destination[6] = z.y;
+    destination[10] = z.z;
+    return destination;
+}
+
+matrix constraint_common_copy_rotation_value(matrix source, matrix destination) {
+    vector source_x = constraint_common_column(source, 0);
+    vector source_y = constraint_common_column(source, 1);
+    vector source_z = constraint_common_column(source, 2);
+    vector destination_x = constraint_common_column(destination, 0);
+    vector destination_y = constraint_common_column(destination, 1);
+    vector destination_z = constraint_common_column(destination, 2);
+
+    float scale_x = constraint_common_axis_scale(destination_x);
+    float scale_y = constraint_common_axis_scale(destination_y);
+    float scale_z = constraint_common_axis_scale(destination_z);
+    vector x = constraint_common_unit_or(source_x, vector(1.0, 0.0, 0.0));
+    vector y = constraint_common_unit_or(source_y, vector(0.0, 1.0, 0.0));
+    vector z = constraint_common_unit_or(source_z, vector(0.0, 0.0, 1.0));
+
+    x = x * scale_x;
+    y = y * scale_y;
+    z = z * scale_z;
+    destination[0] = x.x;
+    destination[4] = x.y;
+    destination[8] = x.z;
+    destination[1] = y.x;
+    destination[5] = y.y;
+    destination[9] = y.z;
+    destination[2] = z.x;
+    destination[6] = z.y;
+    destination[10] = z.z;
+    return destination;
+}
+
+matrix constraint_common_aim_value(matrix subject, point target, vector aim_axis) {
+    point origin(subject[3], subject[7], subject[11]);
+    vector desired = target - origin;
+    if (length(desired) < 0.000001) {
+        return subject;
+    }
+
+    vector source_x = constraint_common_column(subject, 0);
+    vector source_y = constraint_common_column(subject, 1);
+    vector source_z = constraint_common_column(subject, 2);
+    vector basis_x = constraint_common_unit_or(source_x, vector(1.0, 0.0, 0.0));
+    vector basis_y = constraint_common_unit_or(source_y, vector(0.0, 1.0, 0.0));
+    vector basis_z = constraint_common_unit_or(source_z, vector(0.0, 0.0, 1.0));
+    vector local_axis = constraint_common_unit_or(
+        aim_axis, vector(1.0, 0.0, 0.0));
+    vector current = basis_x * local_axis.x
+        + basis_y * local_axis.y
+        + basis_z * local_axis.z;
+    quat delta = constraint_common_quat_from_to(current, desired);
+
+    vector result_x = quat_rotate(delta, source_x);
+    vector result_y = quat_rotate(delta, source_y);
+    vector result_z = quat_rotate(delta, source_z);
+    subject[0] = result_x.x;
+    subject[4] = result_x.y;
+    subject[8] = result_x.z;
+    subject[1] = result_y.x;
+    subject[5] = result_y.y;
+    subject[9] = result_y.z;
+    subject[2] = result_z.x;
+    subject[6] = result_z.y;
+    subject[10] = result_z.z;
+    return subject;
+}

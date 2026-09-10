@@ -1,0 +1,35 @@
+// Forward kinematics.
+//   use solver/fk;
+//
+// Keeps joints in local space and writes one world-space matrix per joint.
+// The pass is sequential so it also works when a caller supplies joints in
+// parent-before-child order, while each result is computed independently.
+
+use joint;
+
+matrix solver_fk_world_matrix(Joint joints[], int index, int joint_count) {
+    if (index < 0 || index >= joint_count) {
+        return mat_identity();
+    }
+
+    Joint current = joints[index];
+    matrix world = joint_local_matrix(current);
+    int parent = current.parent;
+    int steps = 0;
+    while (parent >= 0 && parent < joint_count && steps < joint_count) {
+        current = joints[parent];
+        world = mat_mul(joint_local_matrix(current), world);
+        parent = current.parent;
+        steps = steps + 1;
+    }
+    return world;
+}
+
+int solver_fk(Joint joints[], matrix world[], int joint_count) {
+    int index = 0;
+    while (index < joint_count) {
+        world[index] = solver_fk_world_matrix(joints, index, joint_count);
+        index = index + 1;
+    }
+    return joint_count;
+}

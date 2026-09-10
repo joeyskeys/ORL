@@ -1,0 +1,29 @@
+// Aim constraint.
+//   use constraint/aim;
+//
+// Rotates a subject transform so its local aim axis points at the origin of
+// a target transform. The subject translation and axis scales are preserved.
+// axes[] is a one-element vector buffer containing the local aim axis.
+
+use constraint/common;
+
+int constraint_aim(matrix targets[],
+                   matrix subjects[],
+                   vector axes[],
+                   int target_index,
+                   int subject_index,
+                   int target_count,
+                   int subject_count) {
+    if (target_index < 0 || target_index >= target_count) {
+        return 0;
+    }
+    if (subject_index < 0 || subject_index >= subject_count) {
+        return 0;
+    }
+    matrix target = targets[target_index];
+    point target_position(target[3], target[7], target[11]);
+    matrix result = constraint_common_aim_value(
+        subjects[subject_index], target_position, axes[0]);
+    subjects[subject_index] = result;
+    return 1;
+}

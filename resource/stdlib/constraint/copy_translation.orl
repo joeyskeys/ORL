@@ -1,0 +1,24 @@
+// Copy-translation constraint.
+//   use constraint/copy_translation;
+//
+// Copies only the source translation and preserves destination rotation/scale.
+
+use constraint/common;
+
+int constraint_copy_translation(matrix source[],
+                                matrix destination[],
+                                int source_index,
+                                int destination_index,
+                                int source_count,
+                                int destination_count) {
+    if (source_index < 0 || source_index >= source_count) {
+        return 0;
+    }
+    if (destination_index < 0 || destination_index >= destination_count) {
+        return 0;
+    }
+    matrix result = constraint_common_copy_translation_value(
+        source[source_index], destination[destination_index]);
+    destination[destination_index] = result;
+    return 1;
+}
