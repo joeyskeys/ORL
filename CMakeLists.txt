@@ -24,6 +24,7 @@ include_directories(src/include)
 
 #include(flexbison)
 find_package(GLM CONFIG REQUIRED)
+add_subdirectory(src/orlgraph)
 add_subdirectory(src/orlcomp)
 add_subdirectory(src/orlexec)
 

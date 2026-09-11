@@ -63,6 +63,42 @@ target_link_libraries(orlcomp_parser
     PUBLIC orlcomp_lexer
 )
 
+add_library(orlcomp_analysis
+    orl_analysis.cpp
+    orl_analysis.h
+    orl_graph_import.cpp
+    orl_graph_import.h
+)
+
+target_include_directories(orlcomp_analysis
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        "${CMAKE_SOURCE_DIR}/src/orlgraph"
+)
+
+target_link_libraries(orlcomp_analysis
+    PUBLIC
+        orlcomp_parser
+        orlgraph
+)
+
+add_library(orlcomp_graph_lowering
+    orl_graph_lowering.cpp
+    orl_graph_lowering.h
+)
+
+target_include_directories(orlcomp_graph_lowering
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        "${CMAKE_SOURCE_DIR}/src/orlgraph"
+)
+
+target_link_libraries(orlcomp_graph_lowering
+    PUBLIC
+        orlcomp_analysis
+        orlgraph
+)
+
 # vcpkg LLVM exports reference imported targets from these packages; load them
 # with CONFIG mode before find_package(LLVM) processes LLVMExports.cmake.
 find_package(ZLIB CONFIG QUIET)

@@ -5,6 +5,8 @@ endif()
 add_library(orlexec
     orl_exec.cpp
     orl_exec.hpp
+    orl_graph_exec.cpp
+    orl_graph_exec.hpp
 )
 
 target_include_directories(orlexec
@@ -15,6 +17,7 @@ target_include_directories(orlexec
 target_link_libraries(orlexec
     PUBLIC
         orlcomp_codegen
+        orlcomp_graph_lowering
 )
 
 add_library(orlrig
@@ -23,6 +26,8 @@ add_library(orlrig
     orlrig/abi.hpp
     orlrig/controller.hpp
     orlrig/deformer.hpp
+    orlrig/graph_resources.cpp
+    orlrig/graph_resources.hpp
     orlrig/ik.hpp
     orlrig/joint.hpp
     orlrig/mesh.hpp
