@@ -18,6 +18,8 @@
 #include "selection.hpp"
 #if ORL_USE_QT6
 #include "gui/qt_backend.hpp"
+#include "orlrig/graph_resources.hpp"
+#include "qt/node_graph_editor.hpp"
 #else
 #include "gui/glfw_backend.hpp"
 #endif
@@ -147,6 +149,14 @@ int main() {
 
     vkkk::Scene scene;
     scene.camera = &camera;
+#if ORL_USE_QT6
+    auto* node_graph_editor = new ORL::NodeGraphEditor();
+    const auto node_graph = orlrig::make_lbs_graph();
+    node_graph_editor->set_graph(node_graph.module, node_graph.registry);
+    if (window_backend.add_tab(node_graph_editor, "Node Graph") < 0) {
+        delete node_graph_editor;
+    }
+#endif
     ORL::ComponentManager components;
     const auto weight_id = components.create_weight("weights");
     const auto deformer_id = components.create_deformer("deformer");

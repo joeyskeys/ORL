@@ -60,6 +60,10 @@ target_compile_definitions(orl_viewer
 )
 
 if(ORL_USE_QT6)
+    target_sources(orl_viewer PRIVATE
+        qt/node_graph_editor.cpp
+        qt/node_graph_editor.hpp
+    )
     target_compile_definitions(orl_viewer PRIVATE ORL_USE_QT6=1)
     if(NOT TARGET Qt6::Widgets)
         find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
