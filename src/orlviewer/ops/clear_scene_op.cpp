@@ -4,7 +4,6 @@
 
 #include "asset_mgr/drawable_mgr.h"
 #include "asset_mgr/scene.h"
-#include "ops/create_controller_op.hpp"
 #include "ops/create_joint_op.hpp"
 #include "ops/move_op.hpp"
 #include "ops/rotate_op.hpp"
@@ -32,9 +31,6 @@ ClearSceneOp::ClearSceneOp(vkkk::Scene& scene, vkkk::Context& context, Component
 void ClearSceneOp::on_eval(const InputEvent&) {
     if (create_joint != nullptr) {
         create_joint->cancel();
-    }
-    if (create_controller != nullptr) {
-        create_controller->cancel();
     }
     if (move != nullptr) {
         move->cancel();

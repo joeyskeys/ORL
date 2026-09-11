@@ -167,6 +167,20 @@ orlviewer::ControllerShape ComponentManager::controller_shape(ComponentId id) co
         : found->second;
 }
 
+bool ComponentManager::set_controller_shape(
+    ComponentId id, orlviewer::ControllerShape shape)
+{
+    if (store.controller(id) == nullptr) {
+        return false;
+    }
+    const auto found = controller_shapes.find(id.value);
+    if (found == controller_shapes.end()) {
+        return false;
+    }
+    found->second = shape;
+    return true;
+}
+
 CurveLink* ComponentManager::curve(ComponentId id) {
     const auto found = curves.find(id.value);
     return found == curves.end() ? nullptr : &found->second;

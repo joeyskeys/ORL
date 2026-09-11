@@ -146,13 +146,12 @@ private:
     }
 
     bool create_controller_curves(vkkk::Context& context) {
-        constexpr uint32_t kCurveSegments = 64;
         for (const auto& definition : orlviewer::controller_curves::definitions) {
             const std::string name{definition.name};
             if (context.lines.contains(name)) {
                 continue;
             }
-            const auto lines = definition.curve().generate_lines(kCurveSegments);
+            const auto lines = definition.curve().generate_lines(definition.segments);
             if (!context.load_lines(name, lines)) {
                 return false;
             }

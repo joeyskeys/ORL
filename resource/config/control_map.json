@@ -114,28 +114,12 @@
       }
     },
     {
-      "op": "create_controller",
+      "op": "cycle_controller_curve",
       "input": {
         "type": "key",
         "key": "C",
         "action": "press",
         "mods": ["shift"]
-      }
-    },
-    {
-      "op": "create_controller",
-      "input": {
-        "type": "mouse_button",
-        "button": "left",
-        "action": "press"
-      }
-    },
-    {
-      "op": "create_controller",
-      "input": {
-        "type": "key",
-        "key": "enter",
-        "action": "press"
       }
     },
     {

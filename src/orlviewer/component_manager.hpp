@@ -108,6 +108,7 @@ public:
     orlrig::Controller* controller(ComponentId id);
     const orlrig::Controller* controller(ComponentId id) const;
     orlviewer::ControllerShape controller_shape(ComponentId id) const;
+    bool set_controller_shape(ComponentId id, orlviewer::ControllerShape shape);
     CurveLink* curve(ComponentId id);
     const CurveLink* curve(ComponentId id) const;
     WeightData* weight(ComponentId id);

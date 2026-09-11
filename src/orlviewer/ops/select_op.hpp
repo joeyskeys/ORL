@@ -16,7 +16,6 @@
 #include "comps/joint.hpp"
 #include "gui/input.hpp"
 #include "gui/window_backend.hpp"
-#include "ops/create_controller_op.hpp"
 #include "ops/create_joint_op.hpp"
 #include "selection.hpp"
 #include "vp/joint_picking_feature.hpp"
@@ -29,15 +28,14 @@ namespace ORL
 class SelectOp : public VpOperation<SelectOp> {
 public:
     SelectOp(Selection& selection, ComponentManager& components, vkkk::Scene& scene,
-        const vkkk::Camera& camera, vkkk::WindowBackend* window, const CreateJointOp& create_joint,
-        const CreateControllerOp& create_controller)
+        const vkkk::Camera& camera, vkkk::WindowBackend* window,
+        const CreateJointOp& create_joint)
         : selection(selection)
         , components(components)
         , scene(scene)
         , camera(camera)
         , window(window)
         , create_joint(create_joint)
-        , create_controller(create_controller)
     {
     }
 
@@ -56,7 +54,7 @@ public:
     }
 
     void on_eval(const InputEvent& event) {
-        if (create_joint.active() || create_controller.active()) {
+        if (create_joint.active()) {
             return;
         }
         if (event.kind != InputEvent::Kind::MouseButton
@@ -272,7 +270,6 @@ private:
     const vkkk::Camera& camera;
     vkkk::WindowBackend* window = nullptr;
     const CreateJointOp& create_joint;
-    const CreateControllerOp& create_controller;
     JointPickingFeature* gpu_picking = nullptr;
     MeshPickingFeature* mesh_picking = nullptr;
     double fallback_x = 0.0;

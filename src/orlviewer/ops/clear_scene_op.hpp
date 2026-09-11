@@ -17,7 +17,6 @@ class MeshCsrFeature;
 class DeformerFeature;
 class AutoWeightFeature;
 class CreateJointOp;
-class CreateControllerOp;
 class MoveOp;
 class RotateOp;
 class ScaleOp;
@@ -32,7 +31,6 @@ public:
     void set_deformer(DeformerFeature& feature) { deformer = &feature; }
     void set_auto_weight(AutoWeightFeature& feature) { auto_weight = &feature; }
     void set_create_joint(CreateJointOp& op) { create_joint = &op; }
-    void set_create_controller(CreateControllerOp& op) { create_controller = &op; }
     void set_move(MoveOp& op) { move = &op; }
     void set_rotate(RotateOp& op) { rotate = &op; }
     void set_scale(ScaleOp& op) { scale = &op; }
@@ -50,7 +48,6 @@ private:
     DeformerFeature* deformer = nullptr;
     AutoWeightFeature* auto_weight = nullptr;
     CreateJointOp* create_joint = nullptr;
-    CreateControllerOp* create_controller = nullptr;
     MoveOp* move = nullptr;
     RotateOp* rotate = nullptr;
     ScaleOp* scale = nullptr;

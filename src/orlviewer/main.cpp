@@ -26,6 +26,7 @@
 #include "ops/create_controller_op.hpp"
 #include "ops/create_ik_op.hpp"
 #include "ops/create_joint_op.hpp"
+#include "ops/cycle_controller_curve_op.hpp"
 #include "ops/display_mode_switch.hpp"
 #include "ops/load_model_op.hpp"
 #include "ops/move_op.hpp"
@@ -200,11 +201,11 @@ int main() {
     ORL::LoadModelOp load_model(scene, context, &window_backend, world_frame);
     ORL::ClearSceneOp clear_scene(scene, context, components, selection, weight_id, deformer_id);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, &window_backend, selection);
-    ORL::CreateControllerOp create_controller(components, camera, navigator.target, &window_backend,
-        selection, &create_joint);
+    ORL::CreateControllerOp create_controller(components, scene, selection);
+    ORL::CycleControllerCurveOp cycle_controller_curve(components, selection);
     ORL::CreateIkOp create_ik(components, selection);
-    ORL::SelectOp select_op(selection, components, scene, camera, &window_backend, create_joint,
-        create_controller);
+    ORL::SelectOp select_op(
+        selection, components, scene, camera, &window_backend, create_joint);
     const auto joint_pick_handle = viewport.add_feature<ORL::JointPickingFeature>(
         components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     if (auto* gpu_pick = viewport.find_feature(joint_pick_handle)) {
@@ -228,7 +229,6 @@ int main() {
         clear_scene.set_auto_weight(*auto_weight);
     }
     clear_scene.set_create_joint(create_joint);
-    clear_scene.set_create_controller(create_controller);
     clear_scene.set_move(move_op);
     clear_scene.set_rotate(rotate_op);
     clear_scene.set_scale(scale_op);
@@ -269,6 +269,7 @@ int main() {
     controls.bind_op("clear_scene", clear_scene);
     controls.bind_op("create_joint", create_joint);
     controls.bind_op("create_controller", create_controller);
+    controls.bind_op("cycle_controller_curve", cycle_controller_curve);
     controls.bind_op("create_ik", create_ik);
     controls.bind_op("select", select_op);
     controls.bind_op("move", move_op);

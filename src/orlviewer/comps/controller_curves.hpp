@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
 #include <string_view>
 #include <vector>
@@ -43,7 +44,7 @@ inline std::vector<glm::vec3> closed(std::initializer_list<glm::vec3> points) {
 }
 
 inline std::vector<glm::vec3> circle_points(float radius = 0.2f,
-    int segments = 32)
+    int segments = 64)
 {
     std::vector<glm::vec3> points;
     points.reserve(static_cast<std::size_t>(segments) + 1);
@@ -75,49 +76,50 @@ inline std::vector<glm::vec3> star_points(float outer = 0.24f,
 
 } // namespace detail
 
-// These are function-local statics so every caller gets a stable, shared
-// curve object suitable for a non-owning CurveLink.
-inline const vkkk::CatmullRomCurve& circle() {
-    static const vkkk::CatmullRomCurve curve{detail::circle_points()};
+// Degree-one clamped B-splines are piecewise linear. They preserve the
+// intended corners of Maya-style controller curves instead of smoothing them.
+// These function-local statics provide stable objects for non-owning links.
+inline const vkkk::BSplineCurve& circle() {
+    static const vkkk::BSplineCurve curve{detail::circle_points(), 1};
     return curve;
 }
 
-inline const vkkk::CatmullRomCurve& square() {
-    static const vkkk::CatmullRomCurve curve{detail::closed({
+inline const vkkk::BSplineCurve& square() {
+    static const vkkk::BSplineCurve curve{detail::closed({
         {-0.2f, -0.2f, 0.0f},
         { 0.2f, -0.2f, 0.0f},
         { 0.2f,  0.2f, 0.0f},
         {-0.2f,  0.2f, 0.0f},
-    })};
+    }), 1};
     return curve;
 }
 
-inline const vkkk::CatmullRomCurve& triangle() {
-    static const vkkk::CatmullRomCurve curve{detail::closed({
+inline const vkkk::BSplineCurve& triangle() {
+    static const vkkk::BSplineCurve curve{detail::closed({
         { 0.0f,  0.24f, 0.0f},
         {-0.21f, -0.15f, 0.0f},
         { 0.21f, -0.15f, 0.0f},
-    })};
+    }), 1};
     return curve;
 }
 
-inline const vkkk::CatmullRomCurve& diamond() {
-    static const vkkk::CatmullRomCurve curve{detail::closed({
+inline const vkkk::BSplineCurve& diamond() {
+    static const vkkk::BSplineCurve curve{detail::closed({
         { 0.0f,  0.24f, 0.0f},
         { 0.2f,  0.0f, 0.0f},
         { 0.0f, -0.24f, 0.0f},
         {-0.2f,  0.0f, 0.0f},
-    })};
+    }), 1};
     return curve;
 }
 
-inline const vkkk::CatmullRomCurve& star() {
-    static const vkkk::CatmullRomCurve curve{detail::star_points()};
+inline const vkkk::BSplineCurve& star() {
+    static const vkkk::BSplineCurve curve{detail::star_points(), 1};
     return curve;
 }
 
-inline const vkkk::CatmullRomCurve& cross() {
-    static const vkkk::CatmullRomCurve curve{detail::closed({
+inline const vkkk::BSplineCurve& cross() {
+    static const vkkk::BSplineCurve curve{detail::closed({
         {-0.07f,  0.24f, 0.0f},
         { 0.07f,  0.24f, 0.0f},
         { 0.07f,  0.07f, 0.0f},
@@ -130,12 +132,12 @@ inline const vkkk::CatmullRomCurve& cross() {
         {-0.24f, -0.07f, 0.0f},
         {-0.24f,  0.07f, 0.0f},
         {-0.07f,  0.07f, 0.0f},
-    })};
+    }), 1};
     return curve;
 }
 
-inline const vkkk::CatmullRomCurve& arrow() {
-    static const vkkk::CatmullRomCurve curve{detail::closed({
+inline const vkkk::BSplineCurve& arrow() {
+    static const vkkk::BSplineCurve curve{detail::closed({
         {-0.24f,  0.08f, 0.0f},
         { 0.02f,  0.08f, 0.0f},
         { 0.02f,  0.17f, 0.0f},
@@ -143,27 +145,28 @@ inline const vkkk::CatmullRomCurve& arrow() {
         { 0.02f, -0.17f, 0.0f},
         { 0.02f, -0.08f, 0.0f},
         {-0.24f, -0.08f, 0.0f},
-    })};
+    }), 1};
     return curve;
 }
 
 struct Definition {
     ControllerShape kind;
     std::string_view name;
-    const vkkk::CatmullRomCurve& (*curve)();
+    const vkkk::BSplineCurve& (*curve)();
+    std::uint32_t segments;
 };
 
 inline constexpr std::array<Definition, 7> definitions{{
-    {ControllerShape::Circle, "circle", &circle},
-    {ControllerShape::Square, "square", &square},
-    {ControllerShape::Triangle, "triangle", &triangle},
-    {ControllerShape::Diamond, "diamond", &diamond},
-    {ControllerShape::Star, "star", &star},
-    {ControllerShape::Cross, "cross", &cross},
-    {ControllerShape::Arrow, "arrow", &arrow},
+    {ControllerShape::Circle, "circle", &circle, 64},
+    {ControllerShape::Square, "square", &square, 64},
+    {ControllerShape::Triangle, "triangle", &triangle, 60},
+    {ControllerShape::Diamond, "diamond", &diamond, 64},
+    {ControllerShape::Star, "star", &star, 60},
+    {ControllerShape::Cross, "cross", &cross, 60},
+    {ControllerShape::Arrow, "arrow", &arrow, 56},
 }};
 
-inline const vkkk::CatmullRomCurve& get(ControllerShape kind) {
+inline const vkkk::BSplineCurve& get(ControllerShape kind) {
     switch (kind) {
     case ControllerShape::Circle:
         return circle();
@@ -196,8 +199,29 @@ inline std::string_view name(ControllerShape kind) {
     return "circle";
 }
 
+inline ControllerShape next(ControllerShape current) {
+    for (std::size_t index = 0; index < definitions.size(); ++index) {
+        if (definitions[index].kind == current) {
+            return definitions[(index + 1) % definitions.size()].kind;
+        }
+    }
+    return definitions.front().kind;
+}
+
+inline std::size_t curve_segments(ControllerShape kind) {
+    if (kind == ControllerShape::Polygon) {
+        kind = ControllerShape::Square;
+    }
+    for (const auto& definition : definitions) {
+        if (definition.kind == kind) {
+            return definition.segments;
+        }
+    }
+    return definitions.front().segments;
+}
+
 inline std::vector<glm::vec3> sample(
-    const vkkk::CatmullRomCurve& curve, std::size_t segments = 64)
+    const vkkk::BSplineCurve& curve, std::size_t segments = 64)
 {
     if (segments == 0) {
         return {curve.evaluate(0.0f)};
@@ -212,8 +236,11 @@ inline std::vector<glm::vec3> sample(
 }
 
 inline std::vector<glm::vec3> points(
-    ControllerShape shape, std::size_t segments = 64)
+    ControllerShape shape, std::size_t segments = 0)
 {
+    if (segments == 0) {
+        segments = curve_segments(shape);
+    }
     return sample(get(shape), segments);
 }
 
