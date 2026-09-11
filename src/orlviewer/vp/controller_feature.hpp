@@ -43,7 +43,8 @@ public:
     }
 
     void on_attach(vkkk::Context& context, vk::Extent2D) {
-        lines_ready = create_line_pipeline(context) && create_circle(context);
+        lines_ready = create_line_pipeline(context)
+            && create_controller_curves(context);
         if (!lines_ready) {
             std::cerr << "ControllerFeature: curve pipeline is unavailable\n";
         }
@@ -67,10 +68,12 @@ public:
                 return;
             }
             const bool selected = is_selected(meta.id);
-            if (controller->shape == orlviewer::ControllerShape::Polygon) {
+            const auto shape = components.controller_shape(meta.id);
+            if (shape == orlviewer::ControllerShape::Polygon)
+            {
                 record_poly(context, cmd, image_index, *controller, selected);
             } else {
-                record_curve(context, cmd, image_index, *controller, selected);
+                record_curve(context, cmd, image_index, *controller, shape, selected);
             }
         });
     }
@@ -80,7 +83,6 @@ private:
     static constexpr const char* kPolyPipeline = "orl_controller_poly";
     static constexpr const char* kModelBlock = "ModelUBO";
     static constexpr const char* kColorBlock = "ColorUBO";
-    static constexpr const char* kCircle = "orl_controller_circle";
     static constexpr const char* kQuad = "orl_controller_quad";
 
     bool is_selected(ComponentId id) const {
@@ -143,30 +145,19 @@ private:
         return context.create_pipeline(kPolyPipeline, pack, option, {vkkk::VERTEX});
     }
 
-    bool create_circle(vkkk::Context& context) {
-        if (context.lines.contains(kCircle)) {
-            return true;
+    bool create_controller_curves(vkkk::Context& context) {
+        constexpr uint32_t kCurveSegments = 64;
+        for (const auto& definition : orlviewer::controller_curves::definitions) {
+            const std::string name{definition.name};
+            if (context.lines.contains(name)) {
+                continue;
+            }
+            const auto lines = definition.curve().generate_lines(kCurveSegments);
+            if (!context.load_lines(name, lines)) {
+                return false;
+            }
         }
-        const auto points = orlviewer::controller_curve_points();
-        std::vector<float> vertices;
-        vertices.reserve(points.size() * 3);
-        for (const auto& p : points) {
-            vertices.insert(vertices.end(), {p.x, p.y, p.z});
-        }
-        std::vector<std::uint32_t> indices;
-        indices.reserve(points.size() * 2);
-        for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(points.size()); ++i) {
-            indices.push_back(i);
-            indices.push_back((i + 1) % static_cast<std::uint32_t>(points.size()));
-        }
-        vkkk::Lines lines({vkkk::VERTEX});
-        lines.load(static_cast<std::uint32_t>(points.size()),
-            reinterpret_cast<const char*>(vertices.data()),
-            static_cast<std::uint32_t>(vertices.size() * sizeof(float)),
-            static_cast<std::uint32_t>(indices.size()),
-            reinterpret_cast<const char*>(indices.data()),
-            static_cast<std::uint32_t>(indices.size() * sizeof(std::uint32_t)));
-        return context.load_lines(kCircle, lines);
+        return true;
     }
 
     bool create_quad(vkkk::Context& context) {
@@ -196,8 +187,9 @@ private:
         return color;
     }
 
-    void record_curve(vkkk::Context& context, vk::raii::CommandBuffer& cmd, uint32_t image_index,
-        const orlviewer::Controller& controller, bool selected)
+    void record_curve(vkkk::Context& context, vk::raii::CommandBuffer& cmd,
+        uint32_t image_index, const orlrig::Controller& controller,
+        orlviewer::ControllerShape shape, bool selected)
     {
         if (!lines_ready) {
             return;
@@ -209,12 +201,13 @@ private:
         const auto color = color_for(selected);
         context.sync_ubo(kLinePipeline, kColorBlock, &color, image_index);
         if (context.bind(cmd, kLinePipeline, image_index)) {
-            context.draw_lines(cmd, kCircle);
+            context.draw_lines(cmd, std::string{
+                orlviewer::controller_curves::name(shape)});
         }
     }
 
     void record_poly(vkkk::Context& context, vk::raii::CommandBuffer& cmd, uint32_t image_index,
-        const orlviewer::Controller& controller, bool selected)
+        const orlrig::Controller& controller, bool selected)
     {
         if (!poly_ready) {
             return;

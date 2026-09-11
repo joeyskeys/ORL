@@ -85,12 +85,8 @@ bool SolverFeature::evaluate_two_bone(ConstraintData& constraint) {
         return false;
     }
 
-    orlrig::Controller target_core;
-    target_core.xform = target->xform;
-    orlrig::Controller pole_core;
-    pole_core.xform = pole->xform;
     const auto status = runner.evaluate_two_bone(
-        packed, root, mid, end, target_core, pole_core);
+        packed, root, mid, end, *target, *pole);
     if (!status) {
         print_runner_errors(status.errors);
         constraint.bound = false;

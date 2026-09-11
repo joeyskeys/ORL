@@ -23,14 +23,13 @@ ComponentId ComponentManager::create_joint(std::string name, orlviewer::Joint jo
 }
 
 ComponentId ComponentManager::create_controller(std::string name,
-    orlviewer::Controller controller)
+    orlrig::Controller controller,
+    orlviewer::ControllerShape shape)
 {
-    orlrig::Controller core_controller;
-    core_controller.xform = controller.xform;
-    const auto id = store.create_controller(name, core_controller);
+    const auto id = store.create_controller(name, std::move(controller));
     if (id) {
         metadata.emplace(id.value, make_meta(id, name, ComponentKind::Controller));
-        controllers.emplace(id.value, std::move(controller));
+        controller_shapes.emplace(id.value, shape);
     }
     return id;
 }
@@ -73,7 +72,7 @@ bool ComponentManager::destroy(ComponentId id) {
         return false;
     }
     metadata.erase(id.value);
-    controllers.erase(id.value);
+    controller_shapes.erase(id.value);
     curves.erase(id.value);
     return true;
 }
@@ -153,14 +152,19 @@ const orlviewer::Joint* ComponentManager::joint(ComponentId id) const {
     return store.joint(id);
 }
 
-orlviewer::Controller* ComponentManager::controller(ComponentId id) {
-    const auto found = controllers.find(id.value);
-    return found == controllers.end() ? nullptr : &found->second;
+orlrig::Controller* ComponentManager::controller(ComponentId id) {
+    return store.controller(id);
 }
 
-const orlviewer::Controller* ComponentManager::controller(ComponentId id) const {
-    const auto found = controllers.find(id.value);
-    return found == controllers.end() ? nullptr : &found->second;
+const orlrig::Controller* ComponentManager::controller(ComponentId id) const {
+    return store.controller(id);
+}
+
+orlviewer::ControllerShape ComponentManager::controller_shape(ComponentId id) const {
+    const auto found = controller_shapes.find(id.value);
+    return found == controller_shapes.end()
+        ? orlviewer::ControllerShape::Curve
+        : found->second;
 }
 
 CurveLink* ComponentManager::curve(ComponentId id) {

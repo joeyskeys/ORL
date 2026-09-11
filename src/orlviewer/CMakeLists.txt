@@ -5,6 +5,7 @@ add_executable(orl_viewer
     comps/joint.hpp
     comps/joint.glsl
     comps/controller.hpp
+    comps/controller_curves.hpp
     comps/weight.hpp
     comps/deformer.hpp
     ops/load_model_op.cpp
@@ -15,7 +16,15 @@ add_executable(orl_viewer
     vp/solver_feature.cpp
     vp/deformer_feature.cpp
 )
-set_source_files_properties(comps/joint.hpp comps/joint.glsl comps/controller.hpp comps/weight.hpp comps/deformer.hpp PROPERTIES HEADER_FILE_ONLY TRUE)
+set_source_files_properties(
+    comps/joint.hpp
+    comps/joint.glsl
+    comps/controller.hpp
+    comps/controller_curves.hpp
+    comps/weight.hpp
+    comps/deformer.hpp
+    PROPERTIES HEADER_FILE_ONLY TRUE
+)
 
 if(VKKK_VCPKG_INSTALLED_DIR)
     list(PREPEND CMAKE_PREFIX_PATH "${VKKK_VCPKG_INSTALLED_DIR}")

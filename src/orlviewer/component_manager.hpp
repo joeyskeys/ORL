@@ -76,13 +76,15 @@ struct Component {
     DisplayLink display;
 };
 
-// Viewer adapter around the standalone rigging store. Display and curve
-// handles stay here; pure rigging data lives in orlrig::ComponentStore.
+// Viewer adapter around the standalone rigging store. Controller xforms and
+// all other rigging data live in orlrig::ComponentStore; display links,
+// curve handles, and controller shapes stay here.
 class ComponentManager {
 public:
     ComponentId create_joint(std::string name, orlviewer::Joint joint = orlviewer::make_identity_joint());
     ComponentId create_controller(std::string name,
-        orlviewer::Controller controller = orlviewer::Controller{});
+        orlrig::Controller controller = orlrig::Controller{},
+        orlviewer::ControllerShape shape = orlviewer::ControllerShape::Curve);
     ComponentId create_curve(std::string name, CurveLink curve = {});
     ComponentId create_weight(std::string name, WeightData weight = {});
     ComponentId create_constraint(std::string name, ConstraintData constraint = {});
@@ -103,8 +105,9 @@ public:
 
     orlviewer::Joint* joint(ComponentId id);
     const orlviewer::Joint* joint(ComponentId id) const;
-    orlviewer::Controller* controller(ComponentId id);
-    const orlviewer::Controller* controller(ComponentId id) const;
+    orlrig::Controller* controller(ComponentId id);
+    const orlrig::Controller* controller(ComponentId id) const;
+    orlviewer::ControllerShape controller_shape(ComponentId id) const;
     CurveLink* curve(ComponentId id);
     const CurveLink* curve(ComponentId id) const;
     WeightData* weight(ComponentId id);
@@ -136,7 +139,7 @@ public:
 private:
     orlrig::ComponentStore store;
     std::unordered_map<std::uint64_t, Component> metadata;
-    std::unordered_map<std::uint64_t, orlviewer::Controller> controllers;
+    std::unordered_map<std::uint64_t, orlviewer::ControllerShape> controller_shapes;
     std::unordered_map<std::uint64_t, CurveLink> curves;
 };
 

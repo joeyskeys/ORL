@@ -194,7 +194,8 @@ private:
             if (controller == nullptr) {
                 return;
             }
-            const auto points = orlviewer::controller_shape_points(*controller);
+            const auto points = orlviewer::controller_shape_points(
+                components.controller_shape(meta.id));
             for (const auto& local : points) {
                 glm::vec2 pixel{};
                 if (!project(orlviewer::controller_world(*controller, local), width, height, pixel)) {

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <glm/vec3.hpp>
@@ -44,6 +45,80 @@ LbsFixture make_lbs_fixture() {
 
 std::string last_error(const orlrig::RunnerStatus& status) {
     return status.errors.empty() ? "orlrig runner failed" : status.errors.back();
+}
+
+struct AutoWeightFixture {
+    orlrig::MeshData mesh;
+    std::vector<orlrig::Joint> joints;
+    orlrig::MeshCsrData csr;
+};
+
+AutoWeightFixture make_auto_weight_fixture() {
+    AutoWeightFixture fixture;
+    fixture.mesh.positions = {
+        glm::vec3{0.0f, 0.2f, 0.0f},
+        glm::vec3{0.5f, 0.2f, 0.0f},
+        glm::vec3{1.5f, 0.2f, 0.0f},
+        glm::vec3{2.0f, 0.2f, 0.0f},
+    };
+    fixture.joints.resize(3);
+    fixture.joints[0] = orlrig::make_identity_joint();
+    fixture.joints[1] = orlrig::make_identity_joint();
+    fixture.joints[1].parent = 0;
+    fixture.joints[1].translation[0] = 1.0;
+    fixture.joints[2] = orlrig::make_identity_joint();
+    fixture.joints[2].parent = 1;
+    fixture.joints[2].translation[0] = 1.0;
+
+    // Four vertices connected as a line graph. The offsets array has one
+    // entry per vertex plus the terminal neighbor offset.
+    fixture.csr.offsets = {0, 1, 3, 5, 6};
+    fixture.csr.neighbors = {1, 0, 2, 1, 3, 2};
+    return fixture;
+}
+
+void check_auto_weight_algorithm(std::string_view algorithm,
+    bool needs_csr)
+{
+    auto fixture = make_auto_weight_fixture();
+    orlrig::WeightData weights;
+    weights.weight_cnt = 2;
+    orlrig::AutoWeightRunner runner(std::string{algorithm});
+    const auto* csr = needs_csr ? &fixture.csr : nullptr;
+    const auto status = runner.run(
+        fixture.mesh, fixture.joints, csr, weights, 4.0);
+
+    INFO("auto-weight algorithm: " << algorithm);
+    REQUIRE(status);
+    REQUIRE(weights.weights.count()
+        == fixture.mesh.positions.size()
+            * static_cast<std::size_t>(weights.weight_cnt));
+
+    for (std::size_t vertex = 0;
+         vertex < fixture.mesh.positions.size();
+         ++vertex)
+    {
+        double sum = 0.0;
+        for (std::size_t slot = 0;
+             slot < static_cast<std::size_t>(weights.weight_cnt);
+             ++slot)
+        {
+            orlrig::Weight cell{};
+            REQUIRE(weights.weights.read(
+                vertex * static_cast<std::size_t>(weights.weight_cnt) + slot,
+                &cell));
+            REQUIRE(cell.weight >= 0.0);
+            REQUIRE(cell.weight <= 1.0);
+            if (cell.joint >= 0) {
+                REQUIRE(static_cast<std::size_t>(cell.joint)
+                    < fixture.joints.size());
+                sum += cell.weight;
+            } else {
+                REQUIRE(cell.weight == Catch::Approx(0.0));
+            }
+        }
+        REQUIRE(sum == Catch::Approx(1.0));
+    }
 }
 
 } // namespace
@@ -134,6 +209,22 @@ TEST_CASE("orlrig runs auto-weight and two-bone solver on CPU",
     status = solver.evaluate_two_bone(
         joints, chain->root, chain->mid, chain->end, target, pole);
     REQUIRE(status);
+}
+
+TEST_CASE("orlrig auto-weight closest distance", "[orlrig][cpu][auto_weight]") {
+    check_auto_weight_algorithm("closest_distance", false);
+}
+
+TEST_CASE("orlrig auto-weight closest hierarchy", "[orlrig][cpu][auto_weight]") {
+    check_auto_weight_algorithm("closest_hierarchy", false);
+}
+
+TEST_CASE("orlrig auto-weight heat", "[orlrig][cpu][auto_weight]") {
+    check_auto_weight_algorithm("heat", true);
+}
+
+TEST_CASE("orlrig auto-weight geodesic", "[orlrig][cpu][auto_weight]") {
+    check_auto_weight_algorithm("geodesic", true);
 }
 
 TEST_CASE("orlrig exposes CUDA output for no-window tests",

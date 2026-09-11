@@ -134,7 +134,7 @@ private:
         orlviewer::ControllerShape shape)
     {
         return components.create_controller(unique_name(prefix),
-            orlviewer::make_controller(world, shape));
+            orlrig::make_controller(world), shape);
     }
 
     ComponentManager& components;

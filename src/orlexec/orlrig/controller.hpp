@@ -11,6 +11,8 @@
 namespace orlrig
 {
 
+// Compute-side controller payload. Viewer handles may add display metadata,
+// but the core representation passed to ORL is only this transform.
 struct Controller {
     glm::mat4 xform{1.0f};
 };

@@ -84,8 +84,8 @@ private:
         if (!hit_pivot_plane(cursor_x, cursor_y, world)) {
             return;
         }
-        const auto id = components.create_controller(unique_name(),
-            orlviewer::make_controller(world, shape));
+        const auto id = components.create_controller(
+            unique_name(), orlrig::make_controller(world), shape);
         if (!id) {
             std::cerr << "CreateControllerOp: failed to create controller\n";
             return;
