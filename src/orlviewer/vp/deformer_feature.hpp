@@ -1,12 +1,11 @@
 #pragma once
 
-#include <optional>
 #include <string>
 #include <string_view>
 
 #include "asset_mgr/scene.h"
 #include "component_manager.hpp"
-#include "orl_exec.hpp"
+#include "../../orlexec/orlrig/runners.hpp"
 #include "selection.hpp"
 #include "vp/feature.hpp"
 
@@ -29,7 +28,6 @@ public:
     void on_update(vkkk::Context& context, const vkkk::Context::Frame&);
 
 private:
-    bool ensure_programs();
     bool setup(vkkk::Context& context);
     bool evaluate(vkkk::Context& context);
 
@@ -39,13 +37,7 @@ private:
     ComponentId weight_id;
     const Selection& selection;
     std::string type_name{"lbs"};
-    std::string compiled;
-    std::optional<exec::OrlProgram> capture_program;
-    std::optional<exec::OrlExecution> capture_execution;
-    std::optional<exec::OrlProgram> deform_program;
-    std::optional<exec::OrlExecution> deform_execution;
-    exec::OrlBuffer joints;
-    exec::OrlBuffer output_positions;
+    orlrig::LbsRunner runner;
     bool pending = false;
     bool logged_rest = false;
     bool logged_move = false;

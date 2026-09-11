@@ -1,12 +1,11 @@
 #pragma once
 
-#include <optional>
 #include <string>
 #include <string_view>
 
 #include "asset_mgr/scene.h"
 #include "component_manager.hpp"
-#include "orl_exec.hpp"
+#include "../../orlexec/orlrig/runners.hpp"
 #include "selection.hpp"
 #include "vp/feature.hpp"
 #include "vp/mesh_csr_feature.hpp"
@@ -32,7 +31,6 @@ public:
     void on_update(vkkk::Context& context, const vkkk::Context::Frame&);
 
 private:
-    bool ensure_program();
     bool run(vkkk::Context& context);
 
     vkkk::Scene& scene;
@@ -42,9 +40,7 @@ private:
     MeshCsrFeature* csr = nullptr;
     std::string algorithm_name{"closest_distance"};
     double dropoff = 4.0;
-    std::string compiled;
-    std::optional<exec::OrlProgram> program;
-    std::optional<exec::OrlExecution> execution;
+    orlrig::AutoWeightRunner runner;
     bool pending = false;
 };
 

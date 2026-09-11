@@ -1,15 +1,16 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <utility>
 #include <variant>
 #include <vector>
 
-#include "comps/joint.hpp"
+#include "../orlexec/orlrig/component_store.hpp"
 #include "comps/controller.hpp"
+#include "comps/joint.hpp"
 #include "comps/weight.hpp"
 #include "comps/deformer.hpp"
 #include "concepts/curve.hpp"
@@ -17,22 +18,9 @@
 namespace ORL
 {
 
-// Viewport-owned CPU identity for one user-created rig resource.
-struct ComponentId {
-    std::uint64_t value = 0;
-
-    explicit operator bool() const { return value != 0; }
-    friend bool operator==(ComponentId, ComponentId) = default;
-};
-
-enum class ComponentKind {
-    Joint,
-    Weight,
-    Curve,
-    Constraint,
-    Deformer,
-    Controller,
-};
+using ComponentId = orlrig::ComponentId;
+using ComponentKind = orlrig::ComponentKind;
+using ConstraintData = orlrig::ConstraintData;
 
 // Named handle into vkkk draw storage. ComponentManager never owns GPU
 // resources; it only records which draw object (if any) represents this
@@ -81,18 +69,6 @@ struct CurveLink {
     bool empty() const { return std::holds_alternative<std::monostate>(handle); }
 };
 
-// Solver-owned transform constraint. IK writes joint rotations; target and
-// pole are controller locators whose xforms are passed into ORL as matrices.
-struct ConstraintData {
-    std::string type = "ik_two_bone";
-    ComponentId root;
-    ComponentId mid;
-    ComponentId end;
-    ComponentId target;
-    ComponentId pole;
-    bool bound = false;
-};
-
 struct Component {
     ComponentId id;
     std::string name;
@@ -100,9 +76,8 @@ struct Component {
     DisplayLink display;
 };
 
-// CPU-side registry of rig components the user can create and edit.
-// Drawing stays in vkkk Scene / DrawableMgr / Context; bind_display() only
-// stores the name of the matching draw object.
+// Viewer adapter around the standalone rigging store. Display and curve
+// handles stay here; pure rigging data lives in orlrig::ComponentStore.
 class ComponentManager {
 public:
     ComponentId create_joint(std::string name, orlviewer::Joint joint = orlviewer::make_identity_joint());
@@ -139,7 +114,7 @@ public:
     DeformerData* deformer(ComponentId id);
     const DeformerData* deformer(ComponentId id) const;
 
-    std::size_t size() const { return records.size(); }
+    std::size_t size() const { return store.size(); }
     std::size_t size(ComponentKind kind) const;
     bool contains(std::string_view name) const;
 
@@ -148,57 +123,21 @@ public:
     std::vector<ComponentId> packed_joint_ids() const;
     std::int64_t joint_index(ComponentId id) const;
 
+    orlrig::ComponentStore& rigging() { return store; }
+    const orlrig::ComponentStore& rigging() const { return store; }
+
     template <typename Fn>
     void for_each(Fn&& fn) const {
-        for (const auto& [_, record] : records) {
-            fn(record.meta);
+        for (const auto& [_, meta] : metadata) {
+            fn(meta);
         }
     }
 
 private:
-    using Payload = std::variant<
-        orlviewer::Joint,
-        orlviewer::Controller,
-        CurveLink,
-        WeightData,
-        ConstraintData,
-        DeformerData>;
-
-    struct Record {
-        Component meta;
-        Payload payload;
-    };
-
-    ComponentId create(std::string name, ComponentKind kind, Payload payload);
-    Record* record(ComponentId id);
-    const Record* record(ComponentId id) const;
-    template <typename T>
-    T* payload_as(ComponentId id);
-    template <typename T>
-    const T* payload_as(ComponentId id) const;
-
-    std::uint64_t next_id = 1;
-    std::unordered_map<std::uint64_t, Record> records;
-    std::unordered_map<std::string, std::uint64_t> names;
-    std::vector<ComponentId> joint_order;
+    orlrig::ComponentStore store;
+    std::unordered_map<std::uint64_t, Component> metadata;
+    std::unordered_map<std::uint64_t, orlviewer::Controller> controllers;
+    std::unordered_map<std::uint64_t, CurveLink> curves;
 };
-
-template <typename T>
-T* ComponentManager::payload_as(ComponentId id) {
-    auto* rec = record(id);
-    if (rec == nullptr) {
-        return nullptr;
-    }
-    return std::get_if<T>(&rec->payload);
-}
-
-template <typename T>
-const T* ComponentManager::payload_as(ComponentId id) const {
-    const auto* rec = record(id);
-    if (rec == nullptr) {
-        return nullptr;
-    }
-    return std::get_if<T>(&rec->payload);
-}
 
 } // namespace ORL

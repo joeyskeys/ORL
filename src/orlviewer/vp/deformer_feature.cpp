@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "comps/joint.hpp"
@@ -30,184 +31,157 @@ exec::Backend backend_from_config() {
         : exec::Backend::Cpu;
 }
 
-constexpr const char* kTypes[] = {
-    "lbs",
-};
-
 bool known_type(std::string_view name) {
-    for (const char* type : kTypes) {
-        if (name == type) {
-            return true;
-        }
-    }
-    return false;
+    return name == "lbs";
 }
 
-void print_exec_errors(const char* stage, const std::vector<std::string>& errors) {
+void print_runner_errors(const std::vector<std::string>& errors) {
     for (const auto& error : errors) {
-        std::cerr << "Deformer: " << stage << ": " << error << '\n';
+        std::cerr << "Deformer: " << error << '\n';
     }
 }
 
 int vertex_float_offset(const vkkk::Mesh& mesh) {
     int packed = 0;
-    for (const auto comp : mesh.comps) {
-        if (comp == vkkk::VERTEX) {
+    for (const auto component : mesh.comps) {
+        if (component == vkkk::VERTEX) {
             return packed;
         }
-        packed += static_cast<int>(vkkk::comp_sizes[comp]);
+        packed += static_cast<int>(vkkk::comp_sizes[component]);
     }
     return -1;
 }
 
-bool fill_positions(exec::OrlBuffer& positions, const vkkk::Mesh& mesh, const glm::mat4& model) {
-    const int offset = vertex_float_offset(mesh);
-    if (offset < 0 || mesh.vbuf == nullptr || mesh.vcnt == 0) {
+bool extract_mesh(orlrig::MeshData& destination,
+    const vkkk::Mesh& source,
+    const glm::mat4& model)
+{
+    const int offset = vertex_float_offset(source);
+    if (offset < 0 || source.vbuf == nullptr || source.vcnt == 0) {
         return false;
     }
-    if (!positions.resize(mesh.vcnt)) {
-        return false;
+    destination.positions.resize(source.vcnt);
+    destination.model = model;
+    for (std::uint32_t vertex = 0; vertex < source.vcnt; ++vertex) {
+        const float* source_position =
+            source.vbuf + vertex * source.comp_size + offset;
+        destination.positions[vertex] = {
+            source_position[0], source_position[1], source_position[2]};
     }
-    auto* dst = static_cast<double*>(positions.data());
-    for (std::uint32_t v = 0; v < mesh.vcnt; ++v) {
-        const float* src = mesh.vbuf + v * mesh.comp_size + offset;
-        const glm::vec4 world = model * glm::vec4{src[0], src[1], src[2], 1.0f};
-        dst[v * 4 + 0] = world.x;
-        dst[v * 4 + 1] = world.y;
-        dst[v * 4 + 2] = world.z;
-        dst[v * 4 + 3] = 0.0;
+    if (source.ibuf != nullptr && source.icnt != 0) {
+        destination.indices.assign(source.ibuf, source.ibuf + source.icnt * 3);
     }
     return true;
 }
 
-bool write_positions(vkkk::Mesh& mesh, const exec::OrlBuffer& positions, const glm::mat4& bind_model) {
+bool write_positions(vkkk::Mesh& mesh,
+    const exec::OrlBuffer& positions,
+    const glm::mat4& bind_model)
+{
     const int offset = vertex_float_offset(mesh);
     if (offset < 0 || mesh.vbuf == nullptr || positions.count() < mesh.vcnt) {
         return false;
     }
-    glm::mat4 aligned_model{1.0f};
-    std::memcpy(&aligned_model, &bind_model, sizeof(aligned_model));
-    const glm::mat4 to_object = glm::inverse(aligned_model);
-    const auto* src = static_cast<const double*>(positions.data());
-    for (std::uint32_t v = 0; v < mesh.vcnt; ++v) {
-        float* dst = mesh.vbuf + v * mesh.comp_size + offset;
+    const glm::mat4 to_object = glm::inverse(bind_model);
+    const auto* source = static_cast<const double*>(positions.data());
+    for (std::uint32_t vertex = 0; vertex < mesh.vcnt; ++vertex) {
+        float* destination = mesh.vbuf + vertex * mesh.comp_size + offset;
         const glm::vec4 world{
-            static_cast<float>(src[v * 4 + 0]),
-            static_cast<float>(src[v * 4 + 1]),
-            static_cast<float>(src[v * 4 + 2]),
+            static_cast<float>(source[vertex * 4 + 0]),
+            static_cast<float>(source[vertex * 4 + 1]),
+            static_cast<float>(source[vertex * 4 + 2]),
             1.0f};
         const glm::vec4 local = to_object * world;
-        dst[0] = local.x;
-        dst[1] = local.y;
-        dst[2] = local.z;
+        destination[0] = local.x;
+        destination[1] = local.y;
+        destination[2] = local.z;
     }
     return true;
 }
 
-bool fill_joints(exec::OrlBuffer& joints, const std::vector<orlviewer::Joint>& packed) {
-    if (!joints.resize(packed.size())) {
-        return false;
-    }
-    if (!packed.empty()) {
-        std::memcpy(joints.data(), packed.data(), packed.size() * orlviewer::kJointStride);
-    }
-    return true;
-}
-
-void write_text_file(const char* path, const std::string& text) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        std::cerr << "Deformer: could not write " << path << '\n';
-        return;
-    }
-    out << text;
-    std::cout << "Deformer: wrote " << path << " (" << text.size() << " bytes)\n";
-}
-
-void dump_bind_snapshot(const std::vector<orlviewer::Joint>& packed, const exec::OrlBuffer& inverse_binds) {
+void dump_bind_snapshot(const std::vector<orlviewer::Joint>& joints,
+    const exec::OrlBuffer& inverse_binds)
+{
     const auto* matrices = static_cast<const double*>(inverse_binds.data());
-    std::ofstream out("orl_debug_bind.txt", std::ios::trunc);
-    if (!out) {
+    std::ofstream output("orl_debug_bind.txt", std::ios::trunc);
+    if (!output) {
         std::cerr << "Deformer: could not write orl_debug_bind.txt\n";
         return;
     }
-    out << "# joint parent selected tx ty tz cpp_world_xyz inv_row_tx ty tz\n";
+    output << "# joint parent selected tx ty tz cpp_world_xyz inv_row_tx ty tz\n";
     std::cout << "Deformer: bind snapshot\n";
-    for (std::size_t j = 0; j < packed.size(); ++j) {
-        const auto& joint = packed[j];
-        const glm::vec3 world{orlviewer::joint_world_matrix(packed, static_cast<std::int64_t>(j))[3]};
-        double inv_tx = 0.0;
-        double inv_ty = 0.0;
-        double inv_tz = 0.0;
-        if (matrices != nullptr && j < inverse_binds.count()) {
-            const auto* m = matrices + j * 16;
-            inv_tx = m[3];
-            inv_ty = m[7];
-            inv_tz = m[11];
+    for (std::size_t index = 0; index < joints.size(); ++index) {
+        const auto& joint = joints[index];
+        const glm::vec3 world{
+            orlviewer::joint_world_matrix(joints,
+                static_cast<std::int64_t>(index))[3]};
+        double inverse_tx = 0.0;
+        double inverse_ty = 0.0;
+        double inverse_tz = 0.0;
+        if (matrices != nullptr && index < inverse_binds.count()) {
+            const auto* matrix = matrices + index * 16;
+            inverse_tx = matrix[3];
+            inverse_ty = matrix[7];
+            inverse_tz = matrix[11];
         }
-        std::cout << "  joint " << j << " parent=" << joint.parent
-            << " selected=" << joint.selected
-            << " t=(" << joint.translation[0] << ", " << joint.translation[1]
-            << ", " << joint.translation[2] << ")"
-            << " cpp_world=(" << world.x << ", " << world.y << ", " << world.z << ")"
-            << " inv_t=(" << inv_tx << ", " << inv_ty << ", " << inv_tz << ")\n";
-        out << j << '\t' << joint.parent << '\t' << joint.selected << '\t'
+        output << index << '\t' << joint.parent << '\t' << joint.selected << '\t'
             << joint.translation[0] << '\t' << joint.translation[1] << '\t'
-            << joint.translation[2] << '\t'
-            << world.x << '\t' << world.y << '\t' << world.z << '\t'
-            << inv_tx << '\t' << inv_ty << '\t' << inv_tz << '\n';
+            << joint.translation[2] << '\t' << world.x << '\t' << world.y << '\t'
+            << world.z << '\t' << inverse_tx << '\t' << inverse_ty << '\t'
+            << inverse_tz << '\n';
     }
     std::cout << "Deformer: wrote orl_debug_bind.txt\n";
 }
 
-double max_position_delta(const exec::OrlBuffer& bind, const exec::OrlBuffer& posed) {
+double max_position_delta(const exec::OrlBuffer& bind,
+    const exec::OrlBuffer& posed)
+{
     const auto count = std::min(bind.count(), posed.count());
-    const auto* a = static_cast<const double*>(bind.data());
-    const auto* b = static_cast<const double*>(posed.data());
-    if (a == nullptr || b == nullptr || count == 0) {
+    const auto* first = static_cast<const double*>(bind.data());
+    const auto* second = static_cast<const double*>(posed.data());
+    if (first == nullptr || second == nullptr || count == 0) {
         return 0.0;
     }
-    double max_delta = 0.0;
-    for (std::size_t v = 0; v < count; ++v) {
-        const double dx = a[v * 4 + 0] - b[v * 4 + 0];
-        const double dy = a[v * 4 + 1] - b[v * 4 + 1];
-        const double dz = a[v * 4 + 2] - b[v * 4 + 2];
-        max_delta = std::max(max_delta, std::sqrt(dx * dx + dy * dy + dz * dz));
+    double maximum = 0.0;
+    for (std::size_t vertex = 0; vertex < count; ++vertex) {
+        const double dx = first[vertex * 4 + 0] - second[vertex * 4 + 0];
+        const double dy = first[vertex * 4 + 1] - second[vertex * 4 + 1];
+        const double dz = first[vertex * 4 + 2] - second[vertex * 4 + 2];
+        maximum = std::max(maximum, std::sqrt(dx * dx + dy * dy + dz * dz));
     }
-    return max_delta;
+    return maximum;
 }
 
-void dump_posed(const exec::OrlBuffer& bind, const exec::OrlBuffer& posed, const vkkk::Mesh& mesh,
-    int vertex_offset) {
+void dump_posed(const exec::OrlBuffer& bind,
+    const exec::OrlBuffer& posed,
+    const vkkk::Mesh& mesh)
+{
     const auto count = std::min(bind.count(), posed.count());
-    const auto* a = static_cast<const double*>(bind.data());
-    const auto* b = static_cast<const double*>(posed.data());
-    std::ofstream out("orl_debug_posed.txt", std::ios::trunc);
-    if (!out || a == nullptr || b == nullptr) {
+    const auto* first = static_cast<const double*>(bind.data());
+    const auto* second = static_cast<const double*>(posed.data());
+    const int offset = vertex_float_offset(mesh);
+    std::ofstream output("orl_debug_posed.txt", std::ios::trunc);
+    if (!output || first == nullptr || second == nullptr) {
         std::cerr << "Deformer: could not write orl_debug_posed.txt\n";
         return;
     }
-    out << "# vertex\tbind_xyz\tposed_xyz\tcpu_vbuf_xyz\n";
+    output << "# vertex\tbind_xyz\tposed_xyz\tcpu_vbuf_xyz\n";
     const std::size_t preview = std::min<std::size_t>(count, 8);
-    std::cout << "Deformer: posed preview\n";
-    for (std::size_t v = 0; v < preview; ++v) {
-        float cx = 0.0f;
-        float cy = 0.0f;
-        float cz = 0.0f;
-        if (mesh.vbuf != nullptr && vertex_offset >= 0) {
-            const float* cpu = mesh.vbuf + v * mesh.comp_size + vertex_offset;
-            cx = cpu[0];
-            cy = cpu[1];
-            cz = cpu[2];
+    for (std::size_t vertex = 0; vertex < preview; ++vertex) {
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+        if (mesh.vbuf != nullptr && offset >= 0) {
+            const float* source = mesh.vbuf + vertex * mesh.comp_size + offset;
+            x = source[0];
+            y = source[1];
+            z = source[2];
         }
-        std::cout << "  vert " << v
-            << " bind=(" << a[v * 4 + 0] << ", " << a[v * 4 + 1] << ", " << a[v * 4 + 2] << ")"
-            << " posed=(" << b[v * 4 + 0] << ", " << b[v * 4 + 1] << ", " << b[v * 4 + 2] << ")"
-            << " cpu=(" << cx << ", " << cy << ", " << cz << ")\n";
-        out << v << '\t'
-            << a[v * 4 + 0] << '\t' << a[v * 4 + 1] << '\t' << a[v * 4 + 2] << '\t'
-            << b[v * 4 + 0] << '\t' << b[v * 4 + 1] << '\t' << b[v * 4 + 2] << '\t'
-            << cx << '\t' << cy << '\t' << cz << '\n';
+        output << vertex << '\t'
+            << first[vertex * 4 + 0] << '\t' << first[vertex * 4 + 1] << '\t'
+            << first[vertex * 4 + 2] << '\t' << second[vertex * 4 + 0] << '\t'
+            << second[vertex * 4 + 1] << '\t' << second[vertex * 4 + 2] << '\t'
+            << x << '\t' << y << '\t' << z << '\n';
     }
     std::cout << "Deformer: wrote orl_debug_posed.txt\n";
 }
@@ -221,8 +195,7 @@ DeformerFeature::DeformerFeature(vkkk::Scene& scene, ComponentManager& component
     , deformer_id(deformer_id)
     , weight_id(weight_id)
     , selection(selection)
-    , joints("Joint", orlviewer::kJointStride)
-    , output_positions("point", sizeof(double) * 4)
+    , runner(backend_from_config())
 {
 }
 
@@ -270,74 +243,11 @@ void DeformerFeature::on_update(vkkk::Context& context, const vkkk::Context::Fra
         pending = false;
         setup(context);
     }
-    if (const auto* deformer = components.deformer(deformer_id); deformer != nullptr && deformer->bound) {
+    if (const auto* deformer = components.deformer(deformer_id);
+        deformer != nullptr && deformer->bound)
+    {
         evaluate(context);
     }
-}
-
-bool DeformerFeature::ensure_programs() {
-    const auto backend = backend_from_config();
-    if (compiled == type_name && capture_program.has_value() && capture_program->valid()
-        && capture_execution.has_value() && capture_execution->valid()
-        && deform_program.has_value() && deform_program->valid()
-        && deform_execution.has_value() && deform_execution->valid()
-        && capture_execution->backend() == backend
-        && deform_execution->backend() == backend)
-    {
-        capture_execution->clear_bindings();
-        deform_execution->clear_bindings();
-        return true;
-    }
-
-    capture_program.reset();
-    capture_execution.reset();
-    deform_program.reset();
-    deform_execution.reset();
-    compiled.clear();
-
-    const std::string source = "use deformer/" + type_name + ";\n";
-    auto compiled_capture = exec::OrlProgram::Compile(source, {
-        .entry_function = "deformer_" + type_name + "_capture_bind",
-        .source_name = "orl_deformer_capture",
-    });
-    if (!compiled_capture.valid()) {
-        print_exec_errors("compile capture", compiled_capture.errors());
-        return false;
-    }
-    auto compiled_deform = exec::OrlProgram::Compile(source, {
-        .entry_function = "deformer_" + type_name,
-        .source_name = "orl_deformer",
-    });
-    if (!compiled_deform.valid()) {
-        print_exec_errors("compile deform", compiled_deform.errors());
-        return false;
-    }
-
-    auto capture_exec = exec::OrlExecution::Create(compiled_capture, backend);
-    if (!capture_exec.valid()) {
-        std::cerr << "Deformer: " << compute_device_label()
-            << " backend requested, capture execution init failed\n";
-        print_exec_errors("jit capture", capture_exec.errors());
-        return false;
-    }
-    auto deform_exec = exec::OrlExecution::Create(compiled_deform, backend);
-    if (!deform_exec.valid()) {
-        std::cerr << "Deformer: " << compute_device_label()
-            << " backend requested, deform execution init failed\n";
-        print_exec_errors("jit deform", deform_exec.errors());
-        return false;
-    }
-
-    capture_program = std::move(compiled_capture);
-    capture_execution = std::move(capture_exec);
-    deform_program = std::move(compiled_deform);
-    deform_execution = std::move(deform_exec);
-    compiled = type_name;
-    std::cout << "Deformer: execution backend "
-        << (deform_execution->backend() == exec::Backend::Cuda ? "CUDA" : "CPU") << '\n';
-    write_text_file("orl_debug_deformer_capture.ll", capture_execution->ir());
-    write_text_file("orl_debug_deformer.ll", deform_execution->ir());
-    return true;
 }
 
 bool DeformerFeature::setup(vkkk::Context& context) {
@@ -365,7 +275,6 @@ bool DeformerFeature::setup(vkkk::Context& context) {
         std::cerr << "Deformer: mesh '" << mesh_name << "' not found\n";
         return false;
     }
-
     const auto packed = components.packed_joints();
     if (packed.empty()) {
         std::cerr << "Deformer: no joints\n";
@@ -375,43 +284,26 @@ bool DeformerFeature::setup(vkkk::Context& context) {
         std::cerr << "Deformer: skipped, auto-weight did not fill weight buffers\n";
         return false;
     }
-
-    if (!ensure_programs()) {
-        return false;
-    }
-    if (backend_from_config() == exec::Backend::Cuda
+    if (runner.backend() == exec::Backend::Cuda
         && !context.make_mesh_deformable(mesh_name, *mesh))
     {
         std::cerr << "Deformer: failed to create rest/draw GPU buffers for '"
             << mesh_name << "'\n";
         return false;
     }
-    deformer->bind_model = selection.selected_mesh_model();
-    if (!fill_positions(deformer->bind_positions, *mesh, deformer->bind_model)
-        || !fill_joints(joints, packed)
-        || !deformer->inverse_binds.resize(packed.size()))
-    {
+
+    orlrig::MeshData input;
+    if (!extract_mesh(input, *mesh, selection.selected_mesh_model())) {
         std::cerr << "Deformer: failed to pack bind pose\n";
         return false;
     }
-
-    if (!capture_execution->bind_buffer("joints", joints)
-        || !capture_execution->bind_buffer("inverse_binds", deformer->inverse_binds)
-        || !capture_execution->bind_int("joint_count", static_cast<std::int64_t>(packed.size())))
-    {
-        print_exec_errors("bind capture", capture_execution->errors());
+    const auto status = runner.capture_bind(*deformer, input, packed);
+    if (!status) {
+        print_runner_errors(status.errors);
         return false;
     }
-
-    const auto captured = capture_execution->evaluate(1);
-    if (!captured.has_value()) {
-        print_exec_errors("capture", capture_execution->errors());
-        return false;
-    }
-
     deformer->mesh_name = mesh_name;
     deformer->type = type_name;
-    deformer->bound = true;
     logged_rest = false;
     logged_move = false;
     dump_bind_snapshot(packed, deformer->inverse_binds);
@@ -426,8 +318,7 @@ bool DeformerFeature::evaluate(vkkk::Context& context) {
     if (deformer == nullptr || weight == nullptr || !deformer->bound) {
         return false;
     }
-
-    std::string mesh_name = deformer->mesh_name;
+    const std::string mesh_name = deformer->mesh_name;
     if (mesh_name.empty() || scene.drawable_mgr == nullptr) {
         return false;
     }
@@ -435,87 +326,43 @@ bool DeformerFeature::evaluate(vkkk::Context& context) {
     if (mesh == nullptr) {
         return false;
     }
-
     const auto packed = components.packed_joints();
-    if (packed.empty() || packed.size() != deformer->inverse_binds.count()) {
-        return false;
-    }
-    if (!ensure_programs()) {
-        return false;
-    }
-    if (!fill_joints(joints, packed) || !output_positions.resize(mesh->vcnt)) {
+    if (packed.empty()
+        || packed.size() != deformer->inverse_binds.count())
+    {
         return false;
     }
 
-    const auto weight_cnt = std::max<std::int64_t>(1, weight->weight_cnt);
-    const auto vertex_count = static_cast<std::int64_t>(mesh->vcnt);
-    const auto joint_count = static_cast<std::int64_t>(packed.size());
-    for (const auto& parameter : deform_program->parameters()) {
-        bool ok = true;
-        if (parameter.name == "bind_positions") {
-            ok = deform_execution->bind_buffer("bind_positions", deformer->bind_positions);
-        }
-        else if (parameter.name == "output_positions") {
-            ok = deform_execution->bind_buffer("output_positions", output_positions);
-        }
-        else if (parameter.name == "joints") {
-            ok = deform_execution->bind_buffer("joints", joints);
-        }
-        else if (parameter.name == "inverse_binds") {
-            ok = deform_execution->bind_buffer("inverse_binds", deformer->inverse_binds);
-        }
-        else if (parameter.name == "weights") {
-            ok = deform_execution->bind_buffer("weights", weight->weights);
-        }
-        else if (parameter.name == "vertex_count") {
-            ok = deform_execution->bind_int("vertex_count", vertex_count);
-        }
-        else if (parameter.name == "joint_count") {
-            ok = deform_execution->bind_int("joint_count", joint_count);
-        }
-        else if (parameter.name == "weight_cnt") {
-            ok = deform_execution->bind_int("weight_cnt", weight_cnt);
-        }
-        else {
-            std::cerr << "Deformer: unhandled parameter '" << parameter.name << "'\n";
-            return false;
-        }
-        if (!ok) {
-            print_exec_errors("bind deform", deform_execution->errors());
-            return false;
-        }
+    const bool device_only = runner.backend() == exec::Backend::Cuda;
+    const auto status = runner.evaluate(*deformer, *weight, packed, device_only);
+    if (!status) {
+        print_runner_errors(status.errors);
+        deformer->bound = false;
+        return false;
     }
 
-    if (deform_execution->backend() == exec::Backend::Cuda) {
-        if (!deform_execution->evaluate_device(static_cast<std::uint32_t>(mesh->vcnt))) {
-            print_exec_errors("evaluate", deform_execution->errors());
-            deformer->bound = false;
-            return false;
-        }
-        const auto output_device = deform_execution->device_buffer_view("output_positions");
-        const int vertex_offset = vertex_float_offset(*mesh);
-        if (!output_device.has_value() || vertex_offset < 0) {
+    if (device_only) {
+        const auto output_device = runner.output_device();
+        if (!output_device.has_value()) {
             std::cerr << "Deformer: CUDA output buffer is unavailable\n";
             deformer->bound = false;
             return false;
         }
-
-        glm::mat4 aligned_model{1.0f};
-        std::memcpy(&aligned_model, &deformer->bind_model, sizeof(aligned_model));
-        const glm::mat4 to_object = glm::inverse(aligned_model);
+        const glm::mat4 to_object = glm::inverse(deformer->bind_model);
         float matrix_float[16] = {};
         std::memcpy(matrix_float, &to_object, sizeof(matrix_float));
         double world_to_object[16] = {};
-        for (int i = 0; i < 16; ++i) {
-            world_to_object[i] = static_cast<double>(matrix_float[i]);
+        for (int index = 0; index < 16; ++index) {
+            world_to_object[index] = static_cast<double>(matrix_float[index]);
         }
-        if (!context.write_mesh_positions_from_cuda(mesh_name, output_device->device_ptr,
-                output_device->bytes, mesh->vcnt, mesh->comp_size,
-                static_cast<std::uint32_t>(vertex_offset),
-                world_to_object))
+        const int offset = vertex_float_offset(*mesh);
+        if (offset < 0 || !context.write_mesh_positions_from_cuda(
+                mesh_name, output_device->device_ptr, output_device->bytes,
+                mesh->vcnt, mesh->comp_size,
+                static_cast<std::uint32_t>(offset), world_to_object))
         {
-            std::cerr << "Deformer: CUDA-Vulkan mesh update failed for '" << mesh_name
-                << "'; see vkkk CUDA interop diagnostics above\n";
+            std::cerr << "Deformer: CUDA-Vulkan mesh update failed for '"
+                << mesh_name << "'\n";
             deformer->bound = false;
             return false;
         }
@@ -526,24 +373,18 @@ bool DeformerFeature::evaluate(vkkk::Context& context) {
         return true;
     }
 
-    const auto result = deform_execution->evaluate(static_cast<std::uint32_t>(mesh->vcnt));
-    if (!result.has_value()) {
-        print_exec_errors("evaluate", deform_execution->errors());
-        deformer->bound = false;
-        return false;
-    }
-
-    if (!write_positions(*mesh, output_positions, deformer->bind_model)) {
+    const auto& output = runner.output_positions();
+    if (!write_positions(*mesh, output, deformer->bind_model)) {
         std::cerr << "Deformer: failed to write mesh positions\n";
         return false;
     }
-    const double delta = max_position_delta(deformer->bind_positions, output_positions);
+    const double delta = max_position_delta(deformer->bind_positions, output);
     if (!logged_rest) {
         std::cout << "Deformer: rest evaluate max |posed-bind|=" << delta << '\n';
         logged_rest = true;
     } else if (!logged_move && delta > 1.0e-3) {
         std::cout << "Deformer: mesh moved, max |posed-bind|=" << delta << '\n';
-        dump_posed(deformer->bind_positions, output_positions, *mesh, vertex_float_offset(*mesh));
+        dump_posed(deformer->bind_positions, output, *mesh);
         logged_move = true;
     }
     if (!context.update_mesh(mesh_name, *mesh)) {

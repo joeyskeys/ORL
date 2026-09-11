@@ -23,10 +23,10 @@ cmake_policy(SET CMP0074 NEW)
 include_directories(src/include)
 
 #include(flexbison)
+find_package(GLM CONFIG REQUIRED)
 add_subdirectory(src/orlcomp)
 add_subdirectory(src/orlexec)
 
-find_package(GLM CONFIG REQUIRED)
 find_package(Eigen3 CONFIG REQUIRED)
 #find_package(cglm CONFIG QUIET)
 

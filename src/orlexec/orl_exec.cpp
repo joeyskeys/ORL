@@ -15,6 +15,7 @@
 #include "orl_jit.h"
 #include "orl_parser.h"
 #include "orl_runtime_signature.h"
+#include "orlrig/abi.hpp"
 
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
@@ -39,13 +40,11 @@ std::size_t element_stride_for(std::string_view type_name) {
     if (type_name == "matrix") {
         return sizeof(double) * 16;
     }
-    if (type_name == "Joint") {
-        // Matches orlviewer::kJointStride and the unpacked LLVM Joint ABI.
-        return 128;
+    if (type_name == orlrig::kJointOrlType) {
+        return orlrig::kJointStride;
     }
-    if (type_name == "Weight") {
-        // Matches orlviewer::kWeightStride: float weight, int joint.
-        return 16;
+    if (type_name == orlrig::kWeightOrlType) {
+        return orlrig::kWeightStride;
     }
     return 0;
 }

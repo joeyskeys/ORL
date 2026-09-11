@@ -1,7 +1,7 @@
 // Skin-weight cell: one (value, joint) pair.
 //   use weight;
 //
-// Host/GPU storage is orlviewer/comps/Weight. Keep the 16-byte ABI:
+// Host/GPU storage is the src/orlexec/orlrig Weight ABI. Keep the 16-byte ABI:
 //   float weight at 0, int joint at 8.
 // Buffer layout is vertex-major: weights[vertex * weight_cnt + slot].
 // Length is weight_cnt * vertex_count. Unused slots are weight 0, joint -1.

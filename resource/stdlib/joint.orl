@@ -1,7 +1,7 @@
 // ORL standard joint. Users pull this in instead of a language-level joint type:
 //   use joint;
 //
-// Host/GPU storage is orlviewer/comps/Joint. Keep the 128-byte ABI:
+// Host/GPU storage is the src/orlexec/orlrig Joint ABI. Keep the 128-byte ABI:
 //   i64 parent, i64 selected, 16 bytes pad, then 32-byte TRS slots.
 // selected/pad are viewer flags; skinning only uses parent+TRS.
 

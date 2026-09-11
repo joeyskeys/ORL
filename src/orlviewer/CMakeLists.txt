@@ -26,6 +26,7 @@ target_link_libraries(orl_viewer
     PRIVATE
         vkkk
         orlexec
+        orlrig
         Eigen3::Eigen
         RapidJSON
 )

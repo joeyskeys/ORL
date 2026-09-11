@@ -1,10 +1,7 @@
 #pragma once
 
-#include <optional>
-#include <string>
-
 #include "component_manager.hpp"
-#include "orl_exec.hpp"
+#include "../../orlexec/orlrig/runners.hpp"
 #include "vp/feature.hpp"
 
 namespace ORL
@@ -19,15 +16,10 @@ public:
     void on_update(vkkk::Context&, const vkkk::Context::Frame&);
 
 private:
-    bool ensure_program();
     bool evaluate_two_bone(ConstraintData& constraint);
 
     ComponentManager& components;
-    std::optional<exec::OrlProgram> program;
-    std::optional<exec::OrlExecution> execution;
-    exec::OrlBuffer joints;
-    exec::OrlBuffer target_xform;
-    exec::OrlBuffer pole_xform;
+    orlrig::SolverRunner runner;
 };
 
 } // namespace ORL

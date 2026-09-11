@@ -7,6 +7,7 @@
 #include <glm/geometric.hpp>
 #include <glm/vec3.hpp>
 
+#include "../../orlexec/orlrig/ik.hpp"
 #include "component_manager.hpp"
 #include "selection.hpp"
 #include "vp_operation.hpp"
@@ -43,27 +44,23 @@ public:
             return;
         }
 
-        const auto mid_index = packed[static_cast<std::size_t>(end_index)].parent;
-        if (mid_index < 0 || static_cast<std::size_t>(mid_index) >= packed.size()) {
-            std::cerr << "IK: end joint needs a parent and grandparent\n";
-            return;
-        }
-        const auto root_index = packed[static_cast<std::size_t>(mid_index)].parent;
-        if (root_index < 0 || static_cast<std::size_t>(root_index) >= packed.size()) {
+        const auto chain = orlrig::make_two_bone_chain(packed, end_index);
+        if (!chain.has_value()) {
             std::cerr << "IK: end joint needs a parent and grandparent\n";
             return;
         }
 
         const auto ids = components.packed_joint_ids();
-        const ComponentId root_id = ids[static_cast<std::size_t>(root_index)];
-        const ComponentId mid_id = ids[static_cast<std::size_t>(mid_index)];
+        const ComponentId root_id = ids[static_cast<std::size_t>(chain->root)];
+        const ComponentId mid_id = ids[static_cast<std::size_t>(chain->mid)];
 
-        const glm::vec3 root_w{orlviewer::joint_world_matrix(packed, root_index)[3]};
-        const glm::vec3 mid_w{orlviewer::joint_world_matrix(packed, mid_index)[3]};
-        const glm::vec3 end_w{orlviewer::joint_world_matrix(packed, end_index)[3]};
+        const glm::vec3 root_w = chain->root_world;
+        const glm::vec3 mid_w = chain->mid_world;
+        const glm::vec3 end_w = chain->end_world;
 
         const auto target_id = create_handle("ik_target", end_w, orlviewer::ControllerShape::Curve);
-        const auto pole_id = create_handle("ik_pole", pole_position(root_w, mid_w, end_w),
+        const auto pole_id = create_handle("ik_pole",
+            orlrig::pole_position(root_w, mid_w, end_w),
             orlviewer::ControllerShape::Polygon);
         if (!target_id || !pole_id) {
             std::cerr << "IK: failed to create controllers\n";
@@ -138,26 +135,6 @@ private:
     {
         return components.create_controller(unique_name(prefix),
             orlviewer::make_controller(world, shape));
-    }
-
-    static glm::vec3 pole_position(const glm::vec3& root, const glm::vec3& mid, const glm::vec3& end) {
-        const glm::vec3 bone = end - root;
-        const float bone2 = glm::dot(bone, bone);
-        glm::vec3 side = mid - root;
-        if (bone2 > 1.0e-8f) {
-            side = side - bone * (glm::dot(side, bone) / bone2);
-        }
-        if (glm::length(side) < 1.0e-4f) {
-            side = glm::cross(bone, glm::vec3{0.0f, 1.0f, 0.0f});
-            if (glm::length(side) < 1.0e-4f) {
-                side = glm::cross(bone, glm::vec3{1.0f, 0.0f, 0.0f});
-            }
-        }
-        if (glm::length(side) < 1.0e-8f) {
-            return mid + glm::vec3{0.0f, 0.25f, 0.0f};
-        }
-        const float offset = std::max(glm::length(mid - root), 0.25f);
-        return mid + glm::normalize(side) * offset;
     }
 
     ComponentManager& components;

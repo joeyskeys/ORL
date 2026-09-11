@@ -1,61 +1,80 @@
 #include "component_manager.hpp"
 
+#include <utility>
+
 namespace ORL
 {
 
-ComponentId ComponentManager::create(std::string name, ComponentKind kind, Payload payload) {
-    if (name.empty() || names.contains(name)) {
-        return {};
-    }
+namespace
+{
 
-    const ComponentId id{next_id++};
-    Record rec;
-    rec.meta.id = id;
-    rec.meta.name = name;
-    rec.meta.kind = kind;
-    rec.payload = std::move(payload);
-    names.emplace(std::move(name), id.value);
-    records.emplace(id.value, std::move(rec));
-    if (kind == ComponentKind::Joint) {
-        joint_order.push_back(id);
+Component make_meta(ComponentId id, std::string name, ComponentKind kind) {
+    return Component{id, std::move(name), kind, {}};
+}
+
+} // namespace
+
+ComponentId ComponentManager::create_joint(std::string name, orlviewer::Joint joint) {
+    const auto id = store.create_joint(name, std::move(joint));
+    if (id) {
+        metadata.emplace(id.value, make_meta(id, std::move(name), ComponentKind::Joint));
     }
     return id;
 }
 
-ComponentId ComponentManager::create_joint(std::string name, orlviewer::Joint joint) {
-    return create(std::move(name), ComponentKind::Joint, std::move(joint));
-}
-
-ComponentId ComponentManager::create_controller(std::string name, orlviewer::Controller controller) {
-    return create(std::move(name), ComponentKind::Controller, std::move(controller));
+ComponentId ComponentManager::create_controller(std::string name,
+    orlviewer::Controller controller)
+{
+    orlrig::Controller core_controller;
+    core_controller.xform = controller.xform;
+    const auto id = store.create_controller(name, core_controller);
+    if (id) {
+        metadata.emplace(id.value, make_meta(id, name, ComponentKind::Controller));
+        controllers.emplace(id.value, std::move(controller));
+    }
+    return id;
 }
 
 ComponentId ComponentManager::create_curve(std::string name, CurveLink curve) {
-    return create(std::move(name), ComponentKind::Curve, std::move(curve));
+    const auto id = store.create_curve(name);
+    if (id) {
+        metadata.emplace(id.value, make_meta(id, name, ComponentKind::Curve));
+        curves.emplace(id.value, std::move(curve));
+    }
+    return id;
 }
 
 ComponentId ComponentManager::create_weight(std::string name, WeightData weight) {
-    return create(std::move(name), ComponentKind::Weight, std::move(weight));
+    const auto id = store.create_weight(name, std::move(weight));
+    if (id) {
+        metadata.emplace(id.value, make_meta(id, std::move(name), ComponentKind::Weight));
+    }
+    return id;
 }
 
 ComponentId ComponentManager::create_constraint(std::string name, ConstraintData constraint) {
-    return create(std::move(name), ComponentKind::Constraint, std::move(constraint));
+    const auto id = store.create_constraint(name, std::move(constraint));
+    if (id) {
+        metadata.emplace(id.value, make_meta(id, std::move(name), ComponentKind::Constraint));
+    }
+    return id;
 }
 
 ComponentId ComponentManager::create_deformer(std::string name, DeformerData deformer) {
-    return create(std::move(name), ComponentKind::Deformer, std::move(deformer));
+    const auto id = store.create_deformer(name, std::move(deformer));
+    if (id) {
+        metadata.emplace(id.value, make_meta(id, std::move(name), ComponentKind::Deformer));
+    }
+    return id;
 }
 
 bool ComponentManager::destroy(ComponentId id) {
-    const auto found = records.find(id.value);
-    if (found == records.end()) {
+    if (!store.destroy(id)) {
         return false;
     }
-    names.erase(found->second.meta.name);
-    if (found->second.meta.kind == ComponentKind::Joint) {
-        std::erase(joint_order, id);
-    }
-    records.erase(found);
+    metadata.erase(id.value);
+    controllers.erase(id.value);
+    curves.erase(id.value);
     return true;
 }
 
@@ -66,9 +85,9 @@ bool ComponentManager::destroy(std::string_view name) {
 
 void ComponentManager::destroy_kind(ComponentKind kind) {
     std::vector<ComponentId> ids;
-    for (const auto& [_, rec] : records) {
-        if (rec.meta.kind == kind) {
-            ids.push_back(rec.meta.id);
+    for (const auto& [_, meta] : metadata) {
+        if (meta.kind == kind) {
+            ids.push_back(meta.id);
         }
     }
     for (const ComponentId id : ids) {
@@ -77,28 +96,20 @@ void ComponentManager::destroy_kind(ComponentKind kind) {
 }
 
 bool ComponentManager::rename(ComponentId id, std::string new_name) {
-    auto* rec = record(id);
-    if (rec == nullptr || new_name.empty()) {
+    auto* meta = find(id);
+    if (meta == nullptr || !store.rename(id, new_name)) {
         return false;
     }
-    if (rec->meta.name == new_name) {
-        return true;
-    }
-    if (names.contains(new_name)) {
-        return false;
-    }
-    names.erase(rec->meta.name);
-    rec->meta.name = new_name;
-    names.emplace(std::move(new_name), id.value);
+    meta->name = std::move(new_name);
     return true;
 }
 
 bool ComponentManager::bind_display(ComponentId id, DisplayLink display) {
-    auto* rec = record(id);
-    if (rec == nullptr) {
+    auto* meta = find(id);
+    if (meta == nullptr) {
         return false;
     }
-    rec->meta.display = std::move(display);
+    meta->display = std::move(display);
     return true;
 }
 
@@ -107,132 +118,103 @@ bool ComponentManager::unbind_display(ComponentId id) {
 }
 
 const Component* ComponentManager::find(ComponentId id) const {
-    const auto* rec = record(id);
-    return rec == nullptr ? nullptr : &rec->meta;
+    const auto found = metadata.find(id.value);
+    return found == metadata.end() ? nullptr : &found->second;
 }
 
 Component* ComponentManager::find(ComponentId id) {
-    auto* rec = record(id);
-    return rec == nullptr ? nullptr : &rec->meta;
+    const auto found = metadata.find(id.value);
+    return found == metadata.end() ? nullptr : &found->second;
 }
 
 const Component* ComponentManager::find(std::string_view name) const {
-    const auto found = names.find(std::string{name});
-    if (found == names.end()) {
-        return nullptr;
+    for (const auto& [_, meta] : metadata) {
+        if (meta.name == name) {
+            return &meta;
+        }
     }
-    return find(ComponentId{found->second});
+    return nullptr;
 }
 
 Component* ComponentManager::find(std::string_view name) {
-    const auto found = names.find(std::string{name});
-    if (found == names.end()) {
-        return nullptr;
+    for (auto& [_, meta] : metadata) {
+        if (meta.name == name) {
+            return &meta;
+        }
     }
-    return find(ComponentId{found->second});
+    return nullptr;
 }
 
 orlviewer::Joint* ComponentManager::joint(ComponentId id) {
-    return payload_as<orlviewer::Joint>(id);
+    return store.joint(id);
 }
 
 const orlviewer::Joint* ComponentManager::joint(ComponentId id) const {
-    return payload_as<orlviewer::Joint>(id);
+    return store.joint(id);
 }
 
 orlviewer::Controller* ComponentManager::controller(ComponentId id) {
-    return payload_as<orlviewer::Controller>(id);
+    const auto found = controllers.find(id.value);
+    return found == controllers.end() ? nullptr : &found->second;
 }
 
 const orlviewer::Controller* ComponentManager::controller(ComponentId id) const {
-    return payload_as<orlviewer::Controller>(id);
+    const auto found = controllers.find(id.value);
+    return found == controllers.end() ? nullptr : &found->second;
 }
 
 CurveLink* ComponentManager::curve(ComponentId id) {
-    return payload_as<CurveLink>(id);
+    const auto found = curves.find(id.value);
+    return found == curves.end() ? nullptr : &found->second;
 }
 
 const CurveLink* ComponentManager::curve(ComponentId id) const {
-    return payload_as<CurveLink>(id);
+    const auto found = curves.find(id.value);
+    return found == curves.end() ? nullptr : &found->second;
 }
 
 WeightData* ComponentManager::weight(ComponentId id) {
-    return payload_as<WeightData>(id);
+    return store.weight(id);
 }
 
 const WeightData* ComponentManager::weight(ComponentId id) const {
-    return payload_as<WeightData>(id);
+    return store.weight(id);
 }
 
 ConstraintData* ComponentManager::constraint(ComponentId id) {
-    return payload_as<ConstraintData>(id);
+    return store.constraint(id);
 }
 
 const ConstraintData* ComponentManager::constraint(ComponentId id) const {
-    return payload_as<ConstraintData>(id);
+    return store.constraint(id);
 }
 
 DeformerData* ComponentManager::deformer(ComponentId id) {
-    return payload_as<DeformerData>(id);
+    return store.deformer(id);
 }
 
 const DeformerData* ComponentManager::deformer(ComponentId id) const {
-    return payload_as<DeformerData>(id);
+    return store.deformer(id);
 }
 
 std::size_t ComponentManager::size(ComponentKind kind) const {
-    std::size_t count = 0;
-    for (const auto& [_, rec] : records) {
-        if (rec.meta.kind == kind) {
-            ++count;
-        }
-    }
-    return count;
+    return store.size(kind);
 }
 
 bool ComponentManager::contains(std::string_view name) const {
-    return names.contains(std::string{name});
+    return store.contains(name);
 }
 
 std::vector<orlviewer::Joint> ComponentManager::packed_joints() const {
-    std::vector<orlviewer::Joint> joints;
-    joints.reserve(joint_order.size());
-    for (const ComponentId id : joint_order) {
-        if (const auto* value = joint(id)) {
-            joints.push_back(*value);
-        }
-    }
-    return joints;
+    return store.packed_joints();
 }
 
 std::vector<ComponentId> ComponentManager::packed_joint_ids() const {
-    std::vector<ComponentId> ids;
-    ids.reserve(joint_order.size());
-    for (const ComponentId id : joint_order) {
-        if (joint(id) != nullptr) {
-            ids.push_back(id);
-        }
-    }
-    return ids;
+    return store.packed_joint_ids();
 }
 
 std::int64_t ComponentManager::joint_index(ComponentId id) const {
-    for (std::size_t i = 0; i < joint_order.size(); ++i) {
-        if (joint_order[i] == id) {
-            return static_cast<std::int64_t>(i);
-        }
-    }
-    return -1;
-}
-
-ComponentManager::Record* ComponentManager::record(ComponentId id) {
-    const auto found = records.find(id.value);
-    return found == records.end() ? nullptr : &found->second;
-}
-
-const ComponentManager::Record* ComponentManager::record(ComponentId id) const {
-    const auto found = records.find(id.value);
-    return found == records.end() ? nullptr : &found->second;
+    return store.joint_index(id);
 }
 
 } // namespace ORL
