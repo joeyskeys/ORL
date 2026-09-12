@@ -8,6 +8,8 @@ add_executable(orl_viewer
     comps/controller_curves.hpp
     comps/weight.hpp
     comps/deformer.hpp
+    graph_scene_inputs.cpp
+    graph_scene_inputs.hpp
     ops/load_model_op.cpp
     ops/clear_scene_op.cpp
     ops/create_joint_op.cpp
@@ -63,6 +65,8 @@ if(ORL_USE_QT6)
     target_sources(orl_viewer PRIVATE
         qt/node_graph_editor.cpp
         qt/node_graph_editor.hpp
+        node_graph/node_ops.cpp
+        node_graph/node_ops.hpp
     )
     target_compile_definitions(orl_viewer PRIVATE ORL_USE_QT6=1)
     if(NOT TARGET Qt6::Widgets)

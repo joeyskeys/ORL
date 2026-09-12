@@ -82,6 +82,8 @@ private:
 struct CompileOptions {
     std::string entry_function = "compute";
     std::string source_name = "orl_runtime_program";
+    // Additional directories searched by `use module;` during parsing.
+    std::vector<std::string> include_paths;
 };
 
 // Parsed, application-facing description of an ORL entry function. The source

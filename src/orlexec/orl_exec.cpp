@@ -258,6 +258,9 @@ OrlProgram OrlProgram::Compile(std::string source, CompileOptions options) {
     impl->options = std::move(options);
 
     orlcomp::Parser parser(impl->source);
+    for (const auto& include_path : impl->options.include_paths) {
+        parser.AddIncludePath(include_path);
+    }
     if (!parse_source(impl->source, parser, impl->errors)) {
         return OrlProgram(std::move(impl));
     }
@@ -470,6 +473,9 @@ struct OrlExecution::Impl {
     bool initialize() {
         const auto t0 = Clock::now();
         orlcomp::Parser parser(program->source);
+        for (const auto& include_path : program->options.include_paths) {
+            parser.AddIncludePath(include_path);
+        }
         if (!parse_source(program->source, parser, errors)) {
             print_jit(program->options.entry_function, backend, program->options.source_name,
                 elapsed_ms(t0), 0, 0, 0, false);

@@ -4,6 +4,7 @@
 #include "graph_validation.hpp"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace orlrig
@@ -17,6 +18,17 @@ struct RigGraphResourceIds {
     orlgraph::StableId weights;
 };
 
+inline constexpr std::string_view kSceneJointsBinding = "scene.rig.joints";
+inline constexpr std::string_view kSceneJointCountBinding = "scene.rig.joint_count";
+
+std::string scene_mesh_positions_binding(std::string_view object_name);
+std::string scene_mesh_vertex_count_binding(std::string_view object_name);
+std::string scene_weight_buffer_binding(std::string_view component_name);
+std::string scene_weight_count_binding(std::string_view component_name);
+std::string scene_inverse_bindings_binding(std::string_view component_name);
+std::string scene_controller_xform_binding(std::string_view component_name);
+std::string scene_controller_count_binding(std::string_view component_name);
+
 struct RigGraph {
     orlgraph::GraphModule module;
     orlgraph::NodeRegistry registry;
@@ -28,7 +40,7 @@ struct RigGraph {
 // Describes renderer-independent resources used by the standard LBS graph.
 RigGraphResourceIds add_lbs_resources(orlgraph::GraphModule& module);
 
-// Registers runtime node definitions for the standalone rigging pipeline.
+// Registers standard runtime and stdlib node definitions for rig graphs.
 bool register_rig_node_definitions(orlgraph::NodeRegistry& registry,
     std::string* error = nullptr);
 

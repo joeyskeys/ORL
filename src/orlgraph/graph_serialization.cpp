@@ -1007,6 +1007,156 @@ bool parse_resource(const Json& value, Resource* output,
     return true;
 }
 
+bool parse_graph(const Json& value, GraphModule* output,
+    std::vector<Diagnostic>* diagnostics)
+{
+    if (!value.IsObject()) {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_INVALID_GRAPH",
+            "Graph section is not an object", {}, {}, {},
+        });
+        return false;
+    }
+
+    bool valid = true;
+    valid = read_string(value, "module_id", &output->module_id, diagnostics)
+        && valid;
+    const Json* version = member(value, "version");
+    if (version != nullptr) {
+        valid = parse_version(*version, &output->version, diagnostics) && valid;
+    }
+    read_string(value, "language_version",
+        &output->language_version, diagnostics, false);
+    read_string(value, "logical_abi_version",
+        &output->logical_abi_version, diagnostics, false);
+
+    const Json* inputs = member(value, "inputs");
+    if (inputs == nullptr || !inputs->IsArray()) {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_INVALID_ARRAY",
+            "Graph inputs must be an array", {}, {}, {},
+        });
+        valid = false;
+    } else {
+        for (const auto& item : inputs->GetArray()) {
+            InterfacePort port;
+            if (parse_interface(item, &port, diagnostics)
+                && !output->add_input(std::move(port))) {
+                diagnostics->push_back({
+                    DiagnosticSeverity::Error, "ORLGRAPH_INVALID_GRAPH",
+                    "Unable to add graph input", {}, {}, {},
+                });
+                valid = false;
+            }
+        }
+    }
+
+    const Json* outputs = member(value, "outputs");
+    if (outputs == nullptr || !outputs->IsArray()) {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_INVALID_ARRAY",
+            "Graph outputs must be an array", {}, {}, {},
+        });
+        valid = false;
+    } else {
+        for (const auto& item : outputs->GetArray()) {
+            InterfacePort port;
+            if (parse_interface(item, &port, diagnostics)
+                && !output->add_output(std::move(port))) {
+                diagnostics->push_back({
+                    DiagnosticSeverity::Error, "ORLGRAPH_INVALID_GRAPH",
+                    "Unable to add graph output", {}, {}, {},
+                });
+                valid = false;
+            }
+        }
+    }
+
+    const Json* resources = member(value, "resources");
+    if (resources == nullptr || !resources->IsArray()) {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_INVALID_ARRAY",
+            "Graph resources must be an array", {}, {}, {},
+        });
+        valid = false;
+    } else {
+        for (const auto& item : resources->GetArray()) {
+            Resource resource;
+            if (parse_resource(item, &resource, diagnostics)
+                && !output->add_resource(std::move(resource))) {
+                diagnostics->push_back({
+                    DiagnosticSeverity::Error, "ORLGRAPH_INVALID_GRAPH",
+                    "Unable to add graph resource", {}, {}, {},
+                });
+                valid = false;
+            }
+        }
+    }
+
+    const Json* nodes = member(value, "nodes");
+    if (nodes == nullptr || !nodes->IsArray()) {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_INVALID_ARRAY",
+            "Graph nodes must be an array", {}, {}, {},
+        });
+        valid = false;
+    } else {
+        for (const auto& item : nodes->GetArray()) {
+            NodeInstance node;
+            if (parse_node(item, &node, diagnostics)
+                && !output->add_node(std::move(node))) {
+                diagnostics->push_back({
+                    DiagnosticSeverity::Error, "ORLGRAPH_INVALID_GRAPH",
+                    "Unable to add graph node", {}, {}, {},
+                });
+                valid = false;
+            }
+        }
+    }
+
+    const Json* connections = member(value, "connections");
+    if (connections == nullptr || !connections->IsArray()) {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_INVALID_ARRAY",
+            "Graph connections must be an array", {}, {}, {},
+        });
+        valid = false;
+    } else {
+        for (const auto& item : connections->GetArray()) {
+            Connection connection;
+            const Json* source = member(item, "source");
+            const Json* destination = member(item, "destination");
+            if (source == nullptr || destination == nullptr
+                || !parse_endpoint(*source, &connection.source, diagnostics)
+                || !parse_endpoint(*destination, &connection.destination,
+                    diagnostics))
+            {
+                valid = false;
+                continue;
+            }
+            read_string(item, "conversion", &connection.conversion,
+                diagnostics, false);
+            const Json* shape = member(item, "shape");
+            if (shape != nullptr) {
+                parse_shape(*shape, &connection.shape, diagnostics);
+            }
+            const Json* provenance = member(item, "provenance");
+            if (provenance != nullptr) {
+                parse_provenance(*provenance, &connection.provenance, diagnostics);
+            }
+            read_bool(item, "feedback", &connection.feedback, diagnostics);
+            if (!output->add_connection(std::move(connection))) {
+                diagnostics->push_back({
+                    DiagnosticSeverity::Error, "ORLGRAPH_INVALID_GRAPH",
+                    "Unable to add graph connection", {}, {}, {},
+                });
+                valid = false;
+            }
+        }
+    }
+    return valid;
+}
+
 } // namespace
 
 std::string oro_content_hash(std::string_view canonical_text) {
@@ -1275,6 +1425,198 @@ OroDocument load_oro(const std::string& path) {
     std::ostringstream contents;
     contents << input.rdbuf();
     return deserialize_oro(contents.str());
+}
+
+GraphJsonSerializationResult serialize_graph_json(const GraphModule& module)
+{
+    GraphJsonSerializationResult result;
+    rapidjson::Document document;
+    document.SetObject();
+    auto& allocator = document.GetAllocator();
+
+    Json header(rapidjson::kObjectType);
+    add(header, "magic", string_value(kGraphJsonMagic, allocator), allocator);
+    add(header, "format_version",
+        Json(kGraphJsonFormatVersion), allocator);
+    add(header, "language_version",
+        string_value(module.language_version, allocator), allocator);
+    add(header, "logical_abi_version",
+        string_value(module.logical_abi_version, allocator), allocator);
+    add(header, "module_id", string_value(module.module_id, allocator), allocator);
+    add(header, "content_hash", string_value("", allocator), allocator);
+    add(document, "header", std::move(header), allocator);
+    add(document, "graph", graph_value(module, allocator), allocator);
+
+    const std::string base = write_json(document);
+    result.content_hash = hash_text(base);
+    auto& header_value = document["header"];
+    header_value["content_hash"].SetString(
+        result.content_hash.data(),
+        static_cast<rapidjson::SizeType>(result.content_hash.size()),
+        allocator);
+    result.text = write_json(document);
+    result.ok = true;
+    return result;
+}
+
+GraphJsonDocument deserialize_graph_json(std::string_view text)
+{
+    GraphJsonDocument result;
+    rapidjson::Document document;
+    document.Parse(text.data(), text.size());
+    if (document.HasParseError() || !document.IsObject()) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_INVALID_JSON",
+            "The graph JSON payload is not valid JSON", {}, {}, {},
+        });
+        return result;
+    }
+
+    const Json* header = member(document, "header");
+    const Json* graph = member(document, "graph");
+    if (header == nullptr || graph == nullptr
+        || !header->IsObject() || !graph->IsObject())
+    {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_INVALID_DOCUMENT",
+            "The graph JSON document is missing required sections",
+            {}, {}, {},
+        });
+        return result;
+    }
+
+    std::string magic;
+    if (!read_string(*header, "magic", &magic, &result.diagnostics)
+        || magic != kGraphJsonMagic)
+    {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_BAD_MAGIC",
+            "The graph JSON magic value is invalid", {}, {}, {},
+        });
+        return result;
+    }
+
+    std::uint32_t format_version = 0;
+    read_u32(*header, "format_version", &format_version, &result.diagnostics);
+    if (format_version != kGraphJsonFormatVersion) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_UNSUPPORTED_FORMAT",
+            "Unsupported graph JSON format version", {}, {}, {},
+        });
+        return result;
+    }
+
+    std::string header_language;
+    std::string header_abi;
+    std::string header_module_id;
+    read_string(*header, "module_id", &header_module_id,
+        &result.diagnostics);
+    read_string(*header, "language_version", &header_language,
+        &result.diagnostics, false);
+    read_string(*header, "logical_abi_version", &header_abi,
+        &result.diagnostics, false);
+    if (!header_language.empty() && header_language != kOroLanguageVersion) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_LANGUAGE_MISMATCH",
+            "The graph JSON language version is not supported: "
+                + header_language, {}, {}, {},
+        });
+    }
+    if (!header_abi.empty() && header_abi != kOroLogicalAbiVersion) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_ABI_MISMATCH",
+            "The graph JSON logical ABI version is not supported: "
+                + header_abi, {}, {}, {},
+        });
+    }
+    read_string(*header, "content_hash", &result.content_hash,
+        &result.diagnostics, false);
+
+    parse_graph(*graph, &result.module, &result.diagnostics);
+    if (!header_module_id.empty()
+        && header_module_id != result.module.module_id)
+    {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_MODULE_MISMATCH",
+            "Graph JSON header module ID does not match the graph",
+            {}, {}, {},
+        });
+    }
+    if (result.module.language_version != kOroLanguageVersion) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_LANGUAGE_MISMATCH",
+            "Graph language version is not supported: "
+                + result.module.language_version, {}, {}, {},
+        });
+    }
+    if (result.module.logical_abi_version != kOroLogicalAbiVersion) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_ABI_MISMATCH",
+            "Graph logical ABI version is not supported: "
+                + result.module.logical_abi_version, {}, {}, {},
+        });
+    }
+
+    if (result.diagnostics.empty()) {
+        const auto canonical = serialize_graph_json(result.module);
+        if (canonical.ok && !result.content_hash.empty()
+            && canonical.content_hash != result.content_hash)
+        {
+            result.diagnostics.push_back({
+                DiagnosticSeverity::Error, "ORLGRAPH_HASH_MISMATCH",
+                "The graph JSON content hash does not match its canonical payload",
+                {}, {}, {},
+            });
+        }
+    }
+    result.ok = std::none_of(result.diagnostics.begin(), result.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.severity == DiagnosticSeverity::Error;
+        });
+    return result;
+}
+
+bool save_graph_json(const std::string& path, const GraphModule& module,
+    std::vector<Diagnostic>* diagnostics)
+{
+    const GraphJsonSerializationResult serialized =
+        serialize_graph_json(module);
+    if (diagnostics != nullptr) {
+        *diagnostics = serialized.diagnostics;
+    }
+    if (!serialized.ok) {
+        return false;
+    }
+    std::ofstream output(path, std::ios::binary);
+    if (!output.is_open()) {
+        if (diagnostics != nullptr) {
+            diagnostics->push_back({
+                DiagnosticSeverity::Error, "ORLGRAPH_WRITE_FAILED",
+                "Unable to open graph JSON output file: " + path,
+                {}, {}, {},
+            });
+        }
+        return false;
+    }
+    output << serialized.text;
+    return static_cast<bool>(output);
+}
+
+GraphJsonDocument load_graph_json(const std::string& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+        GraphJsonDocument result;
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_READ_FAILED",
+            "Unable to open graph JSON input file: " + path,
+            {}, {}, {},
+        });
+        return result;
+    }
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    return deserialize_graph_json(contents.str());
 }
 
 } // namespace orlgraph

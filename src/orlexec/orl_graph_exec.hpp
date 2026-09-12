@@ -4,6 +4,7 @@
 
 #include "orl_graph_lowering.h"
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -12,6 +13,19 @@
 
 namespace ORL::exec
 {
+
+struct GraphInputBinding {
+    ParameterKind kind = ParameterKind::Unsupported;
+    OrlBuffer* buffer = nullptr;
+    std::uint64_t device_ptr = 0;
+    std::size_t bytes = 0;
+    std::size_t element_count = 0;
+    std::int64_t int_value = 0;
+    double float_value = 0.0;
+};
+
+using GraphInputResolver = std::function<bool(
+    const orlgraph::InterfacePort&, GraphInputBinding&, std::string&)>;
 
 class OrlGraphProgram {
 public:
@@ -47,6 +61,8 @@ public:
         std::uint64_t device_ptr, std::size_t bytes);
     bool bind_int(std::string_view parameter, std::int64_t value);
     bool bind_float(std::string_view parameter, double value);
+    bool bind_graph_inputs(const orlgraph::GraphModule& module,
+        const GraphInputResolver& resolver);
     void clear_bindings();
 
     std::optional<std::int64_t> evaluate(std::uint32_t element_count = 1);
@@ -63,6 +79,7 @@ private:
     OrlGraphExecution() = default;
 
     std::optional<OrlExecution> execution_;
+    std::vector<ParameterDesc> parameters_;
     std::vector<std::string> errors_;
 };
 

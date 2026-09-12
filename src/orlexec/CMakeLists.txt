@@ -20,6 +20,21 @@ target_link_libraries(orlexec
         orlcomp_graph_lowering
 )
 
+add_executable(orlc
+    ../orlcomp/orlc_main.cpp
+)
+
+target_link_libraries(orlc
+    PRIVATE
+        orlexec
+        orlcomp_analysis
+)
+
+if (TARGET orlgraph_io)
+    target_link_libraries(orlc PRIVATE orlgraph_io)
+    target_compile_definitions(orlc PRIVATE ORL_HAS_GRAPH_IO=1)
+endif()
+
 add_library(orlrig
     orlrig/component_store.cpp
     orlrig/runners.cpp

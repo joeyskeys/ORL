@@ -91,6 +91,38 @@ TEST_CASE("graph module validates typed connections", "[orlgraph][validation]") 
     REQUIRE(result.schedule.order == std::vector<StableId>{StableId{"add"}});
 }
 
+TEST_CASE("graph interface removal cleans its connections",
+    "[orlgraph][editing]")
+{
+    NodeRegistry registry;
+    REQUIRE(registry.register_definition(make_passthrough_definition()));
+
+    GraphModule module;
+    REQUIRE(module.add_input(InterfacePort{
+        StableId{"input"}, "input", PortDirection::Input,
+        LogicalType::int64(), Domain::constant(), Shape::scalar(), true,
+        std::nullopt, false, "scene.test.input", {}, {}}));
+    REQUIRE(module.add_output(InterfacePort{
+        StableId{"output"}, "output", PortDirection::Output,
+        LogicalType::int64(), Domain::constant(), Shape::scalar(), true,
+        std::nullopt, false, "scene.test.output", {}, {}}));
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"pass"}, StableId{"builtin.pass"}, "pass", {}, {},
+        InlinePolicy::Default}));
+    REQUIRE(module.add_connection(Connection{
+        Endpoint::graph_input(StableId{"input"}),
+        Endpoint::node_port(StableId{"pass"}, StableId{"value"})}));
+    REQUIRE(module.add_connection(Connection{
+        Endpoint::node_port(StableId{"pass"}, StableId{"result"}),
+        Endpoint::graph_output(StableId{"output"})}));
+
+    REQUIRE(module.remove_input(StableId{"input"}));
+    REQUIRE(module.input(StableId{"input"}) == nullptr);
+    REQUIRE(module.connections().size() == 1);
+    REQUIRE(module.remove_output(StableId{"output"}));
+    REQUIRE(module.connections().empty());
+}
+
 TEST_CASE("graph scheduling is deterministic and rejects cycles", "[orlgraph][schedule]") {
     NodeRegistry registry;
     REQUIRE(registry.register_definition(make_passthrough_definition()));
@@ -244,6 +276,11 @@ TEST_CASE("oro serialization is deterministic and round trips", "[orlgraph][oro]
 
     GraphModule module;
     module.module_id = "oro.test";
+    REQUIRE(module.add_input(InterfacePort{
+        StableId{"scene_input"}, "Scene Input", PortDirection::Input,
+        LogicalType::buffer(LogicalType::point()), Domain::vertex(),
+        Shape::one("vertex_count"), true, std::nullopt, false,
+        "scene.mesh.body.positions", "mesh.positions", "world"}));
     REQUIRE(module.add_node(NodeInstance{
         StableId{"node"}, StableId{"builtin.pass"}, "node", {}, {}, InlinePolicy::Default}));
 
@@ -258,6 +295,44 @@ TEST_CASE("oro serialization is deterministic and round trips", "[orlgraph][oro]
     REQUIRE(loaded.module.module_id == "oro.test");
     REQUIRE(loaded.module.nodes().size() == 1);
     REQUIRE(loaded.registry.find(StableId{"builtin.pass"}) != nullptr);
+    const auto* input = loaded.module.input(StableId{"scene_input"});
+    REQUIRE(input != nullptr);
+    REQUIRE(input->binding == "scene.mesh.body.positions");
+    REQUIRE(input->semantic == "mesh.positions");
+    REQUIRE(input->coordinate_space == "world");
+}
+
+TEST_CASE("editable graph JSON is deterministic and round trips",
+    "[orlgraph][graph-json]")
+{
+    GraphModule module;
+    module.module_id = "character.pose";
+    module.version = Version{0, 1, 0};
+    REQUIRE(module.add_input(InterfacePort{
+        StableId{"scene_input"}, "Scene Input", PortDirection::Input,
+        LogicalType::buffer(LogicalType::point()), Domain::vertex(),
+        Shape::one("vertex_count"), true, std::nullopt, false,
+        "scene.mesh.body.positions", "mesh.positions", "world"}));
+    REQUIRE(module.add_output(InterfacePort{
+        StableId{"result"}, "Result", PortDirection::Output,
+        LogicalType::int64(), Domain::constant(), Shape::scalar(), false,
+        std::nullopt, false, "result", "result", {}}));
+
+    const auto first = serialize_graph_json(module);
+    const auto second = serialize_graph_json(module);
+    REQUIRE(first.ok);
+    REQUIRE(first.text == second.text);
+    REQUIRE(first.content_hash == second.content_hash);
+
+    const auto loaded = deserialize_graph_json(first.text);
+    REQUIRE(loaded.ok);
+    REQUIRE(loaded.module.module_id == "character.pose");
+    REQUIRE(loaded.module.version == Version{0, 1, 0});
+    const auto* input = loaded.module.input(StableId{"scene_input"});
+    REQUIRE(input != nullptr);
+    REQUIRE(input->binding == "scene.mesh.body.positions");
+    REQUIRE(input->semantic == "mesh.positions");
+    REQUIRE(input->coordinate_space == "world");
 }
 #endif
 

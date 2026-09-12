@@ -36,6 +36,44 @@ TEST_CASE("semantic analysis imports a typed ORL function", "[orl][analysis]") {
     REQUIRE(definition->outputs.size() == 1);
 }
 
+TEST_CASE("external ORL source registers node definitions at runtime",
+    "[orl][analysis][runtime]")
+{
+    orlgraph::NodeRegistry registry;
+    NodeImportOptions options;
+    options.module_name = "external_nodes";
+    options.source_name = "external_nodes.orl";
+    options.exported_functions.push_back("add_external");
+
+    const auto result = register_orl_node_definitions(registry, R"(
+        int add_helper(int value) {
+            return value + 1;
+        }
+
+        int add_external(int left, int right) {
+            return add_helper(left) + right - 1;
+        }
+    )", options);
+    REQUIRE(result.ok());
+    REQUIRE(result.registered_count == 1);
+
+    const auto* definition = registry.find("external_nodes.add_external");
+    REQUIRE(definition != nullptr);
+    REQUIRE(definition->implementation.kind
+        == orlgraph::ImplementationKind::OrlFunction);
+    REQUIRE(definition->implementation.module == "external_nodes");
+    REQUIRE(definition->implementation.function == "add_external");
+
+    const auto duplicate = register_orl_node_definitions(registry, R"(
+        int add_external(int value) {
+            return value;
+        }
+    )", options);
+    REQUIRE_FALSE(duplicate.ok());
+    REQUIRE(duplicate.registered_count == 0);
+    REQUIRE(registry.find("external_nodes.add_external") != nullptr);
+}
+
 TEST_CASE("semantic analysis rejects unresolved calls and unsupported types",
     "[orl][analysis][error]")
 {

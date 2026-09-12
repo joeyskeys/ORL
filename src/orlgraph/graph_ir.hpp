@@ -235,6 +235,8 @@ public:
     bool add_input(InterfacePort input, std::string* error = nullptr);
     bool add_output(InterfacePort output, std::string* error = nullptr);
     bool add_resource(Resource resource, std::string* error = nullptr);
+    bool remove_input(const StableId& id, std::string* error = nullptr);
+    bool remove_output(const StableId& id, std::string* error = nullptr);
 
     const NodeInstance* node(const StableId& id) const;
     const InterfacePort* input(const StableId& id) const;

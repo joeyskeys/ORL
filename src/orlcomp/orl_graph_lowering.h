@@ -16,6 +16,8 @@ struct GraphLoweringDiagnostic {
 struct GraphLoweringOptions {
     std::string entry_function = "orl_graph_compute";
     std::string source_preamble;
+    // Include directories needed by ORL modules referenced by graph nodes.
+    std::vector<std::string> include_paths;
     bool emit_module_uses = true;
 };
 

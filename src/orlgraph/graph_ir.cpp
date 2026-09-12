@@ -1,5 +1,6 @@
 #include "graph_ir.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <utility>
 
@@ -179,6 +180,42 @@ bool GraphModule::add_resource(Resource resource_value, std::string* error) {
         return set_error(error, "Duplicate graph resource: " + resource_value.id.value);
     }
     resources_.emplace(resource_value.id, std::move(resource_value));
+    return true;
+}
+
+bool GraphModule::remove_input(const StableId& id, std::string* error) {
+    if (!inputs_.contains(id)) {
+        return set_error(error, "Unknown graph input: " + id.value);
+    }
+    connections_.erase(std::remove_if(connections_.begin(), connections_.end(),
+        [&id](const Connection& connection) {
+            return connection.source.kind == EndpointKind::GraphInput
+                && connection.source.owner == id;
+        }), connections_.end());
+    for (auto& [_, node] : nodes_) {
+        node.parameter_mappings.erase(
+            std::remove_if(node.parameter_mappings.begin(),
+                node.parameter_mappings.end(),
+                [&id](const ParameterMapping& mapping) {
+                    return mapping.source_kind == ParameterSourceKind::GraphInput
+                        && mapping.source.owner == id;
+                }),
+            node.parameter_mappings.end());
+    }
+    inputs_.erase(id);
+    return true;
+}
+
+bool GraphModule::remove_output(const StableId& id, std::string* error) {
+    if (!outputs_.contains(id)) {
+        return set_error(error, "Unknown graph output: " + id.value);
+    }
+    connections_.erase(std::remove_if(connections_.begin(), connections_.end(),
+        [&id](const Connection& connection) {
+            return connection.destination.kind == EndpointKind::GraphOutput
+                && connection.destination.owner == id;
+        }), connections_.end());
+    outputs_.erase(id);
     return true;
 }
 
