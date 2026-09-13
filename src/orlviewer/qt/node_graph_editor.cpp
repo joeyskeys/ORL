@@ -4,14 +4,19 @@
 
 #include <QComboBox>
 #include <QCursor>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFontMetrics>
 #include <QHash>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QMouseEvent>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
 #include <QSignalBlocker>
+#include <QShortcut>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -23,7 +28,9 @@
 #include <vector>
 
 #include "../graph_scene_inputs.hpp"
+#include "../scene_graph_context.hpp"
 #include "node_graph/node_ops.hpp"
+#include "orlgraph/graph_serialization.hpp"
 
 namespace ORL
 {
@@ -47,6 +54,9 @@ std::optional<SceneElementKind> find_element_kind(
     if (qualified_name == "orlrig.input.find_controller") {
         return SceneElementKind::Controller;
     }
+    if (qualified_name == "orlrig.input.find_mesh") {
+        return SceneElementKind::Mesh;
+    }
     return std::nullopt;
 }
 
@@ -58,14 +68,61 @@ NodeGraphEditor::NodeGraphEditor(QWidget* parent)
     setMinimumSize(480, 320);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
-    reset_demo_graph();
+
+    auto* save_shortcut = new QShortcut(
+        QKeySequence(QStringLiteral("Ctrl+S")), this);
+    save_shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(save_shortcut, &QShortcut::activated, this, [this] {
+        save_graph_file(false);
+    });
+
+    auto* save_as_shortcut = new QShortcut(
+        QKeySequence(QStringLiteral("Ctrl+Shift+S")), this);
+    save_as_shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(save_as_shortcut, &QShortcut::activated, this, [this] {
+        save_graph_file(true);
+    });
 }
 
 void NodeGraphEditor::set_graph(const orlgraph::GraphModule& module,
     const orlgraph::NodeRegistry& registry)
 {
-    graph_ = module;
-    registry_ = registry;
+    graph_storage_ = module;
+    registry_storage_ = registry;
+    graph_ = &graph_storage_;
+    registry_ = &registry_storage_;
+    scene_graph_context_ = nullptr;
+    attached_graph_revision_ = 0;
+    graph_file_path_.reset();
+    rebuild_view();
+}
+
+void NodeGraphEditor::set_graph(orlgraph::GraphModule& module,
+    orlgraph::NodeRegistry& registry)
+{
+    graph_ = &module;
+    registry_ = &registry;
+    scene_graph_context_ = nullptr;
+    attached_graph_revision_ = 0;
+    graph_file_path_.reset();
+    rebuild_view();
+}
+
+void NodeGraphEditor::set_scene_graph_context(SceneGraphContext* context)
+{
+    scene_graph_context_ = context;
+    if (scene_graph_context_ == nullptr) {
+        graph_ = &graph_storage_;
+        registry_ = &registry_storage_;
+        scene_input_catalog_ = nullptr;
+        attached_graph_revision_ = 0;
+    } else {
+        graph_ = &scene_graph_context_->graph();
+        registry_ = &scene_graph_context_->registry();
+        scene_input_catalog_ = &scene_graph_context_->scene_inputs();
+        attached_graph_revision_ = scene_graph_context_->graph_revision();
+    }
+    graph_file_path_.reset();
     rebuild_view();
 }
 
@@ -78,6 +135,12 @@ void NodeGraphEditor::set_scene_input_catalog(
 
 void NodeGraphEditor::refresh_scene_inputs()
 {
+    if (scene_graph_context_ != nullptr
+        && attached_graph_revision_ != scene_graph_context_->graph_revision())
+    {
+        attached_graph_revision_ = scene_graph_context_->graph_revision();
+        rebuild_view();
+    }
     refresh_find_controls();
     position_find_controls();
 }
@@ -105,7 +168,7 @@ void NodeGraphEditor::rebuild_view()
     };
 
     int index = 0;
-    for (const auto& [id, instance] : graph_.nodes()) {
+    for (const auto& [id, instance] : active_graph().nodes()) {
         Node node;
         node.id = QString::fromStdString(id.value);
         node.title = QString::fromStdString(instance.name.empty()
@@ -114,9 +177,12 @@ void NodeGraphEditor::rebuild_view()
             64.0 + static_cast<double>(index % 3) * 300.0,
             80.0 + static_cast<double>(index / 3) * 210.0);
         node.color = kNodeColors[index % kNodeColors.size()];
+        bool has_find_control = false;
 
-        if (const auto* definition = registry_.find(instance.definition)) {
+        if (const auto* definition = active_registry().find(instance.definition)) {
             node.title = QString::fromStdString(definition->qualified_name);
+            has_find_control = find_element_kind(
+                definition->qualified_name).has_value();
             for (const auto& port : definition->inputs) {
                 Port view_port;
                 view_port.id = QString::fromStdString(port.id.value);
@@ -126,6 +192,8 @@ void NodeGraphEditor::rebuild_view()
                 view_port.type = port.type;
                 view_port.domain = port.domain;
                 view_port.shape = port.shape;
+                view_port.semantic =
+                    QString::fromStdString(port.semantic);
                 node.inputs.push_back(std::move(view_port));
             }
             for (const auto& port : definition->outputs) {
@@ -138,11 +206,15 @@ void NodeGraphEditor::rebuild_view()
                 view_port.type = port.type;
                 view_port.domain = port.domain;
                 view_port.shape = port.shape;
+                view_port.semantic =
+                    QString::fromStdString(port.semantic);
                 node.outputs.push_back(std::move(view_port));
             }
         }
         const int rows = std::max(node.inputs.size(), node.outputs.size());
-        node.size.setHeight(std::max(86.0, 42.0 + rows * 22.0));
+        const double control_space = has_find_control ? 34.0 : 0.0;
+        node.size.setHeight(std::max(
+            86.0, 42.0 + rows * 22.0 + control_space));
         restore_position(node);
         nodes_.push_back(std::move(node));
         ++index;
@@ -185,6 +257,8 @@ void NodeGraphEditor::rebuild_view()
         port.type = interface_port.type;
         port.domain = interface_port.domain;
         port.shape = interface_port.shape;
+        port.semantic =
+            QString::fromStdString(interface_port.semantic);
         if (port.output) {
             node.outputs.push_back(std::move(port));
         } else {
@@ -195,11 +269,11 @@ void NodeGraphEditor::rebuild_view()
     };
 
     int boundary_index = 0;
-    for (const auto& [id, input] : graph_.inputs()) {
+    for (const auto& [id, input] : active_graph().inputs()) {
         add_interface_node(id, input, Node::Kind::GraphInput, boundary_index++);
     }
     boundary_index = 0;
-    for (const auto& [id, output] : graph_.outputs()) {
+    for (const auto& [id, output] : active_graph().outputs()) {
         add_interface_node(id, output, Node::Kind::GraphOutput, boundary_index++);
     }
 
@@ -237,7 +311,7 @@ void NodeGraphEditor::rebuild_view()
         return -1;
     };
 
-    for (const auto& connection : graph_.connections()) {
+    for (const auto& connection : active_graph().connections()) {
         const int source_node = find_endpoint_node(connection.source);
         const int destination_node = find_endpoint_node(connection.destination);
         if (source_node < 0 || destination_node < 0) {
@@ -262,12 +336,53 @@ void NodeGraphEditor::rebuild_view()
     update();
 }
 
+bool NodeGraphEditor::save_graph_file(bool save_as)
+{
+    QString path;
+    if (!save_as && graph_file_path_.has_value()) {
+        path = *graph_file_path_;
+    } else {
+        const QString suggested_path = graph_file_path_.value_or(
+            QStringLiteral("graph.json"));
+        path = QFileDialog::getSaveFileName(
+            this,
+            save_as ? QStringLiteral("Save Node Graph As")
+                    : QStringLiteral("Save Node Graph"),
+            suggested_path,
+            QStringLiteral("ORL Graph (*.json);;All Files (*)"));
+        if (path.isEmpty()) {
+            return false;
+        }
+    }
+
+    if (QFileInfo(path).suffix().isEmpty()) {
+        path += QStringLiteral(".json");
+    }
+
+    std::vector<orlgraph::Diagnostic> diagnostics;
+    if (!orlgraph::save_graph_json(
+            path.toStdString(), active_graph(), &diagnostics))
+    {
+        QString message = QStringLiteral("Unable to save node graph.");
+        if (!diagnostics.empty()) {
+            message += QStringLiteral("\n")
+                + QString::fromStdString(diagnostics.front().message);
+        }
+        QMessageBox::warning(this, QStringLiteral("Save Node Graph"), message);
+        return false;
+    }
+
+    graph_file_path_ = path;
+    return true;
+}
+
 void NodeGraphEditor::create_node(const orlgraph::StableId& definition_id,
     const QPointF& scene_position_value)
 {
     orlgraph::StableId created_id;
     std::string error;
-    if (!node_graph::create_node(graph_, registry_, definition_id, &created_id, &error)) {
+    if (!node_graph::create_node(active_graph(), active_registry(),
+            definition_id, &created_id, &error)) {
         std::cerr << "Node graph: failed to create node: " << error << '\n';
         return;
     }
@@ -290,7 +405,7 @@ void NodeGraphEditor::create_graph_input(
     const orlgraph::StableId& template_id,
     const QPointF& scene_position_value)
 {
-    const auto* template_input = graph_.input(template_id);
+    const auto* template_input = active_graph().input(template_id);
     if (template_input == nullptr) {
         std::cerr << "Node graph: unknown graph input template: "
                   << template_id.value << '\n';
@@ -303,8 +418,8 @@ void NodeGraphEditor::create_graph_input(
     for (;;) {
         const orlgraph::StableId candidate{
             base_id + std::to_string(suffix)};
-        if (graph_.input(candidate) == nullptr
-            && graph_.output(candidate) == nullptr)
+        if (active_graph().input(candidate) == nullptr
+            && active_graph().output(candidate) == nullptr)
         {
             input.id = candidate;
             break;
@@ -317,7 +432,7 @@ void NodeGraphEditor::create_graph_input(
     const orlgraph::StableId created_id = input.id;
 
     std::string error;
-    if (!graph_.add_input(std::move(input), &error)) {
+    if (!active_graph().add_input(std::move(input), &error)) {
         std::cerr << "Node graph: failed to add graph input: "
                   << error << '\n';
         return;
@@ -327,49 +442,6 @@ void NodeGraphEditor::create_graph_input(
     for (int index = 0; index < nodes_.size(); ++index) {
         if (nodes_[index].kind != Node::Kind::GraphInput
             || nodes_[index].interface_id != created_id)
-        {
-            continue;
-        }
-        nodes_[index].position = scene_position_value
-            - QPointF{nodes_[index].size.width() * 0.5,
-                nodes_[index].size.height() * 0.5};
-        selected_node_ = index;
-        break;
-    }
-    update();
-}
-
-void NodeGraphEditor::create_scene_input(
-    const orlgraph::StableId& input_id,
-    const QPointF& scene_position_value)
-{
-    if (scene_input_catalog_ == nullptr) {
-        std::cerr << "Node graph: scene input catalog is unavailable\n";
-        return;
-    }
-
-    orlgraph::InterfacePort input;
-    std::string error;
-    if (!scene_input_catalog_->make_interface_port(input_id, &input, &error)) {
-        std::cerr << "Node graph: failed to create scene input: "
-                  << error << '\n';
-        return;
-    }
-    if (graph_.input(input.id) != nullptr) {
-        std::cerr << "Node graph: graph input already exists: "
-                  << input.id.value << '\n';
-        return;
-    }
-    if (!graph_.add_input(std::move(input), &error)) {
-        std::cerr << "Node graph: failed to add scene input: "
-                  << error << '\n';
-        return;
-    }
-
-    rebuild_view();
-    for (int index = 0; index < nodes_.size(); ++index) {
-        if (nodes_[index].kind != Node::Kind::GraphInput
-            || nodes_[index].interface_id != input_id)
         {
             continue;
         }
@@ -396,10 +468,10 @@ void NodeGraphEditor::rebuild_find_controls()
         if (node.kind != Node::Kind::Definition) {
             continue;
         }
-        const auto* instance = graph_.node(
+        const auto* instance = active_graph().node(
             orlgraph::StableId{node.id.toStdString()});
         const auto* definition = instance == nullptr
-            ? nullptr : registry_.find(instance->definition);
+            ? nullptr : active_registry().find(instance->definition);
         if (definition == nullptr
             || !find_element_kind(definition->qualified_name).has_value())
         {
@@ -414,9 +486,9 @@ void NodeGraphEditor::rebuild_find_controls()
         const QString node_id = node.id;
         QObject::connect(combo, &QComboBox::currentTextChanged, this,
             [this, node_id](const QString& text) {
-                const auto iterator = graph_.mutable_nodes().find(
+                const auto iterator = active_graph().mutable_nodes().find(
                     orlgraph::StableId{node_id.toStdString()});
-                if (iterator == graph_.mutable_nodes().end()) {
+                if (iterator == active_graph().mutable_nodes().end()) {
                     return;
                 }
                 if (text.isEmpty()) {
@@ -440,13 +512,13 @@ void NodeGraphEditor::refresh_find_controls()
         if (control.combo == nullptr) {
             continue;
         }
-        const auto instance_iterator = graph_.nodes().find(
+        const auto instance_iterator = active_graph().nodes().find(
             orlgraph::StableId{control.node_id.toStdString()});
-        if (instance_iterator == graph_.nodes().end()) {
+        if (instance_iterator == active_graph().nodes().end()) {
             control.combo->setVisible(false);
             continue;
         }
-        const auto* definition = registry_.find(
+        const auto* definition = active_registry().find(
             instance_iterator->second.definition);
         if (definition == nullptr) {
             control.combo->setVisible(false);
@@ -497,7 +569,7 @@ void NodeGraphEditor::refresh_find_controls()
             control.combo->setEnabled(!names.empty());
         }
 
-        auto& node = graph_.mutable_nodes().find(
+        auto& node = active_graph().mutable_nodes().find(
             orlgraph::StableId{control.node_id.toStdString()})->second;
         if (selected.empty()) {
             node.parameter_values.erase("name");
@@ -539,42 +611,6 @@ void NodeGraphEditor::position_find_controls()
         control.combo->setVisible(true);
         control.combo->raise();
     }
-}
-
-void NodeGraphEditor::reset_demo_graph()
-{
-    clear_find_controls();
-    nodes_.clear();
-    links_.clear();
-    selected_node_ = -1;
-    dragging_node_ = -1;
-    pending_connection_ = {};
-
-    nodes_.push_back(Node{
-        QStringLiteral("input"), QStringLiteral("Graph Input"), {64.0, 96.0}, {220.0, 100.0},
-        QColor{QStringLiteral("#4c78a8")},
-        {}, {Port{QStringLiteral("value"), QStringLiteral("value"), true}},
-    });
-    nodes_.push_back(Node{
-        QStringLiteral("deform"), QStringLiteral("LBS Deformer"), {370.0, 96.0}, {240.0, 160.0},
-        QColor{QStringLiteral("#b7791f")},
-        {
-            Port{QStringLiteral("positions"), QStringLiteral("positions"), false},
-            Port{QStringLiteral("joints"), QStringLiteral("joints"), false},
-            Port{QStringLiteral("weights"), QStringLiteral("weights"), false},
-        },
-        {Port{QStringLiteral("posed"), QStringLiteral("posed_positions"), true}},
-    });
-    nodes_.push_back(Node{
-        QStringLiteral("output"), QStringLiteral("Graph Output"), {700.0, 96.0}, {220.0, 100.0},
-        QColor{QStringLiteral("#5b8e7d")},
-        {Port{QStringLiteral("posed"), QStringLiteral("posed_positions"), false}}, {},
-    });
-    links_ = {
-        {0, 0, 1, 0},
-        {1, 0, 2, 0},
-    };
-    update();
 }
 
 QPointF NodeGraphEditor::scene_position(const QPointF& viewport_position) const
@@ -679,6 +715,7 @@ bool NodeGraphEditor::sockets_compatible(const Socket& first,
     source_contract.type = source_port.type;
     source_contract.domain = source_port.domain;
     source_contract.shape = source_port.shape;
+    source_contract.semantic = source_port.semantic.toStdString();
 
     orlgraph::Port destination_contract;
     destination_contract.id = orlgraph::StableId{
@@ -691,6 +728,8 @@ bool NodeGraphEditor::sockets_compatible(const Socket& first,
     destination_contract.type = destination_port.type;
     destination_contract.domain = destination_port.domain;
     destination_contract.shape = destination_port.shape;
+    destination_contract.semantic =
+        destination_port.semantic.toStdString();
 
     if (!destination_contract.compatible_value(source_contract)) {
         return false;
@@ -729,7 +768,7 @@ bool NodeGraphEditor::add_connection(const Socket& first, const Socket& second)
     const orlgraph::Endpoint destination_endpoint =
         endpoint_for(destination, false);
 
-    auto& connections = graph_.mutable_connections();
+    auto& connections = active_graph().mutable_connections();
     std::vector<orlgraph::Connection> replaced_connections;
     for (auto connection = connections.begin(); connection != connections.end();) {
         if (connection->destination == destination_endpoint)
@@ -742,7 +781,7 @@ bool NodeGraphEditor::add_connection(const Socket& first, const Socket& second)
     }
 
     std::string error;
-    if (!graph_.add_connection(orlgraph::Connection{
+    if (!active_graph().add_connection(orlgraph::Connection{
             source_endpoint, destination_endpoint},
             &error))
     {
@@ -882,15 +921,28 @@ void NodeGraphEditor::draw_node(QPainter& painter, int index) const
         Qt::AlignVCenter | Qt::AlignLeft, node.title);
 
     const QFontMetrics metrics(painter.font());
+    const auto port_label = [](const Port& port) {
+        if (port.semantic.endsWith(QStringLiteral(".handle"))) {
+            return port.name + QStringLiteral(" (stable)");
+        }
+        if (port.semantic == QStringLiteral("scene.array_index")) {
+            return port.name + QStringLiteral(" (packed)");
+        }
+        return port.name;
+    };
     for (int port = 0; port < node.inputs.size(); ++port) {
         const QPointF position = port_position(node, false, port);
         painter.setPen(Qt::NoPen);
         painter.setBrush(QColor{QStringLiteral("#d7d7d7")});
         painter.drawEllipse(position, 5.0, 5.0);
         painter.setPen(QColor{QStringLiteral("#d7d7d7")});
-        painter.drawText(QPointF{position.x() + 12.0,
-                position.y() + metrics.ascent() * 0.35},
-            node.inputs[port].name);
+        const QRectF text_rect(
+            position.x() + 12.0,
+            position.y() - metrics.height() * 0.5,
+            node.size.width() - 24.0,
+            metrics.height());
+        painter.drawText(text_rect,
+            Qt::AlignLeft | Qt::AlignVCenter, port_label(node.inputs[port]));
     }
     for (int port = 0; port < node.outputs.size(); ++port) {
         const QPointF position = port_position(node, true, port);
@@ -900,10 +952,11 @@ void NodeGraphEditor::draw_node(QPainter& painter, int index) const
         painter.setPen(QColor{QStringLiteral("#d7d7d7")});
         const QRectF text_rect(
             position.x() - node.size.width() + 12.0,
-            position.y() - metrics.ascent(),
+            position.y() - metrics.height() * 0.5,
             node.size.width() - 24.0,
             metrics.height());
-        painter.drawText(text_rect, Qt::AlignRight, node.outputs[port].name);
+        painter.drawText(text_rect,
+            Qt::AlignRight | Qt::AlignVCenter, port_label(node.outputs[port]));
     }
 }
 
@@ -1046,12 +1099,14 @@ void NodeGraphEditor::keyPressEvent(QKeyEvent* event)
             std::string error;
             bool removed = false;
             if (selected.kind == Node::Kind::GraphInput) {
-                removed = graph_.remove_input(selected.interface_id, &error);
+                removed = active_graph().remove_input(
+                    selected.interface_id, &error);
             } else if (selected.kind == Node::Kind::GraphOutput) {
-                removed = graph_.remove_output(selected.interface_id, &error);
+                removed = active_graph().remove_output(
+                    selected.interface_id, &error);
             } else {
                 removed = node_graph::delete_node(
-                    graph_,
+                    active_graph(),
                     orlgraph::StableId{selected.id.toStdString()},
                     &error);
             }
@@ -1072,31 +1127,19 @@ void NodeGraphEditor::keyPressEvent(QKeyEvent* event)
         const QPoint global_position = QCursor::pos();
         const QPointF scene = scene_position(mapFromGlobal(global_position));
         std::vector<node_graph::GraphInputMenuEntry> graph_inputs;
-        for (const auto& [id, input] : graph_.inputs()) {
+        for (const auto& [id, input] : active_graph().inputs()) {
             graph_inputs.push_back({
                 id,
                 input.name.empty() ? id.value : input.name,
             });
         }
-        std::vector<node_graph::SceneInputMenuEntry> scene_inputs;
-        if (scene_input_catalog_ != nullptr) {
-            for (const auto& input : scene_input_catalog_->descriptors()) {
-                scene_inputs.push_back({
-                    input.id,
-                    input.label,
-                });
-            }
-        }
-        node_graph::show_create_menu(this, registry_, graph_inputs, scene_inputs,
+        node_graph::show_create_menu(this, active_registry(), graph_inputs,
             global_position,
             [this, scene](const orlgraph::StableId& definition_id) {
                 create_node(definition_id, scene);
             },
             [this, scene](const orlgraph::StableId& template_id) {
                 create_graph_input(template_id, scene);
-            },
-            [this, scene](const orlgraph::StableId& input_id) {
-                create_scene_input(input_id, scene);
             });
         event->accept();
         return;

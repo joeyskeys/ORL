@@ -31,14 +31,17 @@ GraphReflection reflect(const GraphModule& module,
             for (const auto& port : definition->inputs) {
                 reflected.ports.push_back(ReflectedPort{
                     id, port.id, port.name, port.direction,
-                    port.type, port.domain, port.shape,
+                    port.type, port.domain, port.shape, port.semantic,
+                    port.access,
                 });
             }
             for (const auto& port : definition->outputs) {
-                reflected.ports.push_back(ReflectedPort{
+                ReflectedPort reflected_port{
                     id, port.id, port.name, port.direction,
-                    port.type, port.domain, port.shape,
-                });
+                    port.type, port.domain, port.shape, port.semantic,
+                    port.access};
+                reflected_port.output_adapter = port.output_adapter;
+                reflected.ports.push_back(std::move(reflected_port));
             }
         }
         reflection.nodes.push_back(std::move(reflected));

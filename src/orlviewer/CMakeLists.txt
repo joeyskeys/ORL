@@ -8,6 +8,10 @@ add_executable(orl_viewer
     comps/controller_curves.hpp
     comps/weight.hpp
     comps/deformer.hpp
+    scene_graph_context.cpp
+    scene_graph_context.hpp
+    graph_scene_runtime.cpp
+    graph_scene_runtime.hpp
     graph_scene_inputs.cpp
     graph_scene_inputs.hpp
     ops/load_model_op.cpp
@@ -38,6 +42,7 @@ target_link_libraries(orl_viewer
         vkkk
         orlexec
         orlrig
+        orlgraph_io
         Eigen3::Eigen
         RapidJSON
 )

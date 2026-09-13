@@ -1,6 +1,8 @@
 #include "graph_resources.hpp"
 
+#include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -112,6 +114,9 @@ orlgraph::Port stdlib_buffer_port(std::string id,
         orlgraph::PortDirection::Input);
     port.shape = orlgraph::Shape::one(std::move(shape));
     port.semantic = port.name;
+    if (port.name == "joints") {
+        port.domain = orlgraph::Domain::joint();
+    }
     return port;
 }
 
@@ -128,11 +133,78 @@ orlgraph::Port stdlib_scalar_port(std::string name, orlgraph::LogicalType type) 
     return port;
 }
 
-orlgraph::Port stdlib_result_port() {
-    auto port = stdlib_scalar_port("result", orlgraph::LogicalType::int64());
+orlgraph::Port stdlib_status_port() {
+    auto port = stdlib_scalar_port("status", orlgraph::LogicalType::int64());
     port.direction = orlgraph::PortDirection::Output;
     port.required = false;
+    port.semantic = "status";
     return port;
+}
+
+orlgraph::ConversionDefinition make_joint_world_matrix_conversion() {
+    orlgraph::ConversionDefinition definition;
+    definition.id = orlgraph::StableId{
+        std::string{kJointWorldMatrixConversion}};
+    definition.qualified_name = definition.id.value;
+    definition.source = stdlib_scalar_port(
+        "index", orlgraph::LogicalType::int64());
+    definition.source.direction = orlgraph::PortDirection::Output;
+    definition.source.required = false;
+    definition.source.semantic = std::string{kSceneArrayIndexSemantic};
+
+    definition.output = buffer_port(
+        "xform", "xform", orlgraph::LogicalType::matrix(),
+        orlgraph::PortDirection::Output, orlgraph::Domain::buffer(), false);
+    definition.output.shape = orlgraph::Shape::one("one");
+    definition.output.semantic = "scene.joint_xform";
+    definition.output.coordinate_space = "world";
+
+    auto joints = buffer_port(
+        "joints", "joints",
+        orlgraph::LogicalType::struct_type("Joint"),
+        orlgraph::PortDirection::Input, orlgraph::Domain::joint());
+    joints.shape = orlgraph::Shape::one("joint_count");
+    joints.semantic = std::string{kSceneJointsBinding};
+    definition.auxiliary_inputs.push_back(std::move(joints));
+
+    definition.implementation.kind = orlgraph::ImplementationKind::OrlFunction;
+    definition.implementation.module = "joint";
+    definition.implementation.function = "joint_world_matrix";
+    definition.emitter = orlgraph::ConversionEmitterKind::OrlMatrixBuffer;
+    return definition;
+}
+
+orlgraph::ConversionDefinition make_joint_world_matrix_writeback_conversion() {
+    orlgraph::ConversionDefinition definition;
+    definition.id = orlgraph::StableId{
+        std::string{kJointWorldMatrixWritebackConversion}};
+    definition.qualified_name = definition.id.value;
+
+    definition.source = buffer_port(
+        "xform", "xform", orlgraph::LogicalType::matrix(),
+        orlgraph::PortDirection::Input, orlgraph::Domain::buffer(), true);
+    definition.source.shape = orlgraph::Shape::one("one");
+
+    definition.output = buffer_port(
+        "joints", "joints",
+        orlgraph::LogicalType::struct_type("Joint"),
+        orlgraph::PortDirection::Input, orlgraph::Domain::joint(), true);
+    definition.output.shape = orlgraph::Shape::one("joint_count");
+    definition.output.semantic = std::string{kSceneJointsBinding};
+
+    auto selector = stdlib_scalar_port(
+        "handle", orlgraph::LogicalType::int64());
+    selector.direction = orlgraph::PortDirection::Output;
+    selector.required = false;
+    selector.semantic = std::string{kSceneJointHandleSemantic};
+    definition.selector = std::move(selector);
+
+    definition.implementation.kind = orlgraph::ImplementationKind::OrlFunction;
+    definition.implementation.module = "joint";
+    definition.implementation.function = "joint_write_world_matrix";
+    definition.emitter = orlgraph::ConversionEmitterKind::OrlFunctionWriteback;
+    definition.pure = false;
+    return definition;
 }
 
 orlgraph::NodeDefinition make_find_definition(
@@ -154,6 +226,59 @@ orlgraph::NodeDefinition make_find_definition(
     handle.required = false;
     handle.semantic = std::move(handle_semantic);
     definition.outputs.push_back(std::move(handle));
+    if (element == "joint" || element == "controller") {
+        auto index = stdlib_scalar_port(
+            "index", orlgraph::LogicalType::int64());
+        index.direction = orlgraph::PortDirection::Output;
+        index.required = false;
+        index.semantic = std::string{kSceneArrayIndexSemantic};
+        definition.outputs.push_back(std::move(index));
+        auto transform = buffer_port(
+            "xform", "xform", orlgraph::LogicalType::matrix(),
+            orlgraph::PortDirection::Output,
+            orlgraph::Domain::buffer(), false);
+        transform.shape = orlgraph::Shape::one("one");
+        transform.semantic = element == "joint"
+            ? "scene.joint_xform" : "scene.controller_xform";
+        transform.coordinate_space = "world";
+        if (element == "joint") {
+            transform.output_adapter = orlgraph::Port::OutputAdapter{
+                orlgraph::StableId{std::string{kJointWorldMatrixConversion}},
+                orlgraph::StableId{"index"},
+                std::optional<orlgraph::StableId>{
+                    orlgraph::StableId{
+                        std::string{kJointWorldMatrixWritebackConversion}}},
+                std::optional<orlgraph::StableId>{
+                    orlgraph::StableId{"handle"}}};
+        }
+        definition.outputs.push_back(std::move(transform));
+    }
+    definition.capabilities = {"runtime", "scene"};
+    definition.operation = "input";
+    definition.pure = false;
+    definition.inline_policy = orlgraph::InlinePolicy::Never;
+    return definition;
+}
+
+orlgraph::NodeDefinition make_scene_buffer_definition(
+    std::string element, orlgraph::LogicalType element_type,
+    orlgraph::Domain domain, std::string count_symbol,
+    std::string semantic, std::string coordinate_space)
+{
+    const std::string qualified_name = "orlrig.input." + element;
+    orlgraph::NodeDefinition definition;
+    definition.id = orlgraph::StableId{qualified_name};
+    definition.qualified_name = qualified_name;
+    definition.implementation.kind = orlgraph::ImplementationKind::Runtime;
+    definition.implementation.runtime_name = qualified_name;
+
+    auto output = buffer_port(
+        element, element, std::move(element_type),
+        orlgraph::PortDirection::Output, std::move(domain), false);
+    output.shape = orlgraph::Shape::one(std::move(count_symbol));
+    output.semantic = std::move(semantic);
+    output.coordinate_space = std::move(coordinate_space);
+    definition.outputs.push_back(std::move(output));
     definition.capabilities = {"runtime", "scene"};
     definition.operation = "input";
     definition.pure = false;
@@ -163,8 +288,18 @@ orlgraph::NodeDefinition make_find_definition(
 
 std::vector<orlgraph::NodeDefinition> make_input_definitions() {
     return {
-        make_find_definition("joint", "scene.joint_handle"),
-        make_find_definition("controller", "scene.controller_handle"),
+        make_scene_buffer_definition(
+            "joints", orlgraph::LogicalType::struct_type("Joint"),
+            orlgraph::Domain::joint(), "joint_count", "joints", "world"),
+        make_scene_buffer_definition(
+            "controllers", orlgraph::LogicalType::matrix(),
+            orlgraph::Domain::rig(), "controller_count",
+            "controllers", "world"),
+        make_find_definition("joint",
+            std::string{kSceneJointHandleSemantic}),
+        make_find_definition("controller",
+            std::string{kSceneControllerHandleSemantic}),
+        make_find_definition("mesh", "scene.mesh.handle"),
     };
 }
 
@@ -217,7 +352,7 @@ orlgraph::NodeDefinition make_stdlib_definition(std::string category,
     definition.implementation.module = category + "/" + function;
     definition.implementation.function = category + "_" + function;
     definition.inputs = std::move(inputs);
-    definition.outputs.push_back(stdlib_result_port());
+    definition.outputs.push_back(stdlib_status_port());
     definition.effects = std::move(effects);
     definition.capabilities.push_back("cpu");
     if (cuda_capable) {
@@ -329,26 +464,48 @@ std::vector<orlgraph::NodeDefinition> make_auto_weight_definitions() {
 }
 
 std::vector<orlgraph::NodeDefinition> make_solver_definitions() {
+    const auto index_port = [](std::string name) {
+        auto port = stdlib_scalar_port(
+            std::move(name), orlgraph::LogicalType::int64());
+        port.semantic = std::string{kSceneArrayIndexSemantic};
+        return port;
+    };
+    const auto read_write_buffer = [](
+        std::string name, orlgraph::LogicalType element,
+        std::string shape) {
+        auto port = stdlib_buffer_port(
+            std::move(name), std::move(element), std::move(shape));
+        port.access = orlgraph::AccessMode::ReadWrite;
+        return port;
+    };
+    const auto untyped_buffer = [](
+        std::string name, orlgraph::LogicalType element,
+        std::string shape) {
+        auto port = stdlib_buffer_port(
+            std::move(name), std::move(element), std::move(shape));
+        port.semantic.clear();
+        return port;
+    };
     return {
         make_stdlib_definition("solver", "fk",
             {
                 stdlib_buffer_port("joints",
                     orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
-                stdlib_buffer_port("world",
+                read_write_buffer("world",
                     orlgraph::LogicalType::matrix(), "joint_count"),
                 stdlib_scalar_port("joint_count", orlgraph::LogicalType::int64()),
             },
             parameter_effects("solver_fk", {"joints"}, {"world"}, {}), false),
         make_stdlib_definition("solver", "ik_two_bone",
             {
-                stdlib_buffer_port("joints",
+                read_write_buffer("joints",
                     orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
-                stdlib_scalar_port("root", orlgraph::LogicalType::int64()),
-                stdlib_scalar_port("mid", orlgraph::LogicalType::int64()),
-                stdlib_scalar_port("end", orlgraph::LogicalType::int64()),
-                stdlib_buffer_port("target",
+                index_port("root"),
+                index_port("mid"),
+                index_port("end"),
+                untyped_buffer("target",
                     orlgraph::LogicalType::matrix(), "one"),
-                stdlib_buffer_port("pole",
+                untyped_buffer("pole",
                     orlgraph::LogicalType::matrix(), "one"),
                 stdlib_scalar_port("joint_count", orlgraph::LogicalType::int64()),
             },
@@ -356,13 +513,13 @@ std::vector<orlgraph::NodeDefinition> make_solver_definitions() {
                 {"target", "pole"}, {}, {"joints"}), false),
         make_stdlib_definition("solver", "hd_id",
             {
-                stdlib_buffer_port("joints",
+                read_write_buffer("joints",
                     orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
-                stdlib_buffer_port("history",
+                read_write_buffer("history",
                     orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
-                stdlib_scalar_port("root", orlgraph::LogicalType::int64()),
-                stdlib_scalar_port("end", orlgraph::LogicalType::int64()),
-                stdlib_buffer_port("target",
+                index_port("root"),
+                index_port("end"),
+                untyped_buffer("target",
                     orlgraph::LogicalType::matrix(), "one"),
                 stdlib_scalar_port("joint_count", orlgraph::LogicalType::int64()),
                 stdlib_scalar_port("iterations", orlgraph::LogicalType::int64()),
@@ -371,7 +528,7 @@ std::vector<orlgraph::NodeDefinition> make_solver_definitions() {
             false, true),
         make_stdlib_definition("solver", "spline_ik",
             {
-                stdlib_buffer_port("joints",
+                read_write_buffer("joints",
                     orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
                 stdlib_buffer_port("chain",
                     orlgraph::LogicalType::int64(), "chain_count"),
@@ -385,11 +542,11 @@ std::vector<orlgraph::NodeDefinition> make_solver_definitions() {
                 {"chain", "spline"}, {}, {"joints"}), false),
         make_stdlib_definition("solver", "full_body_ik",
             {
-                stdlib_buffer_port("joints",
+                read_write_buffer("joints",
                     orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
                 stdlib_buffer_port("effectors",
                     orlgraph::LogicalType::int64(), "effector_count"),
-                stdlib_buffer_port("targets",
+                untyped_buffer("targets",
                     orlgraph::LogicalType::matrix(), "effector_count"),
                 stdlib_scalar_port("effector_count", orlgraph::LogicalType::int64()),
                 stdlib_scalar_port("joint_count", orlgraph::LogicalType::int64()),
@@ -402,12 +559,19 @@ std::vector<orlgraph::NodeDefinition> make_solver_definitions() {
 
 std::vector<orlgraph::NodeDefinition> make_constraint_definitions() {
     const auto indices = [] {
-        return std::vector<orlgraph::Port>{
+        auto result = std::vector<orlgraph::Port>{
             stdlib_scalar_port("source_index", orlgraph::LogicalType::int64()),
             stdlib_scalar_port("destination_index", orlgraph::LogicalType::int64()),
             stdlib_scalar_port("source_count", orlgraph::LogicalType::int64()),
             stdlib_scalar_port("destination_count", orlgraph::LogicalType::int64()),
         };
+        result[0].semantic = std::string{kSceneArrayIndexSemantic};
+        result[1].semantic = std::string{kSceneArrayIndexSemantic};
+        result[0].default_value = orlgraph::ConstantValue{
+            orlgraph::LogicalType::int64(), std::int64_t{0}};
+        result[1].default_value = orlgraph::ConstantValue{
+            orlgraph::LogicalType::int64(), std::int64_t{0}};
+        return result;
     };
     const auto copy_inputs = [&indices] {
         auto result = std::vector<orlgraph::Port>{
@@ -416,6 +580,9 @@ std::vector<orlgraph::NodeDefinition> make_constraint_definitions() {
             stdlib_buffer_port("destination",
                 orlgraph::LogicalType::matrix(), "destination_count"),
         };
+        result[0].semantic.clear();
+        result[1].semantic.clear();
+        result.back().access = orlgraph::AccessMode::ReadWrite;
         auto index_ports = indices();
         result.insert(result.end(), index_ports.begin(), index_ports.end());
         return result;
@@ -439,6 +606,15 @@ std::vector<orlgraph::NodeDefinition> make_constraint_definitions() {
         stdlib_scalar_port("target_count", orlgraph::LogicalType::int64()),
         stdlib_scalar_port("subject_count", orlgraph::LogicalType::int64()),
     };
+    aim_inputs[0].semantic.clear();
+    aim_inputs[1].semantic.clear();
+    aim_inputs[3].semantic = std::string{kSceneArrayIndexSemantic};
+    aim_inputs[4].semantic = std::string{kSceneArrayIndexSemantic};
+    aim_inputs[3].default_value = orlgraph::ConstantValue{
+        orlgraph::LogicalType::int64(), std::int64_t{0}};
+    aim_inputs[4].default_value = orlgraph::ConstantValue{
+        orlgraph::LogicalType::int64(), std::int64_t{0}};
+    aim_inputs[1].access = orlgraph::AccessMode::ReadWrite;
     return {
         make_stdlib_definition("constraint", "aim", std::move(aim_inputs),
             parameter_effects("constraint_aim", {"targets", "axes"}, {},
@@ -554,7 +730,22 @@ bool register_rig_node_definitions(orlgraph::NodeRegistry& registry,
                 }
             }
         };
+    const auto register_conversion =
+        [&registry, error, &result](
+            orlgraph::ConversionDefinition conversion) {
+            std::string registration_error;
+            if (!registry.register_conversion(std::move(conversion),
+                    &registration_error))
+            {
+                result = false;
+                if (error != nullptr && error->empty()) {
+                    *error = std::move(registration_error);
+                }
+            }
+        };
 
+    register_conversion(make_joint_world_matrix_conversion());
+    register_conversion(make_joint_world_matrix_writeback_conversion());
     register_definition(make_capture_definition(resources));
     register_definition(make_deform_definition(resources));
     for (auto& definition : make_input_definitions()) {

@@ -71,6 +71,7 @@ struct LlvmIrCodegen::Impl {
         llvm::Value *slot = nullptr;
         llvm::Type *type = nullptr;
         bool is_buffer = false;
+        bool is_fixed_array = false;
     };
 
     struct LoopContext {
@@ -391,7 +392,7 @@ struct LlvmIrCodegen::Impl {
             if (parameter_ast.is_buffer) {
                 llvm::Type *element_type = MapTypeName(parameter_ast.type_name);
                 AddVariable(parameter_ast.name,
-                            VariableInfo{&argument, element_type, true});
+                            VariableInfo{&argument, element_type, true, false});
                 continue;
             }
             llvm::AllocaInst *slot = CreateEntryAlloca(parameter_ast.name, argument.getType());
@@ -560,7 +561,8 @@ struct LlvmIrCodegen::Impl {
             llvm::Type *array_type = llvm::ArrayType::get(element_type, declaration.array_size);
             llvm::AllocaInst *slot = CreateEntryAlloca(declaration.variable_name, array_type);
             builder_.CreateStore(DefaultValueFor(array_type), slot);
-            AddVariable(declaration.variable_name, VariableInfo{slot, array_type});
+            AddVariable(declaration.variable_name,
+                VariableInfo{slot, array_type, false, true});
             return true;
         }
 
@@ -1148,6 +1150,9 @@ struct LlvmIrCodegen::Impl {
             return nullptr;
         }
         if (variable->is_buffer) {
+            return variable->slot;
+        }
+        if (variable->is_fixed_array) {
             return variable->slot;
         }
         return builder_.CreateLoad(variable->type, variable->slot, identifier.name + ".val");

@@ -44,6 +44,19 @@ const ParameterDesc* find_parameter(const std::vector<ParameterDesc>& parameters
     return nullptr;
 }
 
+ParameterKind parameter_kind_for(const orlgraph::LogicalType& type) {
+    switch (type.kind) {
+    case orlgraph::LogicalTypeKind::Buffer:
+        return ParameterKind::Buffer;
+    case orlgraph::LogicalTypeKind::Int64:
+        return ParameterKind::Int64;
+    case orlgraph::LogicalTypeKind::Float64:
+        return ParameterKind::Float64;
+    default:
+        return ParameterKind::Unsupported;
+    }
+}
+
 bool has_required_bytes(const GraphInputBinding& binding,
     const ParameterDesc& parameter)
 {
@@ -69,6 +82,22 @@ OrlGraphProgram OrlGraphProgram::Compile(const orlgraph::GraphModule& module,
         module, registry, std::move(options));
     result.source_ = lowered.source;
     result.entry_function_ = lowered.entry_function;
+    result.scene_revision_ = lowered.scene_revision;
+    for (const auto& output : lowered.outputs) {
+        result.outputs_.push_back(GraphOutputDescriptor{
+            output.id,
+            output.name,
+            output.type,
+            output.domain,
+            output.shape,
+            output.binding,
+            output.semantic,
+            output.coordinate_space,
+            parameter_kind_for(output.type),
+            output.source_parameter,
+            output.returned,
+        });
+    }
     for (const auto& diagnostic : lowered.diagnostics) {
         result.errors_.push_back(diagnostic.code + ": " + diagnostic.message);
     }
@@ -109,6 +138,17 @@ const std::vector<std::string>& OrlGraphProgram::errors() const {
     return errors_;
 }
 
+const GraphOutputValue* GraphEvaluationResult::output(
+    const orlgraph::StableId& id) const
+{
+    for (const auto& value : outputs) {
+        if (value.descriptor.id == id) {
+            return &value;
+        }
+    }
+    return nullptr;
+}
+
 OrlGraphExecution OrlGraphExecution::Create(const OrlGraphProgram& program,
     Backend backend)
 {
@@ -126,6 +166,7 @@ OrlGraphExecution OrlGraphExecution::Create(const OrlGraphProgram& program,
         result.execution_.reset();
     } else {
         result.parameters_ = program.parameters();
+        result.outputs_ = program.outputs();
     }
     return result;
 }
@@ -143,6 +184,8 @@ bool OrlGraphExecution::bind_buffer(std::string_view parameter, OrlBuffer& buffe
         errors_ = execution_->errors();
         return false;
     }
+    host_buffers_[std::string{parameter}] = &buffer;
+    device_buffers_.erase(std::string{parameter});
     return true;
 }
 
@@ -157,6 +200,9 @@ bool OrlGraphExecution::bind_device_buffer(std::string_view parameter,
         errors_ = execution_->errors();
         return false;
     }
+    device_buffers_[std::string{parameter}] =
+        DeviceBufferView{device_ptr, bytes};
+    host_buffers_.erase(std::string{parameter});
     return true;
 }
 
@@ -169,6 +215,8 @@ bool OrlGraphExecution::bind_int(std::string_view parameter, std::int64_t value)
         errors_ = execution_->errors();
         return false;
     }
+    host_ints_[std::string{parameter}] = value;
+    host_floats_.erase(std::string{parameter});
     return true;
 }
 
@@ -181,6 +229,8 @@ bool OrlGraphExecution::bind_float(std::string_view parameter, double value) {
         errors_ = execution_->errors();
         return false;
     }
+    host_floats_[std::string{parameter}] = value;
+    host_ints_.erase(std::string{parameter});
     return true;
 }
 
@@ -198,6 +248,12 @@ bool OrlGraphExecution::bind_graph_inputs(const orlgraph::GraphModule& module,
 
     errors_.clear();
     execution_->clear_bindings();
+    host_buffers_.clear();
+    device_buffers_.clear();
+    host_ints_.clear();
+    host_floats_.clear();
+    last_result_.reset();
+    last_outputs_.clear();
     for (const auto& [id, input] : module.inputs()) {
         GraphInputBinding binding;
         std::string resolve_error;
@@ -289,6 +345,12 @@ void OrlGraphExecution::clear_bindings() {
     if (execution_.has_value()) {
         execution_->clear_bindings();
     }
+    host_buffers_.clear();
+    device_buffers_.clear();
+    host_ints_.clear();
+    host_floats_.clear();
+    last_result_.reset();
+    last_outputs_.clear();
 }
 
 std::optional<std::int64_t> OrlGraphExecution::evaluate(std::uint32_t element_count) {
@@ -299,7 +361,71 @@ std::optional<std::int64_t> OrlGraphExecution::evaluate(std::uint32_t element_co
     const auto result = execution_->evaluate(element_count);
     if (!result.has_value()) {
         errors_ = execution_->errors();
+    } else {
+        last_result_ = *result;
     }
+    return result;
+}
+
+GraphEvaluationResult OrlGraphExecution::evaluate_result(
+    std::uint32_t element_count)
+{
+    GraphEvaluationResult result;
+    const auto status = evaluate(element_count);
+    if (!status.has_value()) {
+        result.errors = errors_;
+        last_outputs_.clear();
+        return result;
+    }
+
+    result.ok = true;
+    result.status = status;
+    for (const auto& descriptor : outputs_) {
+        GraphOutputValue value;
+        value.descriptor = descriptor;
+        if (descriptor.returned
+            && descriptor.kind == ParameterKind::Int64)
+        {
+            value.int_value = status;
+        }
+        if (!descriptor.source_parameter.empty()
+            && descriptor.kind == ParameterKind::Int64
+            && !value.int_value.has_value())
+        {
+            const auto found = host_ints_.find(descriptor.source_parameter);
+            if (found != host_ints_.end()) {
+                value.int_value = found->second;
+            }
+        }
+        if (!descriptor.source_parameter.empty()
+            && descriptor.kind == ParameterKind::Float64)
+        {
+            const auto found =
+                host_floats_.find(descriptor.source_parameter);
+            if (found != host_floats_.end()) {
+                value.float_value = found->second;
+            }
+        }
+        if (!descriptor.source_parameter.empty()) {
+            const auto host = host_buffers_.find(descriptor.source_parameter);
+            if (host != host_buffers_.end()) {
+                value.buffer = host->second;
+            }
+            const auto device = device_buffers_.find(
+                descriptor.source_parameter);
+            if (device != device_buffers_.end()) {
+                value.device_view = device->second;
+            } else if (execution_.has_value()
+                && execution_->backend() == Backend::Cuda
+                && descriptor.kind == ParameterKind::Buffer)
+            {
+                value.device_view = execution_->device_buffer_view(
+                    descriptor.source_parameter);
+            }
+        }
+        result.outputs.push_back(std::move(value));
+    }
+    last_outputs_ = result.outputs;
     return result;
 }
 
@@ -312,6 +438,8 @@ bool OrlGraphExecution::evaluate_device(std::uint32_t element_count) {
         errors_ = execution_->errors();
         return false;
     }
+    last_result_ = std::nullopt;
+    last_outputs_.clear();
     return true;
 }
 
@@ -366,6 +494,17 @@ const std::vector<std::string>& OrlGraphExecution::errors() const {
 const std::string& OrlGraphExecution::ir() const {
     static const std::string empty;
     return execution_.has_value() ? execution_->ir() : empty;
+}
+
+const GraphOutputValue* OrlGraphExecution::output(
+    const orlgraph::StableId& id) const
+{
+    for (const auto& value : last_outputs_) {
+        if (value.descriptor.id == id) {
+            return &value;
+        }
+    }
+    return nullptr;
 }
 
 } // namespace ORL::exec

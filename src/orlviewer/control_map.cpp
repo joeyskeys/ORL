@@ -332,8 +332,16 @@ void ControlMap::detach() {
 
 void ControlMap::bind_op(std::string op, OpHandler handler) {
     unbind_op(op);
+    bind_op_variant(std::move(op),
+        [](const InputEvent&) { return true; }, std::move(handler));
+}
+
+void ControlMap::bind_op_variant(std::string op,
+    OpPredicate predicate, OpHandler handler)
+{
     BoundOp bound;
     bound.name = std::move(op);
+    bound.predicate = std::move(predicate);
     bound.eval = std::move(handler);
     ops.push_back(std::move(bound));
 }
@@ -613,8 +621,12 @@ void ControlMap::poll() {
     poll_holds();
 }
 
+void ControlMap::dispatch_event(const InputEvent& event) {
+    dispatch(event);
+}
+
 void ControlMap::dispatch(const InputEvent& event) {
-    if (auto* current = find_op(modal)) {
+    if (auto* current = find_op(modal, &event)) {
         if (current->active && !current->active()) {
             modal.clear();
         }
@@ -632,7 +644,7 @@ void ControlMap::dispatch(const InputEvent& event) {
             continue;
         }
         for (const auto& name : binding.ops) {
-            auto* op = find_op(name);
+            auto* op = find_op(name, &event);
             if (op == nullptr) {
                 continue;
             }
@@ -682,14 +694,20 @@ void ControlMap::invoke_modal(BoundOp& op, const InputEvent& event) {
     }
 }
 
-ControlMap::BoundOp* ControlMap::find_op(std::string_view name) {
+ControlMap::BoundOp* ControlMap::find_op(
+    std::string_view name, const InputEvent* event)
+{
     if (name.empty()) {
         return nullptr;
     }
     for (auto& op : ops) {
-        if (op.name == name) {
-            return &op;
+        if (op.name != name) {
+            continue;
         }
+        if (event != nullptr && op.predicate && !op.predicate(*event)) {
+            continue;
+        }
+        return &op;
     }
     return nullptr;
 }

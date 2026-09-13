@@ -32,6 +32,11 @@ bool Port::compatible_value(const Port& source) const {
     {
         return false;
     }
+    if (!semantic.empty() && !source.semantic.empty()
+        && semantic != source.semantic)
+    {
+        return false;
+    }
     return domain == source.domain || domain.kind == DomainKind::Constant
         || source.domain.kind == DomainKind::Constant;
 }
@@ -70,10 +75,32 @@ bool NodeRegistry::register_definition(NodeDefinition definition, std::string* e
     if (definition.qualified_name.empty()) {
         return set_error(error, "Node definition name is empty");
     }
-    if (values_.contains(definition.id)) {
-        return set_error(error, "Duplicate node definition: " + definition.id.value);
+    if (values_.contains(definition.id)
+        || conversions_.contains(definition.id))
+    {
+        return set_error(error,
+            "Duplicate node or conversion definition: " + definition.id.value);
     }
     values_.emplace(definition.id, std::move(definition));
+    return true;
+}
+
+bool NodeRegistry::register_conversion(
+    ConversionDefinition definition, std::string* error)
+{
+    if (definition.id.empty()) {
+        return set_error(error, "Conversion definition ID is empty");
+    }
+    if (definition.qualified_name.empty()) {
+        return set_error(error, "Conversion definition name is empty");
+    }
+    if (values_.contains(definition.id)
+        || conversions_.contains(definition.id))
+    {
+        return set_error(error,
+            "Duplicate conversion or node definition: " + definition.id.value);
+    }
+    conversions_.emplace(definition.id, std::move(definition));
     return true;
 }
 
@@ -84,6 +111,29 @@ const NodeDefinition* NodeRegistry::find(const StableId& id) const {
 
 const NodeDefinition* NodeRegistry::find(std::string_view qualified_name) const {
     for (const auto& [_, definition] : values_) {
+        if (definition.qualified_name == qualified_name) {
+            return &definition;
+        }
+    }
+    return nullptr;
+}
+
+const ConversionDefinition* NodeRegistry::find_conversion(
+    const StableId& id) const
+{
+    const auto found = conversions_.find(id);
+    return found == conversions_.end() ? nullptr : &found->second;
+}
+
+const ConversionDefinition* NodeRegistry::find_conversion(
+    std::string_view qualified_name) const
+{
+    const auto by_id = conversions_.find(
+        StableId{std::string{qualified_name}});
+    if (by_id != conversions_.end()) {
+        return &by_id->second;
+    }
+    for (const auto& [_, definition] : conversions_) {
         if (definition.qualified_name == qualified_name) {
             return &definition;
         }

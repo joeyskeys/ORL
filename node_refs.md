@@ -288,28 +288,72 @@ capture_bind.inverse_binds -> deform.inverse_binds
 deform.posed_positions     -> graph output posed_positions
 ```
 
-### 3.3 Scene lookup input nodes
+### 3.3 Scene input nodes
 
-The runtime registry also exposes two scene lookup nodes:
+The runtime registry exposes scene-wide input nodes:
 
-- `orlrig.input.find_joint`
-- `orlrig.input.find_controller`
+- `orlrig.input.joints`: the packed scene joint buffer;
+- `orlrig.input.controllers`: the packed scene controller transform buffer;
+- `orlrig.input.find_joint`;
+- `orlrig.input.find_controller`;
+- `orlrig.input.find_mesh`.
 
-Both are `Runtime` nodes with a compile-time string parameter named `name` and
-one scalar `int` output named `handle`. In the viewer, the node editor renders
-`name` as a scene-backed combobox:
+The `find_*` nodes are `Runtime` nodes with a compile-time string parameter
+named `name`. In the viewer, the node editor renders `name` as a scene-backed
+combobox:
 
 - `find_joint` lists existing joint component names and resolves the selected
-  name to its current packed-joint index.
+  name to a stable component handle plus its current packed-joint index.
 - `find_controller` lists existing controller component names and resolves the
-  selected name to its component handle.
+  selected name to a stable component handle plus its current packed-controller
+  index.
+- `find_mesh` lists existing mesh names and resolves the selected name to its
+  scene mesh handle.
 
-The output is intentionally represented as `int` because the current graph IR
-has no opaque-handle type. A runtime dispatcher interprets the value according
-to the node definition's semantic (`scene.joint_handle` or
-`scene.controller_handle`). The scene list is refreshed as the viewer scene
-changes; a saved graph stores the selected name, not a transient component
-pointer.
+The lookup nodes expose a scalar `int` `handle` output with a
+`scene.<kind>.handle` semantic. This is the session-stable `ComponentId`, not
+an array position. `find_joint` and `find_controller` also expose a scalar
+`int` `index` output with semantic `scene.array_index`; it is recomputed from
+the current packed ordering. Array-index inputs on constraints use the same
+semantic, so connecting a stable handle directly to `source_index`,
+`destination_index`, `target_index`, or `subject_index` is rejected by both
+the editor and graph validation. A saved graph stores the lookup `name`
+parameter, never a transient packed index or component pointer.
+
+`find_joint` and `find_controller` additionally expose a one-element
+`buffer<matrix>` output named `xform`, in world space, so they can feed
+transform-oriented graph operations directly. The scene input catalog tracks
+membership/order changes with a scene-input revision. Any lowered program
+that embeds resolved index expressions should be tagged with that revision
+and rebuilt when `scene_input_revision()` changes.
+
+The `find_joint.xform` socket is an implicit output adapter. Its visible
+contract remains `buffer<matrix>`, but the socket metadata references the
+stable conversion `orlrig.convert.joint_world_matrix` and consumes the
+`index` output. During ORL lowering, a use of that socket emits a hidden
+one-element matrix buffer and initializes it with
+`joint_world_matrix(joints, index)`. The reverse writeback selector retains
+the stable `handle`; the scene resolver maps it to the current packed index
+before the helper call. The conversion resolves the auxiliary
+`scene.rig.joints` graph input by semantic binding, so no explicit conversion
+node is required in the editable graph. The socket also declares the reverse
+conversion `orlrig.convert.joint_world_matrix_to_trs`. When the socket is
+connected to a mutable constraint input, the constraint edits the temporary
+world matrix and lowering emits
+`joint_write_world_matrix(joints, resolved_index, temporary)` afterward. That helper
+converts world space back to local space using the selected joint's parent
+inverse, decomposes local translation/rotation/scale, and preserves the
+joint's parent and metadata fields.
+
+Because `xform` is a one-element buffer, its constraint-array selector is
+`0`. Use the `index` output only when connecting a find node's stable scene
+selection to an aggregate `joints` or `controllers` buffer; do not use the
+packed scene index to index the one-element `xform` result.
+
+Scene writeback is committed to component storage only after a graph
+evaluation with host readback. Device-only evaluation must not be committed
+because the CPU-side packed TRS values may be stale. The same registry
+mechanism can be used for future scalar/vector, matrix, and buffer adapters.
 
 ## 4. Deformer node candidates
 
@@ -373,7 +417,7 @@ backend. The graph-level runtime definition exposes the output as
 Each public procedure in this section has a registered graph definition with
 the corresponding `orlrig.auto_weight.*` ID. The definition uses the
 procedure's buffer parameters as input ports, exposes its integer return as
-`result`, declares buffer writes as observable effects, and advertises CPU
+`status`, declares buffer writes as observable effects, and advertises CPU
 and CUDA capability when the implementation contains a parallel vertex pass.
 
 Auto-weight functions operate on a mesh position buffer, a joint buffer, and

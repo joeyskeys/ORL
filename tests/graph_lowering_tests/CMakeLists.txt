@@ -10,4 +10,5 @@ target_link_libraries(orl_graph_lowering_tests
     PRIVATE
         Catch2::Catch2WithMain
         orlexec
+        orlrig
 )

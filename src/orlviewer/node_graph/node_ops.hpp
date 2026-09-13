@@ -17,14 +17,8 @@ namespace ORL::node_graph
 
 using CreateNodeCallback = std::function<void(const orlgraph::StableId&)>;
 using CreateGraphInputCallback = std::function<void(const orlgraph::StableId&)>;
-using CreateInputCallback = std::function<void(const orlgraph::StableId&)>;
 
 struct GraphInputMenuEntry {
-    orlgraph::StableId id;
-    std::string label;
-};
-
-struct SceneInputMenuEntry {
     orlgraph::StableId id;
     std::string label;
 };
@@ -34,15 +28,9 @@ struct SceneInputMenuEntry {
 void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
     const QPoint& global_position, CreateNodeCallback callback);
 void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
-    const std::vector<SceneInputMenuEntry>& scene_inputs,
-    const QPoint& global_position, CreateNodeCallback node_callback,
-    CreateInputCallback input_callback);
-void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
     const std::vector<GraphInputMenuEntry>& graph_inputs,
-    const std::vector<SceneInputMenuEntry>& scene_inputs,
     const QPoint& global_position, CreateNodeCallback node_callback,
-    CreateGraphInputCallback graph_input_callback,
-    CreateInputCallback input_callback);
+    CreateGraphInputCallback graph_input_callback);
 
 // Add a uniquely named instance of a registered definition to a graph.
 bool create_node(orlgraph::GraphModule& graph, const orlgraph::NodeRegistry& registry,

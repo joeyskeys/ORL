@@ -160,6 +160,34 @@ Json port_value(const Port& port, Allocator& allocator) {
     }
     add(result, "semantic", string_value(port.semantic, allocator), allocator);
     add(result, "coordinate_space", string_value(port.coordinate_space, allocator), allocator);
+    if (port.access != AccessMode::Read) {
+        add(result, "access",
+            Json(static_cast<std::uint32_t>(port.access)), allocator);
+    }
+    if (port.output_adapter.has_value()) {
+        Json adapter(rapidjson::kObjectType);
+        add(adapter, "conversion",
+            string_value(port.output_adapter->conversion.value, allocator),
+            allocator);
+        add(adapter, "source_port",
+            string_value(port.output_adapter->source_port.value, allocator),
+            allocator);
+        if (port.output_adapter->writeback_conversion.has_value()) {
+            add(adapter, "writeback_conversion",
+                string_value(
+                    port.output_adapter->writeback_conversion->value,
+                    allocator),
+                allocator);
+        }
+        if (port.output_adapter->writeback_source_port.has_value()) {
+            add(adapter, "writeback_source_port",
+                string_value(
+                    port.output_adapter->writeback_source_port->value,
+                    allocator),
+                allocator);
+        }
+        add(result, "output_adapter", std::move(adapter), allocator);
+    }
     return result;
 }
 
@@ -231,6 +259,46 @@ Json definition_value(const NodeDefinition& definition, Allocator& allocator) {
     add(result, "pure", Json(definition.pure), allocator);
     add(result, "stateful", Json(definition.stateful), allocator);
     add(result, "provenance", provenance_value(definition.provenance, allocator), allocator);
+    return result;
+}
+
+Json conversion_value(const ConversionDefinition& definition,
+    Allocator& allocator)
+{
+    Json result(rapidjson::kObjectType);
+    add(result, "id", string_value(definition.id.value, allocator), allocator);
+    add(result, "qualified_name",
+        string_value(definition.qualified_name, allocator), allocator);
+    add(result, "version", version_value(definition.version, allocator), allocator);
+
+    Json implementation(rapidjson::kObjectType);
+    add(implementation, "kind",
+        Json(static_cast<std::uint32_t>(
+            definition.implementation.kind)), allocator);
+    add(implementation, "module",
+        string_value(definition.implementation.module, allocator), allocator);
+    add(implementation, "function",
+        string_value(definition.implementation.function, allocator), allocator);
+    add(implementation, "subgraph",
+        string_value(definition.implementation.subgraph.value, allocator), allocator);
+    add(implementation, "runtime",
+        string_value(definition.implementation.runtime_name, allocator), allocator);
+    add(result, "implementation", std::move(implementation), allocator);
+
+    add(result, "source", port_value(definition.source, allocator), allocator);
+    add(result, "output", port_value(definition.output, allocator), allocator);
+    Json auxiliary(rapidjson::kArrayType);
+    for (const auto& port : definition.auxiliary_inputs) {
+        auxiliary.PushBack(port_value(port, allocator), allocator);
+    }
+    add(result, "auxiliary_inputs", std::move(auxiliary), allocator);
+    add(result, "emitter",
+        Json(static_cast<std::uint32_t>(definition.emitter)), allocator);
+    add(result, "pure", Json(definition.pure), allocator);
+    if (definition.selector.has_value()) {
+        add(result, "selector", port_value(*definition.selector, allocator),
+            allocator);
+    }
     return result;
 }
 
@@ -735,6 +803,40 @@ bool parse_port(const Json& value, Port* output,
     }
     read_string(value, "semantic", &output->semantic, diagnostics, false);
     read_string(value, "coordinate_space", &output->coordinate_space, diagnostics, false);
+    std::uint32_t access = 0;
+    if (member(value, "access") != nullptr) {
+        read_u32(value, "access", &access, diagnostics);
+        output->access = static_cast<AccessMode>(access);
+    }
+    const Json* adapter = member(value, "output_adapter");
+    if (adapter != nullptr && adapter->IsObject()) {
+        std::string conversion;
+        std::string source_port;
+        if (read_string(*adapter, "conversion", &conversion, diagnostics)
+            && read_string(*adapter, "source_port", &source_port, diagnostics))
+        {
+            output->output_adapter = Port::OutputAdapter{
+                StableId{std::move(conversion)},
+                StableId{std::move(source_port)},
+                std::nullopt};
+            std::string writeback;
+            if (read_string(*adapter, "writeback_conversion", &writeback,
+                    diagnostics, false)
+                && !writeback.empty())
+            {
+                output->output_adapter->writeback_conversion =
+                    StableId{std::move(writeback)};
+            }
+            std::string writeback_source;
+            if (read_string(*adapter, "writeback_source_port",
+                    &writeback_source, diagnostics, false)
+                && !writeback_source.empty())
+            {
+                output->output_adapter->writeback_source_port =
+                    StableId{std::move(writeback_source)};
+            }
+        }
+    }
     return true;
 }
 
@@ -850,6 +952,69 @@ bool parse_definition(const Json& value, NodeDefinition* output,
     const Json* provenance = member(value, "provenance");
     if (provenance != nullptr) {
         parse_provenance(*provenance, &output->provenance, diagnostics);
+    }
+    return true;
+}
+
+bool parse_conversion(const Json& value, ConversionDefinition* output,
+    std::vector<Diagnostic>* diagnostics)
+{
+    std::string id;
+    if (!read_string(value, "id", &id, diagnostics)
+        || !read_string(value, "qualified_name",
+            &output->qualified_name, diagnostics))
+    {
+        return false;
+    }
+    output->id = StableId{std::move(id)};
+    const Json* version = member(value, "version");
+    if (version == nullptr || !parse_version(*version, &output->version, diagnostics)) {
+        return false;
+    }
+
+    const Json* implementation = member(value, "implementation");
+    if (implementation != nullptr && implementation->IsObject()) {
+        std::uint32_t kind = 0;
+        read_u32(*implementation, "kind", &kind, diagnostics);
+        output->implementation.kind = static_cast<ImplementationKind>(kind);
+        read_string(*implementation, "module",
+            &output->implementation.module, diagnostics, false);
+        read_string(*implementation, "function",
+            &output->implementation.function, diagnostics, false);
+        std::string subgraph;
+        read_string(*implementation, "subgraph", &subgraph, diagnostics, false);
+        output->implementation.subgraph = StableId{std::move(subgraph)};
+        read_string(*implementation, "runtime",
+            &output->implementation.runtime_name, diagnostics, false);
+    }
+
+    const Json* source = member(value, "source");
+    const Json* result = member(value, "output");
+    if (source == nullptr || result == nullptr
+        || !parse_port(*source, &output->source, diagnostics)
+        || !parse_port(*result, &output->output, diagnostics))
+    {
+        return false;
+    }
+    const Json* auxiliary = member(value, "auxiliary_inputs");
+    if (auxiliary != nullptr && auxiliary->IsArray()) {
+        for (const auto& item : auxiliary->GetArray()) {
+            Port port;
+            if (parse_port(item, &port, diagnostics)) {
+                output->auxiliary_inputs.push_back(std::move(port));
+            }
+        }
+    }
+    std::uint32_t emitter = 0;
+    read_u32(value, "emitter", &emitter, diagnostics);
+    output->emitter = static_cast<ConversionEmitterKind>(emitter);
+    read_bool(value, "pure", &output->pure, diagnostics, true);
+    const Json* selector = member(value, "selector");
+    if (selector != nullptr && selector->IsObject()) {
+        Port port;
+        if (parse_port(*selector, &port, diagnostics)) {
+            output->selector = std::move(port);
+        }
     }
     return true;
 }
@@ -1186,6 +1351,13 @@ OroSerializationResult serialize_oro(const GraphModule& module,
         definitions.PushBack(definition_value(definition, allocator), allocator);
     }
     add(document, "definitions", std::move(definitions), allocator);
+    Json conversions(rapidjson::kArrayType);
+    for (const auto& [_, conversion] : registry.conversions()) {
+        conversions.PushBack(conversion_value(conversion, allocator), allocator);
+    }
+    if (!conversions.Empty()) {
+        add(document, "conversions", std::move(conversions), allocator);
+    }
     add(document, "graph", graph_value(module, allocator), allocator);
 
     const std::string base = write_json(document);
@@ -1213,6 +1385,7 @@ OroDocument deserialize_oro(std::string_view text) {
     }
     const Json* header = member(document, "header");
     const Json* definitions = member(document, "definitions");
+    const Json* conversions = member(document, "conversions");
     const Json* graph = member(document, "graph");
     if (header == nullptr || definitions == nullptr || graph == nullptr
         || !header->IsObject() || !definitions->IsArray() || !graph->IsObject())
@@ -1273,6 +1446,25 @@ OroDocument deserialize_oro(std::string_view text) {
                     DiagnosticSeverity::Error, "ORLGRAPH_DUPLICATE_DEFINITION",
                     std::move(error), {}, {}, {},
                 });
+            }
+        }
+    }
+    if (conversions != nullptr && conversions->IsArray()) {
+        for (const auto& item : conversions->GetArray()) {
+            ConversionDefinition conversion;
+            if (parse_conversion(item, &conversion,
+                    &result.diagnostics))
+            {
+                std::string error;
+                if (!result.registry.register_conversion(
+                        std::move(conversion), &error))
+                {
+                    result.diagnostics.push_back({
+                        DiagnosticSeverity::Error,
+                        "ORLGRAPH_DUPLICATE_CONVERSION",
+                        std::move(error), {}, {}, {},
+                    });
+                }
             }
         }
     }

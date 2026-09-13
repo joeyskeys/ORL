@@ -28,8 +28,10 @@ const Port* find_port(const NodeDefinition* definition,
 struct EndpointInfo {
     const Port* port = nullptr;
     LogicalType type;
+    PortCardinality cardinality = PortCardinality::Scalar;
     Domain domain = Domain::constant();
     Shape shape = Shape::scalar();
+    std::string semantic;
     PortDirection direction = PortDirection::Input;
     bool valid = false;
 };
@@ -46,8 +48,10 @@ EndpointInfo endpoint_info(const GraphModule& module,
             return result;
         }
         result.type = result.port->type;
+        result.cardinality = result.port->cardinality;
         result.domain = result.port->domain;
         result.shape = result.port->shape;
+        result.semantic = result.port->semantic;
         result.direction = result.port->direction;
         result.valid = true;
         return result;
@@ -59,8 +63,11 @@ EndpointInfo endpoint_info(const GraphModule& module,
             return result;
         }
         result.type = input->type;
+        result.cardinality = input->type.kind == LogicalTypeKind::Buffer
+            ? PortCardinality::Buffer : PortCardinality::Scalar;
         result.domain = input->domain;
         result.shape = input->shape;
+        result.semantic = input->semantic;
         result.direction = PortDirection::Output;
         result.valid = true;
         return result;
@@ -72,8 +79,11 @@ EndpointInfo endpoint_info(const GraphModule& module,
             return result;
         }
         result.type = output->type;
+        result.cardinality = output->type.kind == LogicalTypeKind::Buffer
+            ? PortCardinality::Buffer : PortCardinality::Scalar;
         result.domain = output->domain;
         result.shape = output->shape;
+        result.semantic = output->semantic;
         result.direction = PortDirection::Input;
         result.valid = true;
         return result;
@@ -83,9 +93,44 @@ EndpointInfo endpoint_info(const GraphModule& module,
 }
 
 bool shape_compatible(const Shape& source, const Shape& destination) {
-    return source == destination
-        || source.is_scalar()
-        || destination.is_scalar();
+    if (source == destination || source.is_scalar() || destination.is_scalar()) {
+        return true;
+    }
+    if (source.dimensions.size() != destination.dimensions.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < source.dimensions.size(); ++index) {
+        const auto& left = source.dimensions[index];
+        const auto& right = destination.dimensions[index];
+        if (left.kind != right.kind) {
+            return false;
+        }
+        if (left.kind == ShapeDimensionKind::Constant
+            && right.kind == ShapeDimensionKind::Constant
+            && left.constant != right.constant)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool port_contract_matches(const Port& left, const Port& right) {
+    return left.type == right.type
+        && left.cardinality == right.cardinality
+        && left.domain == right.domain
+        && left.shape == right.shape
+        && (left.semantic.empty() || right.semantic.empty()
+            || left.semantic == right.semantic);
+}
+
+bool endpoint_contract_matches(const EndpointInfo& endpoint, const Port& port) {
+    return endpoint.type == port.type
+        && endpoint.cardinality == port.cardinality
+        && endpoint.domain == port.domain
+        && endpoint.shape == port.shape
+        && (endpoint.semantic.empty() || port.semantic.empty()
+            || endpoint.semantic == port.semantic);
 }
 
 } // namespace
@@ -140,6 +185,93 @@ ValidationResult validate(const GraphModule& module, const NodeRegistry& registr
             if (!port_ids.insert(port.id).second) {
                 result.error("ORLGRAPH_DUPLICATE_PORT",
                     "Duplicate port: " + port.id.value, node_id, port.id);
+            }
+            if (!port.output_adapter.has_value()) {
+                continue;
+            }
+            const auto& adapter = *port.output_adapter;
+            const auto* conversion =
+                registry.find_conversion(adapter.conversion);
+            if (conversion == nullptr) {
+                result.error("ORLGRAPH_UNKNOWN_CONVERSION",
+                    "Output socket references an unknown conversion: "
+                        + adapter.conversion.value,
+                    node_id, port.id);
+                continue;
+            }
+            const auto* source = definition->output(
+                adapter.source_port.value);
+            if (source == nullptr) {
+                result.error("ORLGRAPH_INVALID_OUTPUT_ADAPTER",
+                    "Output adapter source socket does not exist: "
+                        + adapter.source_port.value,
+                    node_id, port.id);
+                continue;
+            }
+            if (source == &port) {
+                result.error("ORLGRAPH_INVALID_OUTPUT_ADAPTER",
+                    "Output adapter cannot consume its own socket",
+                    node_id, port.id);
+                continue;
+            }
+            if (!port_contract_matches(*source, conversion->source)) {
+                result.error("ORLGRAPH_CONVERSION_SOURCE",
+                    "Output adapter source contract does not match conversion",
+                    node_id, port.id);
+            }
+            if (!port_contract_matches(port, conversion->output)) {
+                result.error("ORLGRAPH_CONVERSION_OUTPUT",
+                    "Output adapter socket contract does not match conversion",
+                    node_id, port.id);
+            }
+            if (adapter.writeback_conversion.has_value()) {
+                const auto* writeback = registry.find_conversion(
+                    *adapter.writeback_conversion);
+                if (writeback == nullptr) {
+                    result.error("ORLGRAPH_UNKNOWN_CONVERSION",
+                        "Output socket references an unknown writeback "
+                        "conversion: "
+                            + adapter.writeback_conversion->value,
+                        node_id, port.id);
+                    continue;
+                }
+                if (writeback->emitter
+                    != ConversionEmitterKind::OrlFunctionWriteback)
+                {
+                    result.error("ORLGRAPH_INVALID_WRITEBACK",
+                        "Writeback conversion has an incompatible emitter",
+                        node_id, port.id);
+                }
+                if (!port_contract_matches(port, writeback->source)) {
+                    result.error("ORLGRAPH_WRITEBACK_SOURCE",
+                        "Writeback conversion source does not match the "
+                        "adapted socket",
+                        node_id, port.id);
+                }
+                const Port* writeback_source = source;
+                if (adapter.writeback_source_port.has_value()) {
+                    writeback_source = definition->output(
+                        adapter.writeback_source_port->value);
+                    if (writeback_source == nullptr) {
+                        result.error("ORLGRAPH_INVALID_WRITEBACK",
+                            "Writeback selector socket does not exist: "
+                                + adapter.writeback_source_port->value,
+                            node_id, port.id);
+                    }
+                }
+                if (!writeback->selector.has_value()) {
+                    result.error("ORLGRAPH_WRITEBACK_SELECTOR",
+                        "Writeback conversion has no selector contract",
+                        node_id, port.id);
+                } else if (writeback_source != nullptr
+                    && !port_contract_matches(
+                        *writeback_source, *writeback->selector))
+                {
+                    result.error("ORLGRAPH_WRITEBACK_SELECTOR",
+                        "Writeback selector does not match the selected "
+                        "adapter source",
+                        node_id, port.id);
+                }
             }
         }
 
@@ -272,9 +404,36 @@ ValidationResult validate(const GraphModule& module, const NodeRegistry& registr
             }
         }
 
+        const auto* connection_conversion = connection.conversion.empty()
+            ? nullptr : registry.find_conversion(connection.conversion);
+        if (!connection.conversion.empty()
+            && connection_conversion == nullptr)
+        {
+            result.error("ORLGRAPH_UNKNOWN_CONVERSION",
+                "Connection references an unknown conversion: "
+                    + connection.conversion);
+        }
+        if (connection_conversion != nullptr) {
+            if (!endpoint_contract_matches(source,
+                    connection_conversion->source)
+                || !endpoint_contract_matches(destination,
+                    connection_conversion->output))
+            {
+                result.error("ORLGRAPH_CONVERSION_CONTRACT",
+                    "Connection conversion does not match its source and "
+                    "destination contracts");
+            }
+        }
         if (source.type != destination.type && connection.conversion.empty()) {
             result.error("ORLGRAPH_TYPE_MISMATCH",
                 "Connection requires an explicit conversion");
+        }
+        if (!source.semantic.empty() && !destination.semantic.empty()
+            && source.semantic != destination.semantic
+            && connection.conversion.empty())
+        {
+            result.error("ORLGRAPH_SEMANTIC_MISMATCH",
+                "Connection semantic does not match its destination");
         }
         if (!shape_compatible(source.shape, destination.shape)
             && connection.conversion.empty())

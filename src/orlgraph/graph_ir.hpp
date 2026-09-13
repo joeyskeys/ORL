@@ -77,6 +77,15 @@ struct ImplementationRef {
     std::string runtime_name;
 };
 
+// Describes a conversion that may be attached to an output socket. The
+// conversion definition is reusable; each socket or connection refers to it
+// by stable ID and may be materialized as a hidden node during lowering.
+enum class ConversionEmitterKind : std::uint8_t {
+    OrlFunctionResult,
+    OrlMatrixBuffer,
+    OrlFunctionWriteback,
+};
+
 struct Port {
     StableId id;
     std::string name;
@@ -89,6 +98,19 @@ struct Port {
     std::optional<ConstantValue> default_value;
     std::string semantic;
     std::string coordinate_space;
+
+    struct OutputAdapter {
+        StableId conversion;
+        StableId source_port;
+        std::optional<StableId> writeback_conversion;
+        std::optional<StableId> writeback_source_port;
+
+        friend bool operator==(const OutputAdapter&, const OutputAdapter&) = default;
+    };
+    std::optional<OutputAdapter> output_adapter;
+    AccessMode access = AccessMode::Read;
+
+    friend bool operator==(const Port&, const Port&) = default;
 
     bool compatible_value(const Port& source) const;
 };
@@ -123,20 +145,45 @@ struct NodeDefinition {
     const ParameterSpec* parameter(std::string_view name) const;
 };
 
+struct ConversionDefinition {
+    StableId id;
+    std::string qualified_name;
+    Version version;
+    Port source;
+    Port output;
+    std::vector<Port> auxiliary_inputs;
+    ImplementationRef implementation;
+    ConversionEmitterKind emitter = ConversionEmitterKind::OrlFunctionResult;
+    bool pure = true;
+    std::optional<Port> selector;
+
+    friend bool operator==(const ConversionDefinition&,
+        const ConversionDefinition&) = default;
+};
+
 class GraphModule;
 
 class NodeRegistry {
 public:
     bool register_definition(NodeDefinition definition, std::string* error = nullptr);
+    bool register_conversion(ConversionDefinition definition,
+        std::string* error = nullptr);
     bool register_subgraph(StableId id, GraphModule graph,
         std::string* error = nullptr);
     const NodeDefinition* find(const StableId& id) const;
     const NodeDefinition* find(std::string_view qualified_name) const;
+    const ConversionDefinition* find_conversion(const StableId& id) const;
+    const ConversionDefinition* find_conversion(
+        std::string_view qualified_name) const;
     const GraphModule* find_subgraph(const StableId& id) const;
     const std::map<StableId, NodeDefinition>& definitions() const { return values_; }
+    const std::map<StableId, ConversionDefinition>& conversions() const {
+        return conversions_;
+    }
 
 private:
     std::map<StableId, NodeDefinition> values_;
+    std::map<StableId, ConversionDefinition> conversions_;
     std::map<StableId, std::shared_ptr<GraphModule>> subgraphs_;
 };
 

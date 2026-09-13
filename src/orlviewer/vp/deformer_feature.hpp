@@ -3,9 +3,8 @@
 #include <string>
 #include <string_view>
 
-#include "asset_mgr/scene.h"
 #include "component_manager.hpp"
-#include "../../orlexec/orlrig/runners.hpp"
+#include "../graph_scene_runtime.hpp"
 #include "selection.hpp"
 #include "vp/feature.hpp"
 
@@ -16,7 +15,7 @@ namespace ORL
 // it each frame. Default type is lbs.
 class DeformerFeature final : public vkkk::vp::ViewportFeature<vkkk::vp::ViewportPhase::Scene> {
 public:
-    DeformerFeature(vkkk::Scene& scene, ComponentManager& components,
+    DeformerFeature(SceneGraphContext& graph_context,
         ComponentId deformer_id, ComponentId weight_id, const Selection& selection);
 
     bool set_type(std::string_view name);
@@ -28,19 +27,8 @@ public:
     void on_update(vkkk::Context& context, const vkkk::Context::Frame&);
 
 private:
-    bool setup(vkkk::Context& context);
-    bool evaluate(vkkk::Context& context);
-
-    vkkk::Scene& scene;
-    ComponentManager& components;
-    ComponentId deformer_id;
-    ComponentId weight_id;
-    const Selection& selection;
     std::string type_name{"lbs"};
-    orlrig::LbsRunner runner;
-    bool pending = false;
-    bool logged_rest = false;
-    bool logged_move = false;
+    GraphSceneRuntime runtime;
 };
 
 } // namespace ORL

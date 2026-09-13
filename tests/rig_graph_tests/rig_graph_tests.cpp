@@ -1,5 +1,7 @@
 #if __has_include(<catch2/catch_all.hpp>)
 
+#include <algorithm>
+
 #include <catch2/catch_all.hpp>
 
 #include "orlrig/graph_resources.hpp"
@@ -71,26 +73,133 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
         "orlrig.constraint.copy_translation",
         "orlrig.constraint.copy_rotation",
         "orlrig.constraint.copy_scale",
+        "orlrig.input.joints",
+        "orlrig.input.controllers",
         "orlrig.input.find_joint",
         "orlrig.input.find_controller",
+        "orlrig.input.find_mesh",
     };
 
     for (const auto& name : definitions) {
         const auto* definition = graph.registry.find(name);
         REQUIRE(definition != nullptr);
-        const bool is_find_input = name.rfind("orlrig.input.find_", 0) == 0;
+        const bool is_scene_input = name.rfind("orlrig.input.", 0) == 0;
         REQUIRE(definition->implementation.kind
-            == (is_find_input
+            == (is_scene_input
                 ? ImplementationKind::Runtime
                 : ImplementationKind::OrlFunction));
-        REQUIRE(definition->outputs.size() == 1);
-        if (is_find_input) {
-            REQUIRE(definition->outputs.front().name == "handle");
+        if (is_scene_input) {
+            const bool is_find_input =
+                name.rfind("orlrig.input.find_", 0) == 0;
+            if (!is_find_input) {
+                REQUIRE(definition->outputs.size() == 1);
+                continue;
+            }
+            const bool has_transform =
+                name == "orlrig.input.find_joint"
+                || name == "orlrig.input.find_controller";
+            REQUIRE(definition->outputs.size() == (has_transform ? 3 : 1));
+            REQUIRE(definition->output("handle") != nullptr);
+            if (has_transform) {
+                REQUIRE(definition->output("index") != nullptr);
+                REQUIRE(definition->output("xform") != nullptr);
+                REQUIRE(definition->output("index")->semantic
+                    == std::string{kSceneArrayIndexSemantic});
+            }
             REQUIRE(definition->parameter("name") != nullptr);
         } else {
-            REQUIRE(definition->outputs.front().name == "result");
+            REQUIRE(definition->outputs.size() == 1);
+            REQUIRE(definition->outputs.front().name == "status");
         }
     }
+
+    const auto* conversion = graph.registry.find_conversion(
+        kJointWorldMatrixConversion);
+    REQUIRE(conversion != nullptr);
+    REQUIRE(conversion->source.type == LogicalType::int64());
+    REQUIRE(conversion->source.semantic
+        == std::string{kSceneArrayIndexSemantic});
+    REQUIRE(conversion->output.type
+        == LogicalType::buffer(LogicalType::matrix()));
+    REQUIRE(conversion->auxiliary_inputs.size() == 1);
+    REQUIRE(conversion->auxiliary_inputs.front().semantic
+        == std::string{kSceneJointsBinding});
+    const auto* writeback = graph.registry.find_conversion(
+        kJointWorldMatrixWritebackConversion);
+    REQUIRE(writeback != nullptr);
+    REQUIRE(writeback->source.type
+        == LogicalType::buffer(LogicalType::matrix()));
+    REQUIRE(writeback->output.type
+        == LogicalType::buffer(LogicalType::struct_type("Joint")));
+    REQUIRE(writeback->selector.has_value());
+    REQUIRE(writeback->selector->type == LogicalType::int64());
+    REQUIRE(writeback->selector->semantic
+        == std::string{kSceneJointHandleSemantic});
+    REQUIRE(writeback->emitter
+        == ConversionEmitterKind::OrlFunctionWriteback);
+
+    const auto* find_joint = graph.registry.find("orlrig.input.find_joint");
+    REQUIRE(find_joint != nullptr);
+    const auto* xform = find_joint->output("xform");
+    REQUIRE(xform != nullptr);
+    REQUIRE(xform->output_adapter.has_value());
+    REQUIRE(xform->output_adapter->conversion
+        == StableId{std::string{kJointWorldMatrixConversion}});
+    REQUIRE(xform->output_adapter->source_port == StableId{"index"});
+    REQUIRE(xform->output_adapter->writeback_conversion
+        == StableId{std::string{kJointWorldMatrixWritebackConversion}});
+    REQUIRE(xform->output_adapter->writeback_source_port
+        == StableId{"handle"});
+}
+
+TEST_CASE("scene handle and packed index semantics are not interchangeable",
+    "[orlrig][graph][semantics]")
+{
+    auto rig = make_lbs_graph();
+    NodeDefinition sink;
+    sink.id = StableId{"test.index_sink"};
+    sink.qualified_name = "test.index_sink";
+    sink.implementation.kind = ImplementationKind::Runtime;
+    sink.implementation.runtime_name = "test.index_sink";
+    Port input;
+    input.id = StableId{"index"};
+    input.name = "index";
+    input.direction = PortDirection::Input;
+    input.type = LogicalType::int64();
+    input.semantic = std::string{kSceneArrayIndexSemantic};
+    sink.inputs.push_back(std::move(input));
+    REQUIRE(rig.registry.register_definition(std::move(sink)));
+
+    const auto validate_connection =
+        [&rig](StableId output) {
+            GraphModule module;
+            module.add_node(NodeInstance{
+                StableId{"find"}, StableId{"orlrig.input.find_controller"},
+                "find",
+                {{"name", ConstantValue{
+                    LogicalType::string(), std::string{"ctrl"}}}},
+                {}, InlinePolicy::Default});
+            module.add_node(NodeInstance{
+                StableId{"sink"}, StableId{"test.index_sink"}, "sink",
+                {}, {}, InlinePolicy::Default});
+            REQUIRE(module.add_connection(Connection{
+                Endpoint::node_port(StableId{"find"}, std::move(output)),
+                Endpoint::node_port(StableId{"sink"}, StableId{"index"})}));
+            return validate(module, rig.registry);
+        };
+
+    const auto handle_validation =
+        validate_connection(StableId{"handle"});
+    REQUIRE_FALSE(handle_validation.ok());
+    REQUIRE(std::any_of(handle_validation.diagnostics.begin(),
+        handle_validation.diagnostics.end(),
+        [](const auto& diagnostic) {
+            return diagnostic.code == "ORLGRAPH_SEMANTIC_MISMATCH";
+        }));
+
+    const auto index_validation =
+        validate_connection(StableId{"index"});
+    REQUIRE(index_validation.ok());
 }
 
 #endif

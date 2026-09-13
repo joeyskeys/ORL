@@ -71,6 +71,68 @@ matrix joint_world_matrix(Joint joints[], int index) {
     return world;
 }
 
+quat joint_quat_from_to(vector from, vector to) {
+    if (length(from) < 0.000001 || length(to) < 0.000001) {
+        return quat(0.0, 0.0, 0.0, 1.0);
+    }
+    vector f = normalize(from);
+    vector t = normalize(to);
+    float d = dot(f, t);
+    if (d > 0.999999) {
+        return quat(0.0, 0.0, 0.0, 1.0);
+    }
+    if (d < -0.999999) {
+        vector axis = cross(f, vector(0.0, 1.0, 0.0));
+        if (length(axis) < 0.000001) {
+            axis = cross(f, vector(1.0, 0.0, 0.0));
+        }
+        axis = normalize(axis);
+        return quat_normalize(quat(axis.x, axis.y, axis.z, 0.0));
+    }
+    vector axis = cross(f, t);
+    return quat_normalize(quat(axis.x, axis.y, axis.z, 1.0 + d));
+}
+
+quat joint_quat_from_axes(vector x, vector y, vector z) {
+    quat first = joint_quat_from_to(
+        vector(1.0, 0.0, 0.0), x);
+    vector rotated_y = quat_rotate(first, vector(0.0, 1.0, 0.0));
+    quat second = joint_quat_from_to(rotated_y, y);
+    return quat_normalize(quat_mul(second, first));
+}
+
+int joint_write_world_matrix(Joint joints[], int index, matrix world[]) {
+    if (index < 0) {
+        return 0;
+    }
+    Joint current = joints[index];
+    matrix local = world[0];
+    if (current.parent >= 0) {
+        local = mat_mul(
+            mat_inverse(joint_world_matrix(joints, current.parent)),
+            world[0]);
+    }
+
+    vector x = vector(local[0], local[4], local[8]);
+    vector y = vector(local[1], local[5], local[9]);
+    vector z = vector(local[2], local[6], local[10]);
+    float sx = length(x);
+    float sy = length(y);
+    float sz = length(z);
+    if (sx < 0.000001 || sy < 0.000001 || sz < 0.000001) {
+        return 0;
+    }
+    x = x / sx;
+    y = y / sy;
+    z = z / sz;
+
+    current.translation = vec4(local[3], local[7], local[11], 0.0);
+    current.rotation = joint_quat_from_axes(x, y, z);
+    current.scale = vec4(sx, sy, sz, 0.0);
+    joints[index] = current;
+    return 1;
+}
+
 matrix joint_skin_matrix(matrix world, matrix inverse_bind) {
     return mat_mul(world, inverse_bind);
 }

@@ -20,6 +20,20 @@ struct RigGraphResourceIds {
 
 inline constexpr std::string_view kSceneJointsBinding = "scene.rig.joints";
 inline constexpr std::string_view kSceneJointCountBinding = "scene.rig.joint_count";
+inline constexpr std::string_view kSceneControllersBinding =
+    "scene.rig.controllers";
+inline constexpr std::string_view kSceneControllersCountBinding =
+    "scene.rig.controller_count";
+inline constexpr std::string_view kSceneArrayIndexSemantic =
+    "scene.array_index";
+inline constexpr std::string_view kSceneJointHandleSemantic =
+    "scene.joint.handle";
+inline constexpr std::string_view kSceneControllerHandleSemantic =
+    "scene.controller.handle";
+inline constexpr std::string_view kJointWorldMatrixConversion =
+    "orlrig.convert.joint_world_matrix";
+inline constexpr std::string_view kJointWorldMatrixWritebackConversion =
+    "orlrig.convert.joint_world_matrix_to_trs";
 
 std::string scene_mesh_positions_binding(std::string_view object_name);
 std::string scene_mesh_vertex_count_binding(std::string_view object_name);

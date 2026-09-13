@@ -87,20 +87,9 @@ void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
 }
 
 void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
-    const std::vector<SceneInputMenuEntry>& scene_inputs,
-    const QPoint& global_position, CreateNodeCallback node_callback,
-    CreateInputCallback input_callback)
-{
-    show_create_menu(parent, registry, {}, scene_inputs, global_position,
-        std::move(node_callback), {}, std::move(input_callback));
-}
-
-void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
     const std::vector<GraphInputMenuEntry>& graph_inputs,
-    const std::vector<SceneInputMenuEntry>& scene_inputs,
     const QPoint& global_position, CreateNodeCallback node_callback,
-    CreateGraphInputCallback graph_input_callback,
-    CreateInputCallback input_callback)
+    CreateGraphInputCallback graph_input_callback)
 {
     QMenu menu(parent);
     menu.setTitle(QStringLiteral("Add"));
@@ -120,6 +109,18 @@ void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
 
     std::map<std::string, QMenu*> categories;
     std::vector<MenuEntry> entries;
+    const bool has_registry_input = std::any_of(
+        registry.definitions().begin(), registry.definitions().end(),
+        [](const auto& entry) {
+            return category_name(entry.second.qualified_name)
+                == QStringLiteral("Input");
+        });
+    QMenu* input_category = nullptr;
+    if (has_registry_input || !graph_inputs.empty()) {
+        input_category = menu.addMenu(QStringLiteral("Input"));
+        categories.emplace("Input", input_category);
+    }
+
     for (const auto& [id, definition] : registry.definitions()) {
         const QString category = category_name(definition.qualified_name);
         const std::string category_key = category.toStdString();
@@ -142,13 +143,12 @@ void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
         entries.push_back(MenuEntry{action, category_it->second, search_text});
     }
 
-    if (!graph_inputs.empty()) {
-        auto* graph_category = menu.addMenu(QStringLiteral("Graph Input"));
+    if (input_category != nullptr) {
         for (const auto& input : graph_inputs) {
-            auto* action = graph_category->addAction(
+            auto* action = input_category->addAction(
                 QString::fromStdString(input.label));
             const auto input_id = input.id;
-            const QString search_text = QStringLiteral("Graph Input ")
+            const QString search_text = QStringLiteral("Input ")
                 + QString::fromStdString(input.label);
             QObject::connect(action, &QAction::triggered, &menu,
                 [graph_input_callback, input_id] {
@@ -157,26 +157,9 @@ void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
                     }
                 });
             entries.push_back(MenuEntry{
-                action, graph_category, search_text});
+                action, input_category, search_text});
         }
-    }
 
-    if (!scene_inputs.empty()) {
-        auto* scene_category = menu.addMenu(QStringLiteral("Scene Input"));
-        for (const auto& input : scene_inputs) {
-            auto* action = scene_category->addAction(
-                QString::fromStdString(input.label));
-            const auto input_id = input.id;
-            const QString search_text = QStringLiteral("Scene Input ")
-                + QString::fromStdString(input.label);
-            QObject::connect(action, &QAction::triggered, &menu,
-                [input_callback, input_id] {
-                    if (input_callback) {
-                        input_callback(input_id);
-                    }
-                });
-            entries.push_back(MenuEntry{action, scene_category, search_text});
-        }
     }
 
     if (entries.empty()) {

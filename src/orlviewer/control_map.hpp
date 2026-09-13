@@ -60,9 +60,12 @@ enum class OpMode {
 // `op` may be a string or an array; one trigger invokes every named op
 // in order. Operation handlers are registered in code and invoked from
 // GLFW callbacks or Qt per-frame polling, depending on the viewer backend.
+// A named operation may also have ordered predicate-based overloads; the
+// first overload whose predicate accepts the event is invoked.
 class ControlMap {
 public:
     using OpHandler = std::function<void(const InputEvent&)>;
+    using OpPredicate = std::function<bool(const InputEvent&)>;
 
     ControlMap() = default;
     ControlMap(const ControlMap&) = delete;
@@ -76,6 +79,8 @@ public:
     vkkk::WindowBackend* window() const { return backend_; }
 
     void bind_op(std::string op, OpHandler handler);
+    void bind_op_variant(std::string op, OpPredicate predicate,
+        OpHandler handler);
 
     // Bind any viewport operation that exposes eval(const InputEvent&),
     // including VpOperation<Derived> CRTP types. Modal ops also expose
@@ -86,6 +91,7 @@ public:
         unbind_op(op);
         BoundOp bound;
         bound.name = std::move(op);
+        bound.predicate = [](const InputEvent&) { return true; };
         bound.eval = [&operation](const InputEvent& event) {
             operation.eval(event);
         };
@@ -124,6 +130,7 @@ public:
     // Dispatch hold-style key bindings, and Qt edge events when that backend
     // is compiled in. Call once per frame after WindowBackend::poll_events.
     void poll();
+    void dispatch_event(const InputEvent& event);
 
     static int parse_key(std::string_view name);
     static int parse_mouse_button(std::string_view name);
@@ -134,6 +141,7 @@ private:
     struct BoundOp {
         std::string name;
         OpMode mode = OpMode::Immediate;
+        OpPredicate predicate;
         std::function<void(const InputEvent&)> eval;
         std::function<void()> enter;
         std::function<void()> confirm;
@@ -143,7 +151,8 @@ private:
 
     void dispatch(const InputEvent& event);
     void invoke_modal(BoundOp& op, const InputEvent& event);
-    BoundOp* find_op(std::string_view name);
+    BoundOp* find_op(std::string_view name,
+        const InputEvent* event = nullptr);
     bool matches(const InputSpec& spec, const InputEvent& event) const;
     std::uint32_t current_mods() const;
     void sync_cursor();

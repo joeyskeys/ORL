@@ -35,6 +35,7 @@ SceneInputCatalog::SceneInputCatalog(vkkk::Scene& scene,
     : scene_(scene)
     , components_(components)
     , joints_(orlrig::kJointOrlType, orlrig::kJointStride)
+    , controllers_(orlrig::kMatrixOrlType, orlrig::kMatrixStride)
 {
     refresh();
 }
@@ -45,6 +46,7 @@ void SceneInputCatalog::refresh() {
     mesh_positions_.clear();
     controller_xforms_.clear();
     pack_joints();
+    pack_controllers();
     add_descriptors();
 }
 
@@ -62,6 +64,15 @@ std::vector<std::string> SceneInputCatalog::element_names(
     SceneElementKind kind) const
 {
     std::vector<std::string> result;
+    if (kind == SceneElementKind::Mesh) {
+        scene_.for_each_object(
+            [&result](const std::string& name, const vkkk::SceneObject&) {
+                result.push_back(name);
+            });
+        std::sort(result.begin(), result.end());
+        return result;
+    }
+
     components_.for_each([&](const Component& component) {
         const bool matches = kind == SceneElementKind::Joint
             ? component.kind == ComponentKind::Joint
@@ -77,6 +88,38 @@ std::vector<std::string> SceneInputCatalog::element_names(
 std::optional<std::int64_t> SceneInputCatalog::resolve_element_handle(
     SceneElementKind kind, std::string_view name) const
 {
+    if (kind == SceneElementKind::Mesh) {
+        std::vector<std::string> names = element_names(kind);
+        const auto found = std::find(names.begin(), names.end(), name);
+        if (found == names.end()) {
+            return std::nullopt;
+        }
+        return static_cast<std::int64_t>(
+            std::distance(names.begin(), found));
+    }
+
+    const auto* component = components_.find(name);
+    if (component == nullptr) {
+        return std::nullopt;
+    }
+    if (kind == SceneElementKind::Joint) {
+        return component->kind == ComponentKind::Joint
+            ? std::optional<std::int64_t>{
+                static_cast<std::int64_t>(component->id.value)}
+            : std::nullopt;
+    }
+    if (component->kind != ComponentKind::Controller) {
+        return std::nullopt;
+    }
+    return static_cast<std::int64_t>(component->id.value);
+}
+
+std::optional<std::int64_t> SceneInputCatalog::resolve_element_index(
+    SceneElementKind kind, std::string_view name) const
+{
+    if (kind == SceneElementKind::Mesh) {
+        return resolve_element_handle(kind, name);
+    }
     const auto* component = components_.find(name);
     if (component == nullptr) {
         return std::nullopt;
@@ -92,7 +135,13 @@ std::optional<std::int64_t> SceneInputCatalog::resolve_element_handle(
     if (component->kind != ComponentKind::Controller) {
         return std::nullopt;
     }
-    return static_cast<std::int64_t>(component->id.value);
+    const auto found = std::find(controller_ids_.begin(),
+        controller_ids_.end(), component->id);
+    return found == controller_ids_.end()
+        ? std::nullopt
+        : std::optional<std::int64_t>{
+            static_cast<std::int64_t>(
+                std::distance(controller_ids_.begin(), found))};
 }
 
 bool SceneInputCatalog::make_interface_port(const orlgraph::StableId& id,
@@ -121,7 +170,10 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
     if (descriptor != descriptors_.end()) {
         if (descriptor->port.type != port.type
             || descriptor->port.domain != port.domain
-            || descriptor->port.shape != port.shape)
+            || descriptor->port.shape != port.shape
+            || (!descriptor->port.semantic.empty()
+                && !port.semantic.empty()
+                && descriptor->port.semantic != port.semantic))
         {
             return set_error(error,
                 "Scene input '" + key + "' has incompatible graph metadata");
@@ -179,6 +231,19 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
         binding.int_value = static_cast<std::int64_t>(
             components_.packed_joints().size());
         return true;
+    case SourceKind::Controllers:
+        if (!pack_controllers()) {
+            return set_error(error, "Unable to pack scene controllers");
+        }
+        binding.kind = exec::ParameterKind::Buffer;
+        binding.buffer = &controllers_;
+        binding.element_count = controllers_.count();
+        return true;
+    case SourceKind::ControllersCount:
+        binding.kind = exec::ParameterKind::Int64;
+        binding.int_value = static_cast<std::int64_t>(
+            components_.size(ComponentKind::Controller));
+        return true;
     case SourceKind::WeightBuffer: {
         auto* weights = components_.weight(source->second.component);
         if (weights == nullptr) {
@@ -234,6 +299,21 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
     return set_error(error, "Unsupported scene input binding: " + key);
 }
 
+bool SceneInputCatalog::resolve_binding(std::string_view binding,
+    exec::GraphInputBinding& result, std::string* error)
+{
+    const auto descriptor = std::find_if(descriptors_.begin(), descriptors_.end(),
+        [binding](const SceneInputDescriptor& candidate) {
+            return candidate.port.binding == binding;
+        });
+    if (descriptor == descriptors_.end()) {
+        return set_error(error,
+            "No scene input is registered for binding '"
+                + std::string{binding} + "'");
+    }
+    return resolve(descriptor->port, result, error);
+}
+
 bool SceneInputCatalog::bind_graph_inputs(exec::OrlGraphExecution& execution,
     const orlgraph::GraphModule& module)
 {
@@ -243,6 +323,39 @@ bool SceneInputCatalog::bind_graph_inputs(exec::OrlGraphExecution& execution,
             exec::GraphInputBinding& binding, std::string& error) {
             return resolve(port, binding, &error);
         });
+}
+
+bool SceneInputCatalog::commit_joints(
+    bool host_readback_complete, std::string* error)
+{
+    if (!host_readback_complete) {
+        return set_error(error,
+            "Joint writeback requires a host-readback graph evaluation");
+    }
+    // The packed buffer is keyed by the stable IDs captured when it was
+    // packed. Resolve those IDs again instead of assuming the current array
+    // order is unchanged since evaluation.
+    const auto& ids = packed_joint_ids_;
+    if (joints_.count() < ids.size()) {
+        return set_error(error,
+            "Packed joint buffer has fewer elements than the component store");
+    }
+    const auto* source =
+        static_cast<const orlviewer::Joint*>(joints_.data());
+    if (source == nullptr && !ids.empty()) {
+        return set_error(error, "Packed joint buffer has no host data");
+    }
+    for (std::size_t index = 0; index < ids.size(); ++index) {
+        auto* destination = components_.joint(ids[index]);
+        if (destination == nullptr) {
+            // A removed component has no valid writeback target. Other
+            // stable IDs in the evaluated buffer can still be committed
+            // safely after the packed ordering changed.
+            continue;
+        }
+        *destination = source[index];
+    }
+    return true;
 }
 
 void SceneInputCatalog::add_descriptors() {
@@ -260,6 +373,24 @@ void SceneInputCatalog::add_descriptors() {
             orlgraph::StableId{std::string{orlrig::kSceneJointCountBinding}},
             "Joint Count", "joint_count",
             Source{SourceKind::JointCount, {}, {}});
+    }
+
+    if (pack_controllers() && controllers_.count() != 0) {
+        add_buffer_descriptor(
+            orlgraph::StableId{
+                std::string{orlrig::kSceneControllersBinding}},
+            "Scene Controllers",
+            orlgraph::LogicalType::matrix(),
+            orlgraph::Domain::rig(),
+            orlgraph::Shape::one("controller_count"),
+            "controllers", "world", orlrig::kMatrixStride,
+            std::string{orlrig::kSceneControllersCountBinding},
+            Source{SourceKind::Controllers, {}, {}});
+        add_scalar_descriptor(
+            orlgraph::StableId{
+                std::string{orlrig::kSceneControllersCountBinding}},
+            "Controller Count", "controller_count",
+            Source{SourceKind::ControllersCount, {}, {}});
     }
 
     if (scene_.drawable_mgr != nullptr) {
@@ -433,6 +564,12 @@ bool SceneInputCatalog::pack_mesh_positions(const std::string& object_name,
 }
 
 bool SceneInputCatalog::pack_joints() {
+    const auto previous_ids = joint_ids_;
+    joint_ids_ = components_.packed_joint_ids();
+    packed_joint_ids_ = joint_ids_;
+    if (joint_ids_ != previous_ids) {
+        ++revision_;
+    }
     const auto packed = components_.packed_joints();
     if (!joints_.resize(packed.size())) {
         return false;
@@ -440,6 +577,42 @@ bool SceneInputCatalog::pack_joints() {
     if (!packed.empty()) {
         std::memcpy(joints_.data(), packed.data(),
             packed.size() * orlrig::kJointStride);
+    }
+    return true;
+}
+
+bool SceneInputCatalog::pack_controllers() {
+    std::vector<std::pair<std::string, ComponentId>> controllers;
+    components_.for_each([&controllers](const Component& component) {
+        if (component.kind == ComponentKind::Controller) {
+            controllers.emplace_back(component.name, component.id);
+        }
+    });
+    std::sort(controllers.begin(), controllers.end(),
+        [](const auto& left, const auto& right) {
+            return left.first < right.first;
+        });
+    const auto previous_ids = controller_ids_;
+    controller_ids_.clear();
+    controller_ids_.reserve(controllers.size());
+    for (const auto& [_, id] : controllers) {
+        controller_ids_.push_back(id);
+    }
+    if (controller_ids_ != previous_ids) {
+        ++revision_;
+    }
+
+    if (!controllers_.resize(controllers.size())) {
+        return false;
+    }
+    auto* destination = static_cast<double*>(controllers_.data());
+    for (std::size_t index = 0; index < controllers.size(); ++index) {
+        const auto* controller = components_.controller(controllers[index].second);
+        if (controller == nullptr) {
+            return false;
+        }
+        orlrig::pack_xform(
+            *controller, destination + index * 16);
     }
     return true;
 }

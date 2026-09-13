@@ -3,6 +3,7 @@
 #include "graph_ir.hpp"
 #include "graph_schedule.hpp"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,9 @@ struct ReflectedPort {
     LogicalType type;
     Domain domain = Domain::constant();
     Shape shape = Shape::scalar();
+    std::string semantic;
+    AccessMode access = AccessMode::Read;
+    std::optional<Port::OutputAdapter> output_adapter;
 };
 
 struct ReflectedNode {

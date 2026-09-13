@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <utility>
 
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -16,10 +17,10 @@
 #include "concepts/camera.h"
 #include "control_map.hpp"
 #include "selection.hpp"
+#include "scene_graph_context.hpp"
+#include "orlrig/graph_resources.hpp"
 #if ORL_USE_QT6
 #include "gui/qt_backend.hpp"
-#include "graph_scene_inputs.hpp"
-#include "orlrig/graph_resources.hpp"
 #include "qt/node_graph_editor.hpp"
 #else
 #include "gui/glfw_backend.hpp"
@@ -153,12 +154,23 @@ int main() {
     ORL::ComponentManager components;
     const auto weight_id = components.create_weight("weights");
     const auto deformer_id = components.create_deformer("deformer");
+    ORL::SceneGraphContext scene_graph(scene, components);
+    orlgraph::GraphModule empty_graph;
+    empty_graph.module_id = "orlrig.scene";
+    orlgraph::NodeRegistry node_registry;
+    std::string registry_error;
+    if (!orlrig::register_rig_node_definitions(
+            node_registry, &registry_error))
+    {
+        std::cerr << "Failed to register rig graph nodes: "
+            << registry_error << '\n';
+        return 1;
+    }
+    scene_graph.set_graph(
+        std::move(empty_graph), std::move(node_registry));
 #if ORL_USE_QT6
-    ORL::SceneInputCatalog scene_inputs(scene, components);
     auto* node_graph_editor = new ORL::NodeGraphEditor();
-    const auto node_graph = orlrig::make_lbs_graph();
-    node_graph_editor->set_scene_input_catalog(&scene_inputs);
-    node_graph_editor->set_graph(node_graph.module, node_graph.registry);
+    node_graph_editor->set_scene_graph_context(&scene_graph);
     if (window_backend.add_tab(node_graph_editor, "Node Graph") < 0) {
         delete node_graph_editor;
         node_graph_editor = nullptr;
@@ -198,7 +210,7 @@ int main() {
     }
     viewport.add_feature<ORL::SolverFeature>(components);
     const auto deformer_handle = viewport.add_feature<ORL::DeformerFeature>(
-        scene, components, deformer_id, weight_id, selection);
+        scene_graph, deformer_id, weight_id, selection);
     viewport.add_feature<ORL::JointFeature>(
         components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     viewport.add_feature<ORL::ControllerFeature>(
@@ -291,21 +303,27 @@ int main() {
     controls.bind_op("scale", scale_op);
     controls.bind_op("camera_switch", camera_switch);
     controls.bind_op("display_mode_switch", display_mode);
-    controls.bind_op("auto_weight", [&](const ORL::InputEvent&) {
-        if (auto* auto_weight = viewport.find_feature(auto_weight_handle)) {
-            auto_weight->request();
-        }
-    });
+    const auto has_mesh_and_joint_selection =
+        [&selection](const ORL::InputEvent&) {
+            return selection.valid_for_bind();
+        };
+    controls.bind_op_variant("auto_weight",
+        has_mesh_and_joint_selection,
+        [&](const ORL::InputEvent&) {
+            if (auto* auto_weight = viewport.find_feature(auto_weight_handle)) {
+                auto_weight->request();
+            }
+        });
     controls.bind_op("auto_weight_cycle", [&](const ORL::InputEvent&) {
         if (auto* auto_weight = viewport.find_feature(auto_weight_handle)) {
             auto_weight->cycle_algorithm();
         }
     });
-    controls.bind_op("setup_deformer", [&](const ORL::InputEvent&) {
-        if (auto* deformer = viewport.find_feature(deformer_handle)) {
-            deformer->request();
-        }
-    });
+    controls.bind_op_variant("setup_deformer",
+        has_mesh_and_joint_selection,
+        [&](const ORL::InputEvent&) {
+            scene_graph.request_operation("bind");
+        });
 
     try {
         controls.load_config(
@@ -322,7 +340,7 @@ int main() {
         controls.poll();
 
 #if ORL_USE_QT6
-        scene_inputs.refresh();
+        scene_graph.refresh_scene_inputs();
         if (node_graph_editor != nullptr) {
             node_graph_editor->refresh_scene_inputs();
         }

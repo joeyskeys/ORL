@@ -267,12 +267,80 @@ TEST_CASE("graph optimizer flattens registered subgraphs", "[orlgraph][optimizer
     REQUIRE(module.node(StableId{"wrapper/pass"}) != nullptr);
 }
 
+TEST_CASE("graph reflection preserves port semantics",
+    "[orlgraph][reflection]")
+{
+    NodeRegistry registry;
+    auto definition = make_add_definition();
+    definition.outputs.front().semantic = "scene.array_index";
+    REQUIRE(registry.register_definition(std::move(definition)));
+
+    GraphModule module;
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"add"}, StableId{"builtin.add"}, "add", {}, {},
+        InlinePolicy::Default}));
+    const auto reflection = reflect(module, registry);
+    REQUIRE(reflection.nodes.size() == 1);
+    const auto found = std::find_if(reflection.nodes.front().ports.begin(),
+        reflection.nodes.front().ports.end(),
+        [](const ReflectedPort& port) {
+            return port.id == StableId{"result"};
+        });
+    REQUIRE(found != reflection.nodes.front().ports.end());
+    REQUIRE(found->semantic == "scene.array_index");
+}
+
 #if defined(ORLGRAPH_HAS_IO)
 TEST_CASE("oro serialization is deterministic and round trips", "[orlgraph][oro]") {
     NodeRegistry registry;
     auto definition = make_passthrough_definition();
     definition.inputs.front().required = false;
+    definition.parameters.push_back(ParameterSpec{
+        StableId{"name"}, "name", LogicalType::string(), true,
+        std::nullopt, "scene.element_name"});
+    definition.outputs.push_back(Port{
+        StableId{"adapted"}, "adapted", PortDirection::Output,
+        PortCardinality::Scalar, LogicalType::int64(), Domain::constant(),
+        Shape::scalar(), false, std::nullopt, "scene.joint.xform", "world",
+        Port::OutputAdapter{
+            StableId{"test.convert.identity"}, StableId{"result"},
+            StableId{"test.convert.writeback"},
+            StableId{"result"}}});
     REQUIRE(registry.register_definition(std::move(definition)));
+    ConversionDefinition conversion;
+    conversion.id = StableId{"test.convert.identity"};
+    conversion.qualified_name = "test.convert.identity";
+    conversion.source = Port{
+        StableId{"source"}, "source", PortDirection::Output,
+        PortCardinality::Scalar, LogicalType::int64(), Domain::constant(),
+        Shape::scalar(), false, std::nullopt, {}, {}};
+    conversion.output = Port{
+        StableId{"output"}, "output", PortDirection::Output,
+        PortCardinality::Scalar, LogicalType::int64(), Domain::constant(),
+        Shape::scalar(), false, std::nullopt, {}, {}};
+    conversion.implementation.kind = ImplementationKind::OrlFunction;
+    conversion.implementation.function = "identity";
+    REQUIRE(registry.register_conversion(std::move(conversion)));
+    ConversionDefinition writeback;
+    writeback.id = StableId{"test.convert.writeback"};
+    writeback.qualified_name = "test.convert.writeback";
+    writeback.source = Port{
+        StableId{"source"}, "source", PortDirection::Input,
+        PortCardinality::Scalar, LogicalType::int64(), Domain::constant(),
+        Shape::scalar(), true, std::nullopt, {}, {}};
+    writeback.output = Port{
+        StableId{"target"}, "target", PortDirection::Input,
+        PortCardinality::Buffer, LogicalType::buffer(LogicalType::int64()),
+        Domain::buffer(), Shape::one("count"), true, std::nullopt, {}, {}};
+    writeback.selector = Port{
+        StableId{"selector"}, "selector", PortDirection::Output,
+        PortCardinality::Scalar, LogicalType::int64(), Domain::constant(),
+        Shape::scalar(), true, std::nullopt, {}, {}};
+    writeback.implementation.kind = ImplementationKind::OrlFunction;
+    writeback.implementation.function = "writeback";
+    writeback.emitter = ConversionEmitterKind::OrlFunctionWriteback;
+    writeback.pure = false;
+    REQUIRE(registry.register_conversion(std::move(writeback)));
 
     GraphModule module;
     module.module_id = "oro.test";
@@ -282,7 +350,10 @@ TEST_CASE("oro serialization is deterministic and round trips", "[orlgraph][oro]
         Shape::one("vertex_count"), true, std::nullopt, false,
         "scene.mesh.body.positions", "mesh.positions", "world"}));
     REQUIRE(module.add_node(NodeInstance{
-        StableId{"node"}, StableId{"builtin.pass"}, "node", {}, {}, InlinePolicy::Default}));
+        StableId{"node"}, StableId{"builtin.pass"}, "node",
+        {{"name", ConstantValue{
+            LogicalType::string(), std::string{"second"}}}},
+        {}, InlinePolicy::Default}));
 
     const auto first = serialize_oro(module, registry);
     const auto second = serialize_oro(module, registry);
@@ -295,11 +366,40 @@ TEST_CASE("oro serialization is deterministic and round trips", "[orlgraph][oro]
     REQUIRE(loaded.module.module_id == "oro.test");
     REQUIRE(loaded.module.nodes().size() == 1);
     REQUIRE(loaded.registry.find(StableId{"builtin.pass"}) != nullptr);
+    REQUIRE(loaded.registry.find_conversion(
+        StableId{"test.convert.identity"}) != nullptr);
+    const auto* loaded_definition =
+        loaded.registry.find(StableId{"builtin.pass"});
+    REQUIRE(loaded_definition != nullptr);
+    REQUIRE(loaded_definition->output("adapted") != nullptr);
+    REQUIRE(loaded_definition->output("adapted")->output_adapter.has_value());
+    REQUIRE(loaded_definition->output("adapted")
+        ->output_adapter->source_port == StableId{"result"});
+    REQUIRE(loaded_definition->output("adapted")
+        ->output_adapter->writeback_conversion
+        == StableId{"test.convert.writeback"});
+    REQUIRE(loaded_definition->output("adapted")
+        ->output_adapter->writeback_source_port
+        == StableId{"result"});
+    REQUIRE(loaded_definition->output("adapted")->semantic
+        == "scene.joint.xform");
+    REQUIRE(loaded_definition->output("adapted")->coordinate_space
+        == "world");
+    const auto* loaded_writeback = loaded.registry.find_conversion(
+        StableId{"test.convert.writeback"});
+    REQUIRE(loaded_writeback != nullptr);
+    REQUIRE(loaded_writeback->emitter
+        == ConversionEmitterKind::OrlFunctionWriteback);
+    REQUIRE(loaded_writeback->selector.has_value());
     const auto* input = loaded.module.input(StableId{"scene_input"});
     REQUIRE(input != nullptr);
     REQUIRE(input->binding == "scene.mesh.body.positions");
     REQUIRE(input->semantic == "mesh.positions");
     REQUIRE(input->coordinate_space == "world");
+    const auto* lookup = loaded.module.node(StableId{"node"});
+    REQUIRE(lookup != nullptr);
+    REQUIRE(lookup->parameter_values.contains("name"));
+    REQUIRE_FALSE(lookup->parameter_values.contains("index"));
 }
 
 TEST_CASE("editable graph JSON is deterministic and round trips",

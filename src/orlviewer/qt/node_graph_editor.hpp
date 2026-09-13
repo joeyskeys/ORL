@@ -2,6 +2,9 @@
 
 #if ORL_USE_QT6
 
+#include <cstddef>
+#include <optional>
+
 #include <QColor>
 #include <QPoint>
 #include <QPointF>
@@ -24,19 +27,21 @@ namespace ORL
 {
 
 class SceneInputCatalog;
+class SceneGraphContext;
 
-// Draft Blender-style node canvas. It owns an editor-local graph copy, so
-// editing the canvas cannot mutate the execution graph until an explicit
-// commit path is added.
+// Draft Blender-style node canvas. When attached to a SceneGraphContext it
+// edits that context's active graph directly.
 class NodeGraphEditor final : public QWidget {
 public:
     explicit NodeGraphEditor(QWidget* parent = nullptr);
 
     void set_graph(const orlgraph::GraphModule& module,
         const orlgraph::NodeRegistry& registry);
+    void set_graph(orlgraph::GraphModule& module,
+        orlgraph::NodeRegistry& registry);
+    void set_scene_graph_context(SceneGraphContext* context);
     void set_scene_input_catalog(const SceneInputCatalog* catalog);
     void refresh_scene_inputs();
-    void reset_demo_graph();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -56,6 +61,7 @@ private:
         orlgraph::LogicalType type;
         orlgraph::Domain domain = orlgraph::Domain::constant();
         orlgraph::Shape shape = orlgraph::Shape::scalar();
+        QString semantic;
     };
 
     struct Node {
@@ -106,11 +112,14 @@ private:
     };
 
     QPointF scene_position(const QPointF& viewport_position) const;
+    orlgraph::GraphModule& active_graph() { return *graph_; }
+    const orlgraph::GraphModule& active_graph() const { return *graph_; }
+    orlgraph::NodeRegistry& active_registry() { return *registry_; }
+    const orlgraph::NodeRegistry& active_registry() const { return *registry_; }
     void rebuild_view();
+    bool save_graph_file(bool save_as);
     void create_node(const orlgraph::StableId& definition_id, const QPointF& scene_position);
     void create_graph_input(const orlgraph::StableId& template_id,
-        const QPointF& scene_position);
-    void create_scene_input(const orlgraph::StableId& input_id,
         const QPointF& scene_position);
     void clear_find_controls();
     void rebuild_find_controls();
@@ -138,8 +147,13 @@ private:
     int dragging_node_ = -1;
     bool panning_ = false;
     PendingConnection pending_connection_;
-    orlgraph::GraphModule graph_;
-    orlgraph::NodeRegistry registry_;
+    orlgraph::GraphModule graph_storage_;
+    orlgraph::NodeRegistry registry_storage_;
+    orlgraph::GraphModule* graph_ = &graph_storage_;
+    orlgraph::NodeRegistry* registry_ = &registry_storage_;
+    SceneGraphContext* scene_graph_context_ = nullptr;
+    std::size_t attached_graph_revision_ = 0;
+    std::optional<QString> graph_file_path_;
     const SceneInputCatalog* scene_input_catalog_ = nullptr;
     QVector<FindControl> find_controls_;
 };
