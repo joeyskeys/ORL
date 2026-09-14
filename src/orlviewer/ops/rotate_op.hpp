@@ -55,8 +55,8 @@ public:
             }
             Start start;
             start.world_pos = attr.world_position();
-            if (attr.kind == XformAttrKind::Matrix && attr.matrix != nullptr) {
-                start.matrix = *attr.matrix;
+            if (attr.has_world_matrix()) {
+                start.matrix = attr.world_matrix();
             }
             start.local_rot = attr.local_rotation();
             starts.push_back(start);
@@ -146,8 +146,8 @@ private:
                 ++i;
                 continue;
             }
-            if (attr.kind == XformAttrKind::Matrix && attr.matrix != nullptr) {
-                *attr.matrix = orbit * starts[i].matrix;
+            if (attr.has_world_matrix()) {
+                attr.set_world_matrix(orbit * starts[i].matrix);
             }
             else {
                 attr.set_world_position(glm::vec3{orbit * glm::vec4{starts[i].world_pos, 1.0f}});

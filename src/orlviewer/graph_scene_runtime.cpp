@@ -243,31 +243,28 @@ GraphSceneRuntime::GraphSceneRuntime(SceneGraphContext& graph_context,
     , weight_id(weight_id)
     , runner_(backend_from_config())
 {
+    register_runtime_adapters();
+}
+
+void GraphSceneRuntime::register_runtime_adapters() {
     runtime_adapters_.emplace(
         std::string{kCaptureBindRuntime},
-        [this](vkkk::Context& context,
-            const orlgraph::NodeInstance& instance, bool capture) {
-            return execute_lbs_capture_adapter(context, instance, capture);
-        });
+        &GraphSceneRuntime::execute_lbs_capture_adapter);
     runtime_adapters_.emplace(
         std::string{kEvaluateRuntime},
-        [this](vkkk::Context& context,
-            const orlgraph::NodeInstance& instance, bool capture) {
-            return execute_lbs_evaluate_adapter(context, instance, capture);
-        });
+        &GraphSceneRuntime::execute_lbs_evaluate_adapter);
     for (const std::string_view runtime_name : {
              std::string_view{"orlrig.input.joints"},
              std::string_view{"orlrig.input.controllers"},
+             std::string_view{"orlrig.input.locators"},
              std::string_view{"orlrig.input.find_joint"},
              std::string_view{"orlrig.input.find_controller"},
+             std::string_view{"orlrig.input.find_locator"},
              std::string_view{"orlrig.input.find_mesh"}})
     {
         runtime_adapters_.emplace(
             std::string{runtime_name},
-            [this](vkkk::Context& context,
-                const orlgraph::NodeInstance& instance, bool capture) {
-                return execute_scene_input_adapter(context, instance, capture);
-            });
+            &GraphSceneRuntime::execute_scene_input_adapter);
     }
 }
 
@@ -575,12 +572,15 @@ bool GraphSceneRuntime::resolve_scene_input_node(
     graph_context_.refresh_scene_inputs();
 
     if (runtime_name == "orlrig.input.joints"
-        || runtime_name == "orlrig.input.controllers")
+        || runtime_name == "orlrig.input.controllers"
+        || runtime_name == "orlrig.input.locators")
     {
         const std::string_view binding =
             runtime_name == "orlrig.input.joints"
             ? orlrig::kSceneJointsBinding
-            : orlrig::kSceneControllersBinding;
+            : runtime_name == "orlrig.input.locators"
+                ? orlrig::kSceneLocatorsBinding
+                : orlrig::kSceneControllersBinding;
         exec::GraphInputBinding resolved;
         std::string error;
         if (!graph_context_.scene_inputs().resolve_binding(
@@ -598,6 +598,8 @@ bool GraphSceneRuntime::resolve_scene_input_node(
         element_kind = SceneElementKind::Joint;
     } else if (runtime_name == "orlrig.input.find_controller") {
         element_kind = SceneElementKind::Controller;
+    } else if (runtime_name == "orlrig.input.find_locator") {
+        element_kind = SceneElementKind::Locator;
     } else if (runtime_name == "orlrig.input.find_mesh") {
         element_kind = SceneElementKind::Mesh;
     } else {
@@ -621,7 +623,8 @@ bool GraphSceneRuntime::resolve_scene_input_node(
         return false;
     }
     if ((element_kind == SceneElementKind::Joint
-            || element_kind == SceneElementKind::Controller)
+            || element_kind == SceneElementKind::Controller
+            || element_kind == SceneElementKind::Locator)
         && !graph_context_.scene_inputs().resolve_element_index(
             element_kind, *name).has_value())
     {
@@ -696,7 +699,8 @@ bool GraphSceneRuntime::add_scene_execution_input(
 
     const auto expected_type = orlgraph::LogicalType::buffer(element_type);
     const bool require_exact_binding =
-        binding.rfind("scene.rig.controller.", 0) == 0
+        (binding.rfind("scene.rig.controller.", 0) == 0
+            || binding.rfind("scene.rig.locator.", 0) == 0)
         && binding.ends_with(".xform");
     for (const auto& [id, input] : module.inputs()) {
         if (input.binding != binding
@@ -828,8 +832,21 @@ bool GraphSceneRuntime::prepare_runtime_output_expressions(
                 {
                     return false;
                 }
+            } else if (runtime_name == "orlrig.input.locators"
+                && output.name == "locators")
+            {
+                if (!add_scene_execution_input(
+                        module, orlrig::kSceneLocatorsBinding, "locators",
+                        orlgraph::LogicalType::struct_type("Locator"),
+                        orlgraph::Domain::rig(),
+                        orlgraph::Shape::one("locator_count"),
+                        "locators", "world", &output_expression, error))
+                {
+                    return false;
+                }
             } else if (runtime_name == "orlrig.input.find_joint"
                 || runtime_name == "orlrig.input.find_controller"
+                || runtime_name == "orlrig.input.find_locator"
                 || runtime_name == "orlrig.input.find_mesh")
             {
                 const auto* name = element_name(*instance);
@@ -844,6 +861,9 @@ bool GraphSceneRuntime::prepare_runtime_output_expressions(
                 } else if (runtime_name
                     == "orlrig.input.find_controller") {
                     kind = SceneElementKind::Controller;
+                } else if (runtime_name
+                    == "orlrig.input.find_locator") {
+                    kind = SceneElementKind::Locator;
                 }
 
                 if (output.name == "handle") {
@@ -878,6 +898,22 @@ bool GraphSceneRuntime::prepare_runtime_output_expressions(
                             orlgraph::Domain::rig(),
                             orlgraph::Shape::one("controller_count"),
                             "controller.xform", "world",
+                            &output_expression, error))
+                    {
+                        return false;
+                    }
+                } else if (output.name == "xform"
+                    && kind == SceneElementKind::Locator)
+                {
+                    const std::string binding =
+                        orlrig::scene_locator_xform_binding(*name);
+                    if (!add_scene_execution_input(
+                            module, binding,
+                            "find_locator_" + instance->name,
+                            orlgraph::LogicalType::struct_type("Locator"),
+                            orlgraph::Domain::rig(),
+                            orlgraph::Shape::one("one"),
+                            "locator.xform", "world",
                             &output_expression, error))
                     {
                         return false;
@@ -1273,7 +1309,7 @@ bool GraphSceneRuntime::execute_runtime_node(
                   << definition->qualified_name << "'\n";
         return false;
     }
-    return found->second(context, instance, capture);
+    return (this->*found->second)(context, instance, capture);
 }
 
 bool GraphSceneRuntime::execute_scene_input_adapter(

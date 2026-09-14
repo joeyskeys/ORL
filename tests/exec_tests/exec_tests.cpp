@@ -6,7 +6,13 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <string>
+
+#include <glm/vec3.hpp>
+
+#include "orlrig/abi.hpp"
+#include "orlrig/locator.hpp"
 
 using namespace ORL::exec;
 
@@ -29,6 +35,87 @@ OrlProgram RequireProgram() {
 }
 
 } // namespace
+
+TEST_CASE("orlexec evaluates locator-fed aim constraint on CPU",
+    "[orl][exec][constraint][locator][cpu]")
+{
+    const auto program = OrlProgram::Compile(R"(
+use locator;
+use constraint/aim_locator;
+int apply(Locator targets[], matrix subjects[], vector axes[],
+    int target_index, int subject_index, int target_count, int subject_count) {
+    return constraint_aim_locator(targets, subjects, axes,
+        target_index, subject_index, target_count, subject_count);
+}
+)", {.entry_function = "apply"});
+    REQUIRE(program.valid());
+    auto execution = OrlExecution::Create(program, Backend::Cpu);
+    REQUIRE(execution.valid());
+
+    OrlBuffer targets(orlrig::kLocatorOrlType, orlrig::kLocatorStride);
+    OrlBuffer subjects(orlrig::kMatrixOrlType, orlrig::kMatrixStride);
+    OrlBuffer axes("vector", sizeof(double) * 4);
+    REQUIRE(targets.resize(1));
+    REQUIRE(subjects.resize(1));
+    REQUIRE(axes.resize(1));
+    orlrig::pack_xform(
+        orlrig::make_locator(glm::vec3{0.0f, 1.0f, 0.0f}),
+        static_cast<double*>(targets.data()));
+    auto* subject = static_cast<double*>(subjects.data());
+    for (int index = 0; index < 16; ++index) {
+        subject[index] = index % 5 == 0 ? 1.0 : 0.0;
+    }
+    auto* axis = static_cast<double*>(axes.data());
+    axis[0] = 1.0;
+    axis[1] = 0.0;
+    axis[2] = 0.0;
+    axis[3] = 0.0;
+
+    REQUIRE(execution.bind_buffer("targets", targets));
+    REQUIRE(execution.bind_buffer("subjects", subjects));
+    REQUIRE(execution.bind_buffer("axes", axes));
+    REQUIRE(execution.bind_int("target_index", 0));
+    REQUIRE(execution.bind_int("subject_index", 0));
+    REQUIRE(execution.bind_int("target_count", 1));
+    REQUIRE(execution.bind_int("subject_count", 1));
+    REQUIRE(execution.evaluate(1).has_value());
+    REQUIRE(subject[4] == Catch::Approx(1.0));
+    REQUIRE(subject[3] == Catch::Approx(0.0));
+    REQUIRE(subject[7] == Catch::Approx(0.0));
+
+    auto gpu = OrlExecution::Create(program, Backend::Cuda);
+    if (!gpu.valid()) {
+        const std::string reason = gpu.errors().empty()
+            ? "CUDA execution runtime unavailable in this environment"
+            : gpu.errors().back();
+        WARN(reason);
+        return;
+    }
+    OrlBuffer gpu_targets(orlrig::kLocatorOrlType, orlrig::kLocatorStride);
+    OrlBuffer gpu_subjects(orlrig::kMatrixOrlType, orlrig::kMatrixStride);
+    OrlBuffer gpu_axes("vector", sizeof(double) * 4);
+    REQUIRE(gpu_targets.resize(1));
+    REQUIRE(gpu_subjects.resize(1));
+    REQUIRE(gpu_axes.resize(1));
+    orlrig::pack_xform(
+        orlrig::make_locator(glm::vec3{0.0f, 1.0f, 0.0f}),
+        static_cast<double*>(gpu_targets.data()));
+    auto* gpu_subject_data = static_cast<double*>(gpu_subjects.data());
+    for (int index = 0; index < 16; ++index) {
+        gpu_subject_data[index] = index % 5 == 0 ? 1.0 : 0.0;
+    }
+    std::memcpy(gpu_axes.data(), axis, sizeof(double) * 4);
+    REQUIRE(gpu.bind_buffer("targets", gpu_targets));
+    REQUIRE(gpu.bind_buffer("subjects", gpu_subjects));
+    REQUIRE(gpu.bind_buffer("axes", gpu_axes));
+    REQUIRE(gpu.bind_int("target_index", 0));
+    REQUIRE(gpu.bind_int("subject_index", 0));
+    REQUIRE(gpu.bind_int("target_count", 1));
+    REQUIRE(gpu.bind_int("subject_count", 1));
+    REQUIRE(gpu.evaluate(1).has_value());
+    const auto* gpu_subject = static_cast<const double*>(gpu_subjects.data());
+    REQUIRE(gpu_subject[4] == Catch::Approx(subject[4]));
+}
 
 TEST_CASE("orlexec buffers grow without losing active elements", "[orl][exec][buffer]") {
     OrlBuffer buffer("int", sizeof(std::int64_t));

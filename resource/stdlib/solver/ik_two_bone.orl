@@ -2,10 +2,11 @@
 //   use solver/ik_two_bone;
 //
 // Rotates root and mid so the end reaches target. pole aims the bend.
-// target[] and pole[] are locator xforms (one matrix each). Translations
-// and the end joint are left alone.
+// target[] and pole[] are one-element Locator buffers. Their translations
+// are used as the goal and bend pole; the end joint is left alone.
 
 use joint;
+use locator;
 
 float solver_abs(float x) {
     if (x < 0.0) {
@@ -88,8 +89,8 @@ int solver_ik_two_bone(Joint joints[],
                        int root,
                        int mid,
                        int end,
-                       matrix target[],
-                       matrix pole[],
+                       Locator target[],
+                       Locator pole[],
                        int joint_count) {
     if (root < 0) {
         return 0;
@@ -132,7 +133,7 @@ int solver_ik_two_bone(Joint joints[],
     }
 
     point root_pos = solver_joint_origin(joints, root);
-    point target_pos = target[0] * point(0.0, 0.0, 0.0);
+    point target_pos = target[0].xform * point(0.0, 0.0, 0.0);
     vector reach = target_pos - root_pos;
     float d = length(reach);
     if (d < 0.000001) {
@@ -147,7 +148,7 @@ int solver_ik_two_bone(Joint joints[],
     }
 
     vector axis = normalize(reach);
-    point pole_pos = pole[0] * point(0.0, 0.0, 0.0);
+    point pole_pos = pole[0].xform * point(0.0, 0.0, 0.0);
 
     vector pole_dir = pole_pos - root_pos;
     vector side = pole_dir - axis * dot(pole_dir, axis);

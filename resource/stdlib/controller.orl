@@ -1,0 +1,22 @@
+// Viewer authoring controller attachment value.
+//
+// Controllers are not runtime graph resources. The xform records the
+// controller's transform relative to its attached joint or Locator:
+//
+//   controller_world = target_world * xform
+//
+// The viewer uses this value while editing a rig, then writes the resulting
+// joint or Locator pose before ORL graph evaluation.
+
+struct Controller {
+    matrix xform;
+}
+
+Controller controller_identity() {
+    Controller result(mat_identity());
+    return result;
+}
+
+matrix controller_relative_xform(Controller controller) {
+    return controller.xform;
+}

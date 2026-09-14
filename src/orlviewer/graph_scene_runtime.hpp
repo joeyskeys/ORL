@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -54,8 +53,11 @@ private:
         orlgraph::StableId node_id;
     };
 
-    using RuntimeAdapter = std::function<bool(
-        vkkk::Context&, const orlgraph::NodeInstance&, bool)>;
+    // The viewport stores features in a vector and moves them. A member
+    // pointer remains valid after those moves; a lambda capturing this would
+    // retain the address of the temporary feature.
+    using RuntimeAdapter = bool (GraphSceneRuntime::*)(
+        vkkk::Context&, const orlgraph::NodeInstance&, bool);
 
     bool ensure_lbs_graph();
     bool setup(vkkk::Context& context);
@@ -118,6 +120,7 @@ private:
     std::string runtime_output_key(
         const orlgraph::StableId& node,
         const orlgraph::StableId& port) const;
+    void register_runtime_adapters();
 
     SceneGraphContext& graph_context_;
     const Selection& selection_;

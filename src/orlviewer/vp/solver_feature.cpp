@@ -69,8 +69,46 @@ bool SolverFeature::evaluate_two_bone(ConstraintData& constraint) {
         constraint.bound = false;
         return false;
     }
-    const auto* target = components.controller(constraint.target);
-    const auto* pole = components.controller(constraint.pole);
+    const auto target_is_chain_joint = [&](ComponentId target) {
+        return target == constraint.root
+            || target == constraint.mid
+            || target == constraint.end;
+    };
+    const auto attachment_creates_cycle = [&](ComponentId source) {
+        const auto* attachment = components.controller_attachment(source);
+        return attachment != nullptr
+            && attachment->target_kind == AttachmentTargetKind::Joint
+            && target_is_chain_joint(attachment->target);
+    };
+    if (attachment_creates_cycle(constraint.target)
+        || attachment_creates_cycle(constraint.pole))
+    {
+        std::cerr << "SolverFeature: rejected cyclic controller attachment\n";
+        constraint.bound = false;
+        return false;
+    }
+    const auto* target = components.locator(constraint.target);
+    const auto* pole = components.locator(constraint.pole);
+    orlrig::Locator target_compat;
+    orlrig::Locator pole_compat;
+    if (target == nullptr) {
+        if (const auto* controller = components.controller(constraint.target);
+            controller != nullptr)
+        {
+            target_compat.xform =
+                components.controller_world_xform(constraint.target);
+            target = &target_compat;
+        }
+    }
+    if (pole == nullptr) {
+        if (const auto* controller = components.controller(constraint.pole);
+            controller != nullptr)
+        {
+            pole_compat.xform =
+                components.controller_world_xform(constraint.pole);
+            pole = &pole_compat;
+        }
+    }
     if (target == nullptr || pole == nullptr) {
         constraint.bound = false;
         return false;

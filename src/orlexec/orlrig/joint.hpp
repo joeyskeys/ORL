@@ -6,6 +6,7 @@
 
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -154,6 +155,50 @@ inline glm::vec3 world_to_local(const std::vector<Joint>& joints,
     const glm::vec4 local = glm::inverse(joint_world_matrix(joints, parent_index))
         * glm::vec4{world, 1.0f};
     return glm::vec3{local};
+}
+
+inline bool write_joint_local_matrix(Joint& joint, const glm::mat4& local) {
+    glm::vec3 x{local[0]};
+    glm::vec3 y{local[1]};
+    glm::vec3 z{local[2]};
+    const float sx = glm::length(x);
+    const float sy = glm::length(y);
+    const float sz = glm::length(z);
+    if (sx < 1.0e-6f || sy < 1.0e-6f || sz < 1.0e-6f) {
+        return false;
+    }
+
+    x /= sx;
+    y /= sy;
+    z /= sz;
+    const glm::quat rotation = glm::normalize(glm::quat_cast(glm::mat3{x, y, z}));
+    joint.translation[0] = static_cast<double>(local[3].x);
+    joint.translation[1] = static_cast<double>(local[3].y);
+    joint.translation[2] = static_cast<double>(local[3].z);
+    joint.translation[3] = 0.0;
+    joint.rotation[0] = static_cast<double>(rotation.x);
+    joint.rotation[1] = static_cast<double>(rotation.y);
+    joint.rotation[2] = static_cast<double>(rotation.z);
+    joint.rotation[3] = static_cast<double>(rotation.w);
+    joint.scale[0] = static_cast<double>(sx);
+    joint.scale[1] = static_cast<double>(sy);
+    joint.scale[2] = static_cast<double>(sz);
+    joint.scale[3] = 0.0;
+    return true;
+}
+
+inline bool write_joint_world_matrix(const std::vector<Joint>& joints,
+    std::int64_t index, const glm::mat4& world, Joint& destination)
+{
+    if (index < 0 || static_cast<std::size_t>(index) >= joints.size()) {
+        return false;
+    }
+    const std::int64_t parent = joints[static_cast<std::size_t>(index)].parent;
+    const glm::mat4 parent_world = parent < 0
+        ? glm::mat4{1.0f}
+        : joint_world_matrix(joints, parent);
+    return write_joint_local_matrix(
+        destination, glm::inverse(parent_world) * world);
 }
 
 } // namespace orlrig

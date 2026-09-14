@@ -1,5 +1,7 @@
 #include "component_manager.hpp"
 
+#include <glm/gtc/matrix_inverse.hpp>
+
 #include <utility>
 
 namespace ORL
@@ -30,6 +32,17 @@ ComponentId ComponentManager::create_controller(std::string name,
     if (id) {
         metadata.emplace(id.value, make_meta(id, name, ComponentKind::Controller));
         controller_shapes.emplace(id.value, shape);
+    }
+    return id;
+}
+
+ComponentId ComponentManager::create_locator(std::string name,
+    orlrig::Locator locator)
+{
+    const auto id = store.create_locator(name, std::move(locator));
+    if (id) {
+        metadata.emplace(id.value, make_meta(id, std::move(name),
+            ComponentKind::Locator));
     }
     return id;
 }
@@ -68,6 +81,14 @@ ComponentId ComponentManager::create_deformer(std::string name, DeformerData def
 }
 
 bool ComponentManager::destroy(ComponentId id) {
+    if (controller_attachments.contains(id.value)) {
+        detach_controller(id);
+    }
+    if (const auto found = target_controllers.find(id.value);
+        found != target_controllers.end())
+    {
+        detach_controller(found->second);
+    }
     if (!store.destroy(id)) {
         return false;
     }
@@ -160,6 +181,14 @@ const orlrig::Controller* ComponentManager::controller(ComponentId id) const {
     return store.controller(id);
 }
 
+orlrig::Locator* ComponentManager::locator(ComponentId id) {
+    return store.locator(id);
+}
+
+const orlrig::Locator* ComponentManager::locator(ComponentId id) const {
+    return store.locator(id);
+}
+
 orlviewer::ControllerShape ComponentManager::controller_shape(ComponentId id) const {
     const auto found = controller_shapes.find(id.value);
     return found == controller_shapes.end()
@@ -233,6 +262,250 @@ std::vector<ComponentId> ComponentManager::packed_joint_ids() const {
 
 std::int64_t ComponentManager::joint_index(ComponentId id) const {
     return store.joint_index(id);
+}
+
+std::vector<orlrig::Locator> ComponentManager::packed_locators() const {
+    return store.packed_locators();
+}
+
+std::vector<ComponentId> ComponentManager::packed_locator_ids() const {
+    return store.packed_locator_ids();
+}
+
+std::int64_t ComponentManager::locator_index(ComponentId id) const {
+    return store.locator_index(id);
+}
+
+bool ComponentManager::attach_controller(ComponentId controller,
+    ComponentId target, std::string* error)
+{
+    const auto* controller_meta = find(controller);
+    if (controller_meta == nullptr
+        || controller_meta->kind != ComponentKind::Controller)
+    {
+        return set_error(error, "Attachment source is not a controller");
+    }
+    const auto* target_meta = find(target);
+    if (target_meta == nullptr
+        || (target_meta->kind != ComponentKind::Joint
+            && target_meta->kind != ComponentKind::Locator))
+    {
+        return set_error(error, "Attachment target must be a joint or locator");
+    }
+    if (const auto found = target_controllers.find(target.value);
+        found != target_controllers.end() && found->second != controller)
+    {
+        return set_error(error, "Attachment target already has a controller");
+    }
+
+    const glm::mat4 controller_world = controller_world_xform(controller);
+    if (controller_attachments.contains(controller.value)) {
+        detach_controller(controller);
+    }
+    glm::mat4 target_world{1.0f};
+    if (!target_world_xform(target, target_world)) {
+        return set_error(error, "Attachment target transform is unavailable");
+    }
+
+    ControllerAttachment attachment;
+    attachment.target_kind = target_meta->kind == ComponentKind::Joint
+        ? AttachmentTargetKind::Joint
+        : AttachmentTargetKind::Locator;
+    attachment.target = target;
+    attachment.xform = glm::inverse(target_world) * controller_world;
+    controller_attachments[controller.value] = attachment;
+    target_controllers[target.value] = controller;
+    if (auto* value = this->controller(controller)) {
+        value->xform = attachment.xform;
+    }
+    return true;
+}
+
+bool ComponentManager::detach_controller(ComponentId controller) {
+    const auto found = controller_attachments.find(controller.value);
+    if (found == controller_attachments.end()) {
+        return false;
+    }
+    if (auto* value = this->controller(controller)) {
+        value->xform = controller_world_xform(controller);
+    }
+    const auto target = found->second.target;
+    if (const auto target_controller = target_controllers.find(target.value);
+        target_controller != target_controllers.end()
+        && target_controller->second == controller)
+    {
+        target_controllers.erase(target_controller);
+    }
+    controller_attachments.erase(found);
+    return true;
+}
+
+const ControllerAttachment* ComponentManager::controller_attachment(
+    ComponentId controller) const
+{
+    const auto found = controller_attachments.find(controller.value);
+    return found == controller_attachments.end() ? nullptr : &found->second;
+}
+
+ComponentId ComponentManager::attached_controller(ComponentId target) const {
+    const auto found = target_controllers.find(target.value);
+    return found == target_controllers.end() ? ComponentId{} : found->second;
+}
+
+bool ComponentManager::validate_controller_attachments(
+    std::string* error) const
+{
+    for (const auto& [controller_id, attachment] : controller_attachments) {
+        const ComponentId controller{controller_id};
+        const auto* controller_meta = find(controller);
+        const auto* target_meta = find(attachment.target);
+        if (controller_meta == nullptr
+            || controller_meta->kind != ComponentKind::Controller)
+        {
+            return set_error(error, "Attachment source is not a live controller");
+        }
+        if (target_meta == nullptr
+            || (target_meta->kind != ComponentKind::Joint
+                && target_meta->kind != ComponentKind::Locator))
+        {
+            return set_error(error, "Attachment target is not a live joint or locator");
+        }
+        const auto expected_kind = target_meta->kind == ComponentKind::Joint
+            ? AttachmentTargetKind::Joint
+            : AttachmentTargetKind::Locator;
+        if (attachment.target_kind != expected_kind) {
+            return set_error(error, "Attachment target kind is inconsistent");
+        }
+        const auto reverse = target_controllers.find(
+            attachment.target.value);
+        if (reverse == target_controllers.end()
+            || reverse->second != controller)
+        {
+            return set_error(error, "Attachment reverse index is inconsistent");
+        }
+        if (attachment.target == controller) {
+            return set_error(error, "Controller attachment cycle detected");
+        }
+    }
+    for (const auto& [target_id, controller] : target_controllers) {
+        const auto found = controller_attachments.find(controller.value);
+        if (found == controller_attachments.end()
+            || found->second.target.value != target_id)
+        {
+            return set_error(error, "Attachment target index is inconsistent");
+        }
+    }
+    return true;
+}
+
+glm::mat4 ComponentManager::controller_world_xform(ComponentId controller) const {
+    const auto* value = this->controller(controller);
+    if (value == nullptr) {
+        return glm::mat4{1.0f};
+    }
+    const auto* attachment = controller_attachment(controller);
+    if (attachment == nullptr) {
+        return value->xform;
+    }
+    glm::mat4 target_world{1.0f};
+    if (!target_world_xform(attachment->target, target_world)) {
+        return value->xform;
+    }
+    return target_world * attachment->xform;
+}
+
+bool ComponentManager::set_controller_world_xform(ComponentId controller,
+    const glm::mat4& world, std::string* error)
+{
+    auto* value = this->controller(controller);
+    if (value == nullptr) {
+        return set_error(error, "Transform target is not a controller");
+    }
+    const auto* attachment = controller_attachment(controller);
+    if (attachment == nullptr) {
+        value->xform = world;
+        return true;
+    }
+    const glm::mat4 target_world =
+        world * glm::inverse(attachment->xform);
+    if (!set_target_world_xform(attachment->target, target_world, error)) {
+        return false;
+    }
+    value->xform = attachment->xform;
+    return true;
+}
+
+bool ComponentManager::set_locator_world_xform(ComponentId locator,
+    const glm::mat4& world)
+{
+    auto* value = this->locator(locator);
+    if (value == nullptr) {
+        return false;
+    }
+    value->xform = world;
+    return true;
+}
+
+bool ComponentManager::target_world_xform(ComponentId target,
+    glm::mat4& world) const
+{
+    const auto* meta = find(target);
+    if (meta == nullptr) {
+        return false;
+    }
+    if (meta->kind == ComponentKind::Locator) {
+        const auto* value = locator(target);
+        if (value == nullptr) {
+            return false;
+        }
+        world = value->xform;
+        return true;
+    }
+    if (meta->kind != ComponentKind::Joint) {
+        return false;
+    }
+    const auto index = store.joint_index(target);
+    const auto packed = store.packed_joints();
+    if (index < 0 || static_cast<std::size_t>(index) >= packed.size()) {
+        return false;
+    }
+    world = orlrig::joint_world_matrix(packed, index);
+    return true;
+}
+
+bool ComponentManager::set_target_world_xform(ComponentId target,
+    const glm::mat4& world, std::string* error)
+{
+    const auto* meta = find(target);
+    if (meta == nullptr) {
+        return set_error(error, "Transform target no longer exists");
+    }
+    if (meta->kind == ComponentKind::Locator) {
+        return set_locator_world_xform(target, world)
+            || set_error(error, "Locator transform is unavailable");
+    }
+    if (meta->kind != ComponentKind::Joint) {
+        return set_error(error, "Transform target is not a joint or locator");
+    }
+    auto* joint = this->joint(target);
+    const auto index = store.joint_index(target);
+    const auto packed = store.packed_joints();
+    if (joint == nullptr || index < 0
+        || static_cast<std::size_t>(index) >= packed.size())
+    {
+        return set_error(error, "Joint transform is unavailable");
+    }
+    if (!orlrig::write_joint_world_matrix(packed, index, world, *joint)) {
+        return set_error(error, "Joint world transform cannot be decomposed");
+    }
+    return true;
+}
+
+bool ComponentManager::set_error(std::string* error, std::string message) const {
+    if (error != nullptr) {
+        *error = std::move(message);
+    }
+    return false;
 }
 
 } // namespace ORL

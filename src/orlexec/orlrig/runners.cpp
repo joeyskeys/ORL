@@ -106,11 +106,11 @@ bool fill_radii(exec::OrlBuffer& destination, const std::vector<Joint>& joints) 
     return true;
 }
 
-bool fill_xform(exec::OrlBuffer& destination, const Controller& controller) {
+bool fill_xform(exec::OrlBuffer& destination, const Locator& locator) {
     if (!destination.resize(1)) {
         return false;
     }
-    pack_xform(controller, static_cast<double*>(destination.data()));
+    pack_xform(locator, static_cast<double*>(destination.data()));
     return true;
 }
 
@@ -120,6 +120,24 @@ RunnerStatus bind_error(const exec::OrlExecution& execution, const char* stage) 
         result.errors.emplace_back(std::string{"ORL "} + stage + " failed");
     }
     return result;
+}
+
+RunnerStatus validate_joint_buffer(const exec::OrlBuffer& buffer,
+    const char* stage)
+{
+    if (buffer.orl_type() != kJointOrlType
+        || buffer.element_stride() != kJointStride)
+    {
+        return failure(
+            std::string{"ORL "} + stage
+            + " requires a Joint buffer with stride "
+            + std::to_string(kJointStride));
+    }
+    if (buffer.count() == 0) {
+        return failure(
+            std::string{"ORL "} + stage + " requires at least one joint");
+    }
+    return success();
 }
 
 } // namespace
@@ -186,13 +204,13 @@ RunnerStatus LbsRunner::ensure_programs(const std::string& type) {
     return success();
 }
 
-RunnerStatus LbsRunner::bind_capture(const std::vector<Joint>& packed,
+RunnerStatus LbsRunner::bind_capture(exec::OrlBuffer& packed,
     DeformerData& deformer)
 {
-    if (!capture_execution->bind_buffer("joints", joints)
+    if (!capture_execution->bind_buffer("joints", packed)
         || !capture_execution->bind_buffer("inverse_binds", deformer.inverse_binds)
         || !capture_execution->bind_int("joint_count",
-            static_cast<std::int64_t>(packed.size())))
+            static_cast<std::int64_t>(packed.count())))
     {
         return bind_error(*capture_execution, "capture binding");
     }
@@ -209,12 +227,29 @@ RunnerStatus LbsRunner::capture_bind(DeformerData& deformer,
     if (packed.empty() || mesh.positions.empty()) {
         return failure("Bind capture requires positions and joints");
     }
+    if (!fill_joints(joints, packed)) {
+        return failure("Failed to pack bind pose joints");
+    }
+    return capture_bind(deformer, mesh, joints);
+}
+
+RunnerStatus LbsRunner::capture_bind(DeformerData& deformer,
+    const MeshData& mesh,
+    exec::OrlBuffer& packed)
+{
+    if (mesh.positions.empty()) {
+        return failure("Bind capture requires positions and joints");
+    }
+    if (const auto status = validate_joint_buffer(packed, "Bind capture");
+        !status)
+    {
+        return status;
+    }
     if (const auto status = ensure_programs(deformer.type); !status) {
         return status;
     }
     if (!fill_positions(deformer.bind_positions, mesh)
-        || !fill_joints(joints, packed)
-        || !deformer.inverse_binds.resize(packed.size()))
+        || !deformer.inverse_binds.resize(packed.count()))
     {
         return failure("Failed to pack bind pose");
     }
@@ -226,13 +261,13 @@ RunnerStatus LbsRunner::capture_bind(DeformerData& deformer,
     return success();
 }
 
-RunnerStatus LbsRunner::bind_deform(const std::vector<Joint>& packed,
+RunnerStatus LbsRunner::bind_deform(exec::OrlBuffer& packed,
     DeformerData& deformer,
     WeightData& weights,
     std::int64_t vertex_count)
 {
     const std::int64_t weight_count = std::max<std::int64_t>(1, weights.weight_cnt);
-    const std::int64_t joint_count = static_cast<std::int64_t>(packed.size());
+    const std::int64_t joint_count = static_cast<std::int64_t>(packed.count());
     for (const auto& parameter : deform_program->parameters()) {
         bool bound = true;
         if (parameter.name == "bind_positions") {
@@ -243,7 +278,7 @@ RunnerStatus LbsRunner::bind_deform(const std::vector<Joint>& packed,
             bound = deform_execution->bind_buffer("output_positions", output);
         }
         else if (parameter.name == "joints") {
-            bound = deform_execution->bind_buffer("joints", joints);
+            bound = deform_execution->bind_buffer("joints", packed);
         }
         else if (parameter.name == "inverse_binds") {
             bound = deform_execution->bind_buffer("inverse_binds",
@@ -276,19 +311,34 @@ RunnerStatus LbsRunner::evaluate(DeformerData& deformer,
     const std::vector<Joint>& packed,
     bool device_only)
 {
-    if (!deformer.bound || packed.empty() || deformer.bind_positions.count() == 0) {
+    if (packed.empty() || !fill_joints(joints, packed)) {
+        return failure("Failed to pack LBS joints");
+    }
+    return evaluate(deformer, weights, joints, device_only);
+}
+
+RunnerStatus LbsRunner::evaluate(DeformerData& deformer,
+    WeightData& weights,
+    exec::OrlBuffer& packed,
+    bool device_only)
+{
+    if (!deformer.bound || deformer.bind_positions.count() == 0) {
         return failure("LBS evaluation requires a captured bind pose");
+    }
+    if (const auto status = validate_joint_buffer(packed, "LBS evaluation");
+        !status)
+    {
+        return status;
     }
     if (const auto status = ensure_programs(deformer.type); !status) {
         return status;
     }
-    if (!fill_joints(joints, packed)
-        || !output.resize(deformer.bind_positions.count()))
-    {
-        return failure("Failed to pack LBS buffers");
+    if (!output.resize(deformer.bind_positions.count())) {
+        return failure("Failed to resize LBS output buffer");
     }
     last_vertex_count = static_cast<std::int64_t>(deformer.bind_positions.count());
-    if (const auto status = bind_deform(packed, deformer, weights, last_vertex_count);
+    if (const auto status = bind_deform(
+            packed, deformer, weights, last_vertex_count);
         !status)
     {
         return status;
@@ -492,8 +542,8 @@ RunnerStatus AutoWeightRunner::run(const MeshData& mesh,
 SolverRunner::SolverRunner(exec::Backend backend)
     : compute_backend(backend)
     , packed_joints(kJointOrlType, kJointStride)
-    , target_xform(kControllerOrlType, kControllerXformStride)
-    , pole_xform(kControllerOrlType, kControllerXformStride)
+    , target_xform(kLocatorOrlType, kLocatorStride)
+    , pole_xform(kLocatorOrlType, kLocatorStride)
 {
 }
 
@@ -528,28 +578,54 @@ RunnerStatus SolverRunner::evaluate_two_bone(std::vector<Joint>& joints,
     std::int64_t root,
     std::int64_t mid,
     std::int64_t end,
-    const Controller& target,
-    const Controller& pole)
+    const Locator& target,
+    const Locator& pole)
 {
+    if (!fill_joints(packed_joints, joints)) {
+        return failure("Failed to pack solver joints");
+    }
+    const auto status = evaluate_two_bone(
+        packed_joints, root, mid, end, target, pole);
+    if (!status) {
+        return status;
+    }
+    if (!joints.empty()) {
+        std::memcpy(
+            joints.data(), packed_joints.data(), joints.size() * kJointStride);
+    }
+    return success();
+}
+
+RunnerStatus SolverRunner::evaluate_two_bone(exec::OrlBuffer& joint_buffer,
+    std::int64_t root,
+    std::int64_t mid,
+    std::int64_t end,
+    const Locator& target,
+    const Locator& pole)
+{
+    if (const auto status = validate_joint_buffer(
+            joint_buffer, "Two-bone solver"); !status)
+    {
+        return status;
+    }
     if (root < 0 || mid < 0 || end < 0
-        || static_cast<std::size_t>(root) >= joints.size()
-        || static_cast<std::size_t>(mid) >= joints.size()
-        || static_cast<std::size_t>(end) >= joints.size())
+        || static_cast<std::size_t>(root) >= joint_buffer.count()
+        || static_cast<std::size_t>(mid) >= joint_buffer.count()
+        || static_cast<std::size_t>(end) >= joint_buffer.count())
     {
         return failure("Two-bone solver indices are out of range");
     }
     if (const auto status = ensure_program(); !status) {
         return status;
     }
-    if (!fill_joints(packed_joints, joints)
-        || !fill_xform(target_xform, target)
+    if (!fill_xform(target_xform, target)
         || !fill_xform(pole_xform, pole))
     {
         return failure("Failed to pack solver inputs");
     }
 
-    const auto joint_count = static_cast<std::int64_t>(joints.size());
-    if (!execution->bind_buffer("joints", packed_joints)
+    const auto joint_count = static_cast<std::int64_t>(joint_buffer.count());
+    if (!execution->bind_buffer("joints", joint_buffer)
         || !execution->bind_int("root", root)
         || !execution->bind_int("mid", mid)
         || !execution->bind_int("end", end)
@@ -562,8 +638,22 @@ RunnerStatus SolverRunner::evaluate_two_bone(std::vector<Joint>& joints,
     if (!execution->evaluate(1).has_value()) {
         return failure(execution->errors());
     }
-    std::memcpy(joints.data(), packed_joints.data(), joints.size() * kJointStride);
     return success();
+}
+
+RunnerStatus SolverRunner::evaluate_two_bone(std::vector<Joint>& joints,
+    std::int64_t root,
+    std::int64_t mid,
+    std::int64_t end,
+    const Controller& target,
+    const Controller& pole)
+{
+    Locator target_locator;
+    target_locator.xform = target.xform;
+    Locator pole_locator;
+    pole_locator.xform = pole.xform;
+    return evaluate_two_bone(joints, root, mid, end,
+        target_locator, pole_locator);
 }
 
 } // namespace orlrig

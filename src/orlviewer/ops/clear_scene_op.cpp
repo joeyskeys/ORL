@@ -51,6 +51,7 @@ void ClearSceneOp::on_eval(const InputEvent&) {
     selection.clear();
     components.destroy_kind(ComponentKind::Joint);
     components.destroy_kind(ComponentKind::Controller);
+    components.destroy_kind(ComponentKind::Locator);
     components.destroy_kind(ComponentKind::Curve);
     components.destroy_kind(ComponentKind::Constraint);
 

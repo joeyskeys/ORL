@@ -19,6 +19,9 @@ ComponentId ComponentStore::create(std::string name, ComponentKind kind, Payload
     if (kind == ComponentKind::Joint) {
         joint_order.push_back(id);
     }
+    if (kind == ComponentKind::Locator) {
+        locator_order.push_back(id);
+    }
     return id;
 }
 
@@ -28,6 +31,10 @@ ComponentId ComponentStore::create_joint(std::string name, Joint joint) {
 
 ComponentId ComponentStore::create_controller(std::string name, Controller controller) {
     return create(std::move(name), ComponentKind::Controller, std::move(controller));
+}
+
+ComponentId ComponentStore::create_locator(std::string name, Locator locator) {
+    return create(std::move(name), ComponentKind::Locator, std::move(locator));
 }
 
 ComponentId ComponentStore::create_curve(std::string name) {
@@ -54,6 +61,9 @@ bool ComponentStore::destroy(ComponentId id) {
     names.erase(found->second.meta.name);
     if (found->second.meta.kind == ComponentKind::Joint) {
         std::erase(joint_order, id);
+    }
+    if (found->second.meta.kind == ComponentKind::Locator) {
+        std::erase(locator_order, id);
     }
     records.erase(found);
     return true;
@@ -130,6 +140,14 @@ const Controller* ComponentStore::controller(ComponentId id) const {
     return payload_as<Controller>(id);
 }
 
+Locator* ComponentStore::locator(ComponentId id) {
+    return payload_as<Locator>(id);
+}
+
+const Locator* ComponentStore::locator(ComponentId id) const {
+    return payload_as<Locator>(id);
+}
+
 WeightData* ComponentStore::weight(ComponentId id) {
     return payload_as<WeightData>(id);
 }
@@ -193,6 +211,37 @@ std::vector<ComponentId> ComponentStore::packed_joint_ids() const {
 std::int64_t ComponentStore::joint_index(ComponentId id) const {
     for (std::size_t i = 0; i < joint_order.size(); ++i) {
         if (joint_order[i] == id) {
+            return static_cast<std::int64_t>(i);
+        }
+    }
+    return -1;
+}
+
+std::vector<Locator> ComponentStore::packed_locators() const {
+    std::vector<Locator> locators;
+    locators.reserve(locator_order.size());
+    for (const ComponentId id : locator_order) {
+        if (const auto* value = locator(id)) {
+            locators.push_back(*value);
+        }
+    }
+    return locators;
+}
+
+std::vector<ComponentId> ComponentStore::packed_locator_ids() const {
+    std::vector<ComponentId> ids;
+    ids.reserve(locator_order.size());
+    for (const ComponentId id : locator_order) {
+        if (locator(id) != nullptr) {
+            ids.push_back(id);
+        }
+    }
+    return ids;
+}
+
+std::int64_t ComponentStore::locator_index(ComponentId id) const {
+    for (std::size_t i = 0; i < locator_order.size(); ++i) {
+        if (locator_order[i] == id) {
             return static_cast<std::int64_t>(i);
         }
     }

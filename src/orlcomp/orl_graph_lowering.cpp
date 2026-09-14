@@ -58,6 +58,28 @@ std::string type_name(const orlgraph::LogicalType& type) {
     }
 }
 
+void add_type_module(const orlgraph::LogicalType& type,
+    std::set<std::string>& modules)
+{
+    using Kind = orlgraph::LogicalTypeKind;
+    if (type.kind == Kind::Buffer && type.element != nullptr) {
+        add_type_module(*type.element, modules);
+        return;
+    }
+    if (type.kind != Kind::Struct) {
+        return;
+    }
+    if (type.name == "Joint") {
+        modules.insert("joint");
+    } else if (type.name == "Weight") {
+        modules.insert("weight");
+    } else if (type.name == "Locator") {
+        modules.insert("locator");
+    } else if (type.name == "Controller") {
+        modules.insert("controller");
+    }
+}
+
 std::string literal(const orlgraph::ConstantValue& value) {
     std::ostringstream stream;
     std::visit([&stream](const auto& item) {
@@ -158,6 +180,9 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
 
     std::set<std::string> modules;
     if (options.emit_module_uses) {
+        for (const auto& [_, input] : module.inputs()) {
+            add_type_module(input.type, modules);
+        }
         for (const auto& [_, node] : module.nodes()) {
             const auto* definition = registry.find(node.definition);
             if (definition != nullptr

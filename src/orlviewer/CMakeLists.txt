@@ -17,10 +17,13 @@ add_executable(orl_viewer
     ops/load_model_op.cpp
     ops/clear_scene_op.cpp
     ops/create_joint_op.cpp
+    ops/create_locator_op.hpp
+    ops/toggle_controller_attachment_op.hpp
     vp/mesh_csr_feature.cpp
     vp/auto_weight_feature.cpp
     vp/solver_feature.cpp
     vp/deformer_feature.cpp
+    vp/locator_feature.hpp
 )
 set_source_files_properties(
     comps/joint.hpp
@@ -29,6 +32,9 @@ set_source_files_properties(
     comps/controller_curves.hpp
     comps/weight.hpp
     comps/deformer.hpp
+    ops/create_locator_op.hpp
+    ops/toggle_controller_attachment_op.hpp
+    vp/locator_feature.hpp
     PROPERTIES HEADER_FILE_ONLY TRUE
 )
 

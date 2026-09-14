@@ -252,12 +252,23 @@ TEST_CASE("syntax includes nested stdlib auto-weight modules", "[orl][syntax][st
 
 TEST_CASE("syntax includes stdlib two-bone IK solver", "[orl][syntax][stdlib][solver]") {
     const std::string src =
+        "use locator;\n"
         "use solver/ik_two_bone;\n"
-        "int solve(Joint joints[], int root, int mid, int end, matrix target[], matrix pole[], int jcount) {\n"
+        "int solve(Joint joints[], int root, int mid, int end, Locator target[], Locator pole[], int jcount) {\n"
         "    return solver_ik_two_bone(joints, root, mid, end, target, pole, jcount);\n"
         "}\n";
 
     RequireParses(src);
+}
+
+TEST_CASE("syntax includes locator and authoring controller values",
+    "[orl][syntax][stdlib][rig]")
+{
+    RequireParses(
+        "use locator;\n"
+        "use controller;\n"
+        "Locator make_locator() { return locator_identity(); }\n"
+        "Controller make_controller() { return controller_identity(); }\n");
 }
 
 TEST_CASE("syntax includes stdlib FK solver", "[orl][syntax][stdlib][solver]") {

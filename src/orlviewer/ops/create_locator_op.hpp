@@ -11,12 +11,11 @@
 namespace ORL
 {
 
-// Explicit controller creation utility. The default viewer shortcut now
-// toggles target attachments; this operation remains available to callers
-// that still need to create an unattached controller.
-class CreateControllerOp : public VpOperation<CreateControllerOp> {
+// Immediate locator creation. L creates a locator at the focused transform,
+// or at the origin when no transform is selected.
+class CreateLocatorOp : public VpOperation<CreateLocatorOp> {
 public:
-    CreateControllerOp(ComponentManager& components, vkkk::Scene& scene,
+    CreateLocatorOp(ComponentManager& components, vkkk::Scene& scene,
         Selection& selection)
         : components(components)
         , scene(scene)
@@ -24,51 +23,51 @@ public:
     {
     }
 
-    void on_eval(const InputEvent&) {
-        create();
+    void on_eval(const InputEvent& event) {
+        if (event.kind == InputEvent::Kind::Key
+            && event.action == vkkk::InputAction::Press
+            && event.key == vkkk::Key::L)
+        {
+            create();
+        }
     }
 
 private:
     void create() {
-        orlrig::Controller controller;
+        orlrig::Locator locator;
         const auto* focus = selection.focus();
         if (focus != nullptr && focus->kind == SelectionRef::Kind::SceneObject) {
             if (const auto* object = scene.find_object(focus->object_name);
                 object != nullptr && !object->mesh_name.empty())
             {
-                controller.xform = object->model;
+                locator.xform = object->model;
             }
         }
         else if (focus != nullptr && focus->kind == SelectionRef::Kind::Joint) {
             const auto index = components.joint_index(focus->component);
             if (index >= 0) {
-                controller.xform = orlviewer::joint_world_matrix(
+                locator.xform = orlviewer::joint_world_matrix(
                     components.packed_joints(), index);
             }
         }
-        else if (focus != nullptr
-            && focus->kind == SelectionRef::Kind::Locator)
-        {
-            if (const auto* locator = components.locator(focus->component);
-                locator != nullptr)
-            {
-                controller.xform = locator->xform;
-            }
-        }
-        else if (focus != nullptr
-            && focus->kind == SelectionRef::Kind::Controller)
-        {
-            controller.xform = components.controller_world_xform(
+        else if (focus != nullptr && focus->kind == SelectionRef::Kind::Controller) {
+            locator.xform = components.controller_world_xform(
                 focus->component);
         }
+        else if (focus != nullptr && focus->kind == SelectionRef::Kind::Locator) {
+            if (const auto* selected = components.locator(focus->component);
+                selected != nullptr)
+            {
+                locator.xform = selected->xform;
+            }
+        }
 
-        const auto id = components.create_controller(
-            unique_name(), controller, orlviewer::ControllerShape::Circle);
+        const auto id = components.create_locator(unique_name(), locator);
         if (!id) {
-            std::cerr << "CreateControllerOp: failed to create controller\n";
+            std::cerr << "CreateLocatorOp: failed to create locator\n";
             return;
         }
-        selection.set(SelectionRef::controller(id));
+        selection.set(SelectionRef::locator(id));
         if (const auto* created = components.find(id)) {
             std::cout << "Created '" << created->name << "'\n";
         }
@@ -76,7 +75,7 @@ private:
 
     std::string unique_name() const {
         for (std::size_t i = 1;; ++i) {
-            std::string name = "ctrl" + std::to_string(i);
+            const std::string name = "loc" + std::to_string(i);
             if (!components.contains(name)) {
                 return name;
             }

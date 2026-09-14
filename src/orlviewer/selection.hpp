@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -33,10 +34,42 @@ struct XformAttr {
     double* rotation = nullptr;
     double* scale = nullptr;
     glm::mat4 to_world{1.0f};
+    std::function<glm::mat4()> read_world;
+    std::function<bool(const glm::mat4&)> write_world;
 
     explicit operator bool() const { return kind != XformAttrKind::None; }
 
+    bool has_world_matrix() const {
+        return matrix != nullptr
+            || static_cast<bool>(read_world)
+            || static_cast<bool>(write_world);
+    }
+
+    glm::mat4 world_matrix() const {
+        if (read_world) {
+            return read_world();
+        }
+        if (kind == XformAttrKind::Matrix && matrix != nullptr) {
+            return *matrix;
+        }
+        return glm::mat4{1.0f};
+    }
+
+    bool set_world_matrix(const glm::mat4& world) {
+        if (write_world) {
+            return write_world(world);
+        }
+        if (kind == XformAttrKind::Matrix && matrix != nullptr) {
+            *matrix = world;
+            return true;
+        }
+        return false;
+    }
+
     glm::vec3 world_position() const {
+        if (read_world) {
+            return glm::vec3{read_world()[3]};
+        }
         if (kind == XformAttrKind::Matrix && matrix != nullptr) {
             return glm::vec3{(*matrix)[3]};
         }
@@ -54,6 +87,12 @@ struct XformAttr {
     }
 
     void set_world_position(const glm::vec3& world) {
+        if (write_world) {
+            auto current = world_matrix();
+            current[3] = glm::vec4{world, 1.0f};
+            write_world(current);
+            return;
+        }
         glm::vec3 local = world;
         if (translation != nullptr || vector != nullptr) {
             local = glm::vec3{glm::inverse(to_world) * glm::vec4{world, 1.0f}};
@@ -124,6 +163,7 @@ struct SelectionRef {
         SceneObject,
         Vector,
         Controller,
+        Locator,
     };
 
     Kind kind = Kind::None;
@@ -157,6 +197,13 @@ struct SelectionRef {
     static SelectionRef controller(ComponentId id) {
         SelectionRef ref;
         ref.kind = Kind::Controller;
+        ref.component = id;
+        return ref;
+    }
+
+    static SelectionRef locator(ComponentId id) {
+        SelectionRef ref;
+        ref.kind = Kind::Locator;
         ref.component = id;
         return ref;
     }
@@ -243,6 +290,24 @@ public:
     bool has_selected_joint() const {
         for (const auto& item : items) {
             if (item.kind == SelectionRef::Kind::Joint) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool has_selected_controller() const {
+        for (const auto& item : items) {
+            if (item.kind == SelectionRef::Kind::Controller) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool has_selected_locator() const {
+        for (const auto& item : items) {
+            if (item.kind == SelectionRef::Kind::Locator) {
                 return true;
             }
         }
@@ -346,7 +411,22 @@ private:
                 return {};
             }
             attr.kind = XformAttrKind::Matrix;
-            attr.matrix = &controller->xform;
+            attr.read_world = [this, id = ref.component] {
+                return components.controller_world_xform(id);
+            };
+            attr.write_world = [this, id = ref.component](
+                                   const glm::mat4& world) {
+                return components.set_controller_world_xform(id, world);
+            };
+            return attr;
+        }
+        if (ref.kind == SelectionRef::Kind::Locator) {
+            auto* locator = components.locator(ref.component);
+            if (locator == nullptr) {
+                return {};
+            }
+            attr.kind = XformAttrKind::Matrix;
+            attr.matrix = &locator->xform;
             return attr;
         }
         if (ref.kind == SelectionRef::Kind::Vector && ref.vector != nullptr) {

@@ -358,6 +358,60 @@ TEST_CASE("optimized graph lowers to reusable CPU ORL execution", "[orlgraph][lo
     REQUIRE(typed.output(StableId{"result"}) != nullptr);
 }
 
+TEST_CASE("graph lowering imports locator types used by graph signatures",
+    "[orlgraph][lowering][locator]")
+{
+    NodeRegistry registry;
+    NodeDefinition definition;
+    definition.id = StableId{"test.locator_count"};
+    definition.qualified_name = "test.locator_count";
+    definition.implementation.kind = ImplementationKind::OrlFunction;
+    definition.implementation.function = "locator_count";
+    definition.inputs = {
+        Port{StableId{"locators"}, "locators", PortDirection::Input,
+            PortCardinality::Buffer,
+            LogicalType::buffer(LogicalType::struct_type("Locator")),
+            Domain::rig(), Shape::one("locator_count"), true,
+            std::nullopt, "locators", "world"},
+    };
+    definition.outputs = {
+        Port{StableId{"status"}, "status", PortDirection::Output,
+            PortCardinality::Scalar, LogicalType::int64(), Domain::constant(),
+            Shape::scalar(), false, std::nullopt, "status", {}, {}},
+    };
+    REQUIRE(registry.register_definition(std::move(definition)));
+
+    GraphModule module;
+    module.module_id = "locator.signature";
+    REQUIRE(module.add_input(InterfacePort{
+        StableId{"locators"}, "locators", PortDirection::Input,
+        LogicalType::buffer(LogicalType::struct_type("Locator")),
+        Domain::rig(), Shape::one("locator_count"), true, std::nullopt,
+        false, "scene.rig.locators", "locators", "world"}));
+    REQUIRE(module.add_output(InterfacePort{
+        StableId{"status"}, "status", PortDirection::Output,
+        LogicalType::int64(), Domain::constant(), Shape::scalar(), true,
+        std::nullopt, false, "status", {}, {}}));
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"count"}, StableId{"test.locator_count"}, "count",
+        {}, {}, InlinePolicy::Default}));
+    REQUIRE(module.add_connection(Connection{
+        Endpoint::graph_input(StableId{"locators"}),
+        Endpoint::node_port(StableId{"count"}, StableId{"locators"})}));
+    REQUIRE(module.add_connection(Connection{
+        Endpoint::node_port(StableId{"count"}, StableId{"status"}),
+        Endpoint::graph_output(StableId{"status"})}));
+
+    const auto lowered = orlcomp::OrlGraphLowerer{}.lower(module, registry, {
+        .entry_function = "locator_signature",
+        .source_preamble =
+            "int locator_count(Locator locators[], int count) { return count; }",
+    });
+    REQUIRE(lowered.ok);
+    REQUIRE(lowered.source.find("use locator;") != std::string::npos);
+    REQUIRE(lowered.source.find("Locator locators[]") != std::string::npos);
+}
+
 TEST_CASE("graph input resolver binds scene buffers and scalars",
     "[orlgraph][lowering][binding][cpu]")
 {

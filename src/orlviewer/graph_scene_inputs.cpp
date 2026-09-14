@@ -11,6 +11,7 @@
 #include "orlrig/abi.hpp"
 #include "orlrig/controller.hpp"
 #include "orlrig/graph_resources.hpp"
+#include "orlrig/locator.hpp"
 
 namespace ORL
 {
@@ -35,6 +36,7 @@ SceneInputCatalog::SceneInputCatalog(vkkk::Scene& scene,
     : scene_(scene)
     , components_(components)
     , joints_(orlrig::kJointOrlType, orlrig::kJointStride)
+    , locators_(orlrig::kLocatorOrlType, orlrig::kLocatorStride)
     , controllers_(orlrig::kMatrixOrlType, orlrig::kMatrixStride)
 {
     refresh();
@@ -44,8 +46,10 @@ void SceneInputCatalog::refresh() {
     descriptors_.clear();
     sources_.clear();
     mesh_positions_.clear();
+    locator_xforms_.clear();
     controller_xforms_.clear();
     pack_joints();
+    pack_locators();
     pack_controllers();
     add_descriptors();
 }
@@ -76,7 +80,9 @@ std::vector<std::string> SceneInputCatalog::element_names(
     components_.for_each([&](const Component& component) {
         const bool matches = kind == SceneElementKind::Joint
             ? component.kind == ComponentKind::Joint
-            : component.kind == ComponentKind::Controller;
+            : kind == SceneElementKind::Controller
+                ? component.kind == ComponentKind::Controller
+                : component.kind == ComponentKind::Locator;
         if (matches) {
             result.push_back(component.name);
         }
@@ -108,7 +114,14 @@ std::optional<std::int64_t> SceneInputCatalog::resolve_element_handle(
                 static_cast<std::int64_t>(component->id.value)}
             : std::nullopt;
     }
-    if (component->kind != ComponentKind::Controller) {
+    if (kind == SceneElementKind::Controller
+        && component->kind != ComponentKind::Controller)
+    {
+        return std::nullopt;
+    }
+    if (kind == SceneElementKind::Locator
+        && component->kind != ComponentKind::Locator)
+    {
         return std::nullopt;
     }
     return static_cast<std::int64_t>(component->id.value);
@@ -132,16 +145,24 @@ std::optional<std::int64_t> SceneInputCatalog::resolve_element_index(
         return index < 0 ? std::nullopt
                         : std::optional<std::int64_t>{index};
     }
-    if (component->kind != ComponentKind::Controller) {
+    if (kind == SceneElementKind::Controller
+        && component->kind != ComponentKind::Controller)
+    {
         return std::nullopt;
     }
-    const auto found = std::find(controller_ids_.begin(),
-        controller_ids_.end(), component->id);
-    return found == controller_ids_.end()
+    if (kind == SceneElementKind::Locator
+        && component->kind != ComponentKind::Locator)
+    {
+        return std::nullopt;
+    }
+    const auto& ids = kind == SceneElementKind::Controller
+        ? controller_ids_ : locator_ids_;
+    const auto found = std::find(ids.begin(), ids.end(), component->id);
+    return found == ids.end()
         ? std::nullopt
         : std::optional<std::int64_t>{
             static_cast<std::int64_t>(
-                std::distance(controller_ids_.begin(), found))};
+                std::distance(ids.begin(), found))};
 }
 
 bool SceneInputCatalog::make_interface_port(const orlgraph::StableId& id,
@@ -231,6 +252,34 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
         binding.int_value = static_cast<std::int64_t>(
             components_.packed_joints().size());
         return true;
+    case SourceKind::Locators:
+        if (!pack_locators()) {
+            return set_error(error, "Unable to pack scene locators");
+        }
+        binding.kind = exec::ParameterKind::Buffer;
+        binding.buffer = &locators_;
+        binding.element_count = locators_.count();
+        return true;
+    case SourceKind::LocatorCount:
+        binding.kind = exec::ParameterKind::Int64;
+        binding.int_value = source->second.component
+            ? 1
+            : static_cast<std::int64_t>(
+                components_.packed_locators().size());
+        return true;
+    case SourceKind::LocatorXform:
+        if (!pack_locator(source->second.component, key)) {
+            return set_error(error, "Unable to pack locator transform for '" + key + "'");
+        }
+        if (const auto found = locator_xforms_.find(key);
+            found != locator_xforms_.end())
+        {
+            binding.kind = exec::ParameterKind::Buffer;
+            binding.buffer = &found->second;
+            binding.element_count = found->second.count();
+            return true;
+        }
+        return set_error(error, "Locator transform is unavailable for '" + key + "'");
     case SourceKind::Controllers:
         if (!pack_controllers()) {
             return set_error(error, "Unable to pack scene controllers");
@@ -375,6 +424,24 @@ void SceneInputCatalog::add_descriptors() {
             Source{SourceKind::JointCount, {}, {}});
     }
 
+    if (pack_locators() && locators_.count() != 0) {
+        add_buffer_descriptor(
+            orlgraph::StableId{
+                std::string{orlrig::kSceneLocatorsBinding}},
+            "Scene Locators",
+            orlgraph::LogicalType::struct_type("Locator"),
+            orlgraph::Domain::rig(),
+            orlgraph::Shape::one("locator_count"),
+            "locators", "world", orlrig::kLocatorStride,
+            std::string{orlrig::kSceneLocatorsCountBinding},
+            Source{SourceKind::Locators, {}, {}});
+        add_scalar_descriptor(
+            orlgraph::StableId{
+                std::string{orlrig::kSceneLocatorsCountBinding}},
+            "Locator Count", "locator_count",
+            Source{SourceKind::LocatorCount, {}, {}});
+    }
+
     if (pack_controllers() && controllers_.count() != 0) {
         add_buffer_descriptor(
             orlgraph::StableId{
@@ -454,6 +521,26 @@ void SceneInputCatalog::add_descriptors() {
                 "inverse_binds", "joint", orlrig::kMatrixStride,
                 std::string{orlrig::kSceneJointCountBinding},
                 Source{SourceKind::InverseBinds, meta.id, {}});
+        } else if (meta.kind == ComponentKind::Locator) {
+            const auto binding = orlrig::scene_locator_xform_binding(meta.name);
+            if (!pack_locator(meta.id, binding)) {
+                return;
+            }
+            add_buffer_descriptor(
+                orlgraph::StableId{binding},
+                "Locator " + meta.name + " Transform",
+                orlgraph::LogicalType::struct_type("Locator"),
+                orlgraph::Domain::rig(),
+                orlgraph::Shape::one("one"),
+                "locator.xform", "world", orlrig::kLocatorStride,
+                orlrig::scene_locator_count_binding(meta.name),
+                Source{SourceKind::LocatorXform, meta.id, {}});
+            add_scalar_descriptor(
+                orlgraph::StableId{
+                    orlrig::scene_locator_count_binding(meta.name)},
+                "Locator " + meta.name + " Count",
+                "locator_count",
+                Source{SourceKind::LocatorCount, meta.id, {}});
         } else if (meta.kind == ComponentKind::Controller) {
             const auto binding = orlrig::scene_controller_xform_binding(meta.name);
             if (!pack_controller(meta.id, binding)) {
@@ -581,6 +668,24 @@ bool SceneInputCatalog::pack_joints() {
     return true;
 }
 
+bool SceneInputCatalog::pack_locators() {
+    const auto previous_ids = locator_ids_;
+    locator_ids_ = components_.packed_locator_ids();
+    if (locator_ids_ != previous_ids) {
+        ++revision_;
+    }
+    const auto packed = components_.packed_locators();
+    if (!locators_.resize(packed.size())) {
+        return false;
+    }
+    auto* destination = static_cast<double*>(locators_.data());
+    for (std::size_t index = 0; index < packed.size(); ++index) {
+        orlrig::pack_xform(packed[index],
+            destination + index * (orlrig::kLocatorStride / sizeof(double)));
+    }
+    return true;
+}
+
 bool SceneInputCatalog::pack_controllers() {
     std::vector<std::pair<std::string, ComponentId>> controllers;
     components_.for_each([&controllers](const Component& component) {
@@ -611,9 +716,30 @@ bool SceneInputCatalog::pack_controllers() {
         if (controller == nullptr) {
             return false;
         }
-        orlrig::pack_xform(
-            *controller, destination + index * 16);
+        auto resolved = *controller;
+        resolved.xform = components_.controller_world_xform(
+            controllers[index].second);
+        orlrig::pack_xform(resolved, destination + index * 16);
     }
+    return true;
+}
+
+bool SceneInputCatalog::pack_locator(ComponentId id,
+    const std::string& binding)
+{
+    const auto* locator = components_.locator(id);
+    if (locator == nullptr) {
+        return false;
+    }
+    auto [found, inserted] = locator_xforms_.try_emplace(
+        binding, orlrig::kLocatorOrlType, orlrig::kLocatorStride);
+    (void)inserted;
+    auto& buffer = found->second;
+    if (!buffer.resize(1)) {
+        return false;
+    }
+    orlrig::pack_xform(*locator,
+        static_cast<double*>(buffer.data()));
     return true;
 }
 
@@ -631,7 +757,9 @@ bool SceneInputCatalog::pack_controller(ComponentId id,
     if (!buffer.resize(1)) {
         return false;
     }
-    orlrig::pack_xform(*controller,
+    auto resolved = *controller;
+    resolved.xform = components_.controller_world_xform(id);
+    orlrig::pack_xform(resolved,
         static_cast<double*>(buffer.data()));
     return true;
 }

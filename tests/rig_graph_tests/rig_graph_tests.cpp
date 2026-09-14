@@ -1,6 +1,7 @@
 #if __has_include(<catch2/catch_all.hpp>)
 
 #include <algorithm>
+#include <string>
 
 #include <catch2/catch_all.hpp>
 
@@ -32,8 +33,8 @@ TEST_CASE("standard LBS rig graph exposes resources and dependencies",
 TEST_CASE("scene input bindings use stable semantic names",
     "[orlrig][graph][scene]")
 {
-    REQUIRE(kSceneJointsBinding == "scene.rig.joints");
-    REQUIRE(kSceneJointCountBinding == "scene.rig.joint_count");
+    REQUIRE(std::string{kSceneJointsBinding} == "scene.rig.joints");
+    REQUIRE(std::string{kSceneJointCountBinding} == "scene.rig.joint_count");
     REQUIRE(scene_mesh_positions_binding("body")
         == "scene.mesh.body.positions");
     REQUIRE(scene_mesh_vertex_count_binding("body")
@@ -48,6 +49,10 @@ TEST_CASE("scene input bindings use stable semantic names",
         == "scene.rig.controller.ctrl.xform");
     REQUIRE(scene_controller_count_binding("ctrl")
         == "scene.rig.controller.ctrl.count");
+    REQUIRE(scene_locator_xform_binding("loc")
+        == "scene.rig.locator.loc.xform");
+    REQUIRE(scene_locator_count_binding("loc")
+        == "scene.rig.locator.loc.count");
 }
 
 TEST_CASE("standard rig graph registers public stdlib nodes",
@@ -69,14 +74,17 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
         "orlrig.solver.spline_ik",
         "orlrig.solver.full_body_ik",
         "orlrig.constraint.aim",
+        "orlrig.constraint.aim_locator",
         "orlrig.constraint.copy_xform",
         "orlrig.constraint.copy_translation",
         "orlrig.constraint.copy_rotation",
         "orlrig.constraint.copy_scale",
         "orlrig.input.joints",
         "orlrig.input.controllers",
+        "orlrig.input.locators",
         "orlrig.input.find_joint",
         "orlrig.input.find_controller",
+        "orlrig.input.find_locator",
         "orlrig.input.find_mesh",
     };
 
@@ -97,7 +105,8 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
             }
             const bool has_transform =
                 name == "orlrig.input.find_joint"
-                || name == "orlrig.input.find_controller";
+                || name == "orlrig.input.find_controller"
+                || name == "orlrig.input.find_locator";
             REQUIRE(definition->outputs.size() == (has_transform ? 3 : 1));
             REQUIRE(definition->output("handle") != nullptr);
             if (has_transform) {

@@ -24,12 +24,18 @@ inline constexpr std::string_view kSceneControllersBinding =
     "scene.rig.controllers";
 inline constexpr std::string_view kSceneControllersCountBinding =
     "scene.rig.controller_count";
+inline constexpr std::string_view kSceneLocatorsBinding =
+    "scene.rig.locators";
+inline constexpr std::string_view kSceneLocatorsCountBinding =
+    "scene.rig.locator_count";
 inline constexpr std::string_view kSceneArrayIndexSemantic =
     "scene.array_index";
 inline constexpr std::string_view kSceneJointHandleSemantic =
     "scene.joint.handle";
 inline constexpr std::string_view kSceneControllerHandleSemantic =
     "scene.controller.handle";
+inline constexpr std::string_view kSceneLocatorHandleSemantic =
+    "scene.locator.handle";
 inline constexpr std::string_view kJointWorldMatrixConversion =
     "orlrig.convert.joint_world_matrix";
 inline constexpr std::string_view kJointWorldMatrixWritebackConversion =
@@ -42,6 +48,8 @@ std::string scene_weight_count_binding(std::string_view component_name);
 std::string scene_inverse_bindings_binding(std::string_view component_name);
 std::string scene_controller_xform_binding(std::string_view component_name);
 std::string scene_controller_count_binding(std::string_view component_name);
+std::string scene_locator_xform_binding(std::string_view component_name);
+std::string scene_locator_count_binding(std::string_view component_name);
 
 struct RigGraph {
     orlgraph::GraphModule module;

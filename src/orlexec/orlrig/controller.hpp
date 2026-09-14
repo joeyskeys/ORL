@@ -11,8 +11,9 @@
 namespace orlrig
 {
 
-// Compute-side controller payload. Viewer handles may add display metadata,
-// but the core representation passed to ORL is only this transform.
+// Authoring-only controller payload. The viewer uses xform as the free
+// controller world transform when unattached and as the target-local
+// attachment transform when attached. New ORL graphs do not consume it.
 struct Controller {
     glm::mat4 xform{1.0f};
 };

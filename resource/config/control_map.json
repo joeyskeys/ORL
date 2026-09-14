@@ -106,10 +106,18 @@
       }
     },
     {
-      "op": "create_controller",
+      "op": "toggle_controller_attachment",
       "input": {
         "type": "key",
         "key": "C",
+        "action": "press"
+      }
+    },
+    {
+      "op": "create_locator",
+      "input": {
+        "type": "key",
+        "key": "L",
         "action": "press"
       }
     },
@@ -179,7 +187,11 @@
       }
     },
     {
-      "op": ["auto_weight", "setup_deformer"],
+      "op": [
+        "auto_weight",
+        "setup_deformer",
+        "toggle_controller_attachment"
+      ],
       "input": {
         "type": "key",
         "key": "B",

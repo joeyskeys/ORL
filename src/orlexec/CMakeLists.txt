@@ -45,9 +45,13 @@ add_library(orlrig
     orlrig/graph_resources.hpp
     orlrig/ik.hpp
     orlrig/joint.hpp
+    orlrig/locator.hpp
     orlrig/mesh.hpp
     orlrig/orlrig.hpp
     orlrig/runners.hpp
+    orlrig/runner_status.hpp
+    orlrig/two_stage_runner.cpp
+    orlrig/two_stage_runner.hpp
     orlrig/weight.hpp
     orlrig/component_store.hpp
 )

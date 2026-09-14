@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -8,6 +9,7 @@
 #include "component_manager.hpp"
 #include "control_map.hpp"
 #include "graph_scene_runtime.hpp"
+#include "ops/toggle_controller_attachment_op.hpp"
 #include "orlrig/graph_resources.hpp"
 #include "runtime_config.hpp"
 #include "scene_graph_context.hpp"
@@ -116,8 +118,8 @@ orlgraph::GraphModule make_two_bone_solver_graph()
                 orlgraph::LogicalType::string(), std::move(name)}}},
             {}, orlgraph::InlinePolicy::Default});
     };
-    add_find("target", "orlrig.input.find_controller", "target");
-    add_find("pole", "orlrig.input.find_controller", "pole");
+    add_find("target", "orlrig.input.find_locator", "target");
+    add_find("pole", "orlrig.input.find_locator", "pole");
     add_find("root", "orlrig.input.find_joint", "root");
     add_find("mid", "orlrig.input.find_joint", "mid");
     add_find("end", "orlrig.input.find_joint", "end");
@@ -171,6 +173,7 @@ TEST_CASE("scene graph context owns the active LBS graph",
     ORL::ComponentManager components;
     const auto joint_id = components.create_joint("root");
     const auto controller_id = components.create_controller("ctrl");
+    const auto locator_id = components.create_locator("loc");
     const auto weight_id = components.create_weight("weights");
     const auto deformer_id = components.create_deformer("deformer");
     REQUIRE(scene.add_object("body", "body_mesh"));
@@ -185,25 +188,33 @@ TEST_CASE("scene graph context owns the active LBS graph",
     REQUIRE(context.has_runtime_node("orlrig.deformer.lbs.evaluate"));
     REQUIRE(context.registry().find("orlrig.input.joints") != nullptr);
     REQUIRE(context.registry().find("orlrig.input.controllers") != nullptr);
+    REQUIRE(context.registry().find("orlrig.input.locators") != nullptr);
     REQUIRE(context.registry().find("orlrig.input.find_mesh") != nullptr);
     const auto* find_controller =
         context.registry().find("orlrig.input.find_controller");
     const auto* find_joint =
         context.registry().find("orlrig.input.find_joint");
+    const auto* find_locator =
+        context.registry().find("orlrig.input.find_locator");
     REQUIRE(find_controller != nullptr);
     REQUIRE(find_joint != nullptr);
+    REQUIRE(find_locator != nullptr);
     REQUIRE(find_controller->output("handle") != nullptr);
     REQUIRE(find_controller->output("index") != nullptr);
     REQUIRE(find_controller->output("xform") != nullptr);
     REQUIRE(find_joint->output("handle") != nullptr);
     REQUIRE(find_joint->output("index") != nullptr);
     REQUIRE(find_joint->output("xform") != nullptr);
+    REQUIRE(find_locator->output("xform") != nullptr);
     REQUIRE(find_joint->output("handle")->semantic
         == std::string{orlrig::kSceneJointHandleSemantic});
     REQUIRE(find_joint->output("index")->semantic
         == std::string{orlrig::kSceneArrayIndexSemantic});
     REQUIRE(find_controller->output("xform")->type
         == orlgraph::LogicalType::buffer(orlgraph::LogicalType::matrix()));
+    REQUIRE(find_locator->output("xform")->type
+        == orlgraph::LogicalType::buffer(
+            orlgraph::LogicalType::struct_type("Locator")));
     REQUIRE(find_joint->output("xform")->cardinality
         == orlgraph::PortCardinality::Buffer);
 
@@ -242,16 +253,33 @@ TEST_CASE("scene graph context owns the active LBS graph",
         ORL::SceneElementKind::Mesh, "body") == 0);
     REQUIRE(context.scene_inputs().resolve_element_handle(
         ORL::SceneElementKind::Controller, "ctrl").has_value());
+    REQUIRE(context.scene_inputs().resolve_element_handle(
+        ORL::SceneElementKind::Locator, "loc").has_value());
     REQUIRE(context.scene_inputs().resolve_element_index(
         ORL::SceneElementKind::Joint, "root") == 0);
     REQUIRE(context.scene_inputs().resolve_element_index(
         ORL::SceneElementKind::Controller, "ctrl") == 0);
+    REQUIRE(context.scene_inputs().resolve_element_index(
+        ORL::SceneElementKind::Locator, "loc") == 0);
 
     ORL::exec::GraphInputBinding controllers;
     REQUIRE(context.scene_inputs().resolve_binding(
         orlrig::kSceneControllersBinding, controllers, &error));
     REQUIRE(controllers.kind == ORL::exec::ParameterKind::Buffer);
     REQUIRE(controllers.element_count == 1);
+    ORL::exec::GraphInputBinding locators;
+    REQUIRE(context.scene_inputs().resolve_binding(
+        orlrig::kSceneLocatorsBinding, locators, &error));
+    REQUIRE(locators.kind == ORL::exec::ParameterKind::Buffer);
+    REQUIRE(locators.element_count == 1);
+    ORL::exec::GraphInputBinding locator_xform;
+    REQUIRE(context.scene_inputs().resolve_binding(
+        orlrig::scene_locator_xform_binding("loc"),
+        locator_xform, &error));
+    REQUIRE(locator_xform.kind == ORL::exec::ParameterKind::Buffer);
+    REQUIRE(locator_xform.element_count == 1);
+    REQUIRE(static_cast<const double*>(locator_xform.buffer->data())[3]
+        == Catch::Approx(0.0));
 
     REQUIRE_FALSE(context.map_input_by_binding(
         "missing", "scene.rig.missing", &error));
@@ -265,6 +293,7 @@ TEST_CASE("scene graph context owns the active LBS graph",
 
     REQUIRE(components.find(joint_id) != nullptr);
     REQUIRE(components.find(controller_id) != nullptr);
+    REQUIRE(components.find(locator_id) != nullptr);
 }
 
 TEST_CASE("control map selects the first matching operation overload",
@@ -312,6 +341,156 @@ TEST_CASE("control map selects the first matching operation overload",
     REQUIRE(selected == "constraint");
 }
 
+TEST_CASE("controller attachments preserve target-local transforms",
+    "[scene-graph][attachment]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    auto root = orlviewer::make_identity_joint();
+    root.translation[0] = 2.0;
+    const auto joint_id = components.create_joint("root", root);
+    const auto locator_id = components.create_locator(
+        "loc", orlrig::make_locator(glm::vec3{10.0f, 0.0f, 0.0f}));
+    const auto controller_id = components.create_controller(
+        "ctrl", orlrig::make_controller(glm::vec3{4.0f, 0.0f, 0.0f}));
+    const auto second_controller = components.create_controller("ctrl2");
+
+    std::string error;
+    REQUIRE(components.attach_controller(controller_id, joint_id, &error));
+    const auto* attachment =
+        components.controller_attachment(controller_id);
+    REQUIRE(attachment != nullptr);
+    REQUIRE(attachment->target_kind == ORL::AttachmentTargetKind::Joint);
+    REQUIRE(attachment->xform[3].x == Catch::Approx(2.0f));
+    REQUIRE(components.controller_world_xform(controller_id)[3].x
+        == Catch::Approx(4.0f));
+
+    glm::mat4 desired{1.0f};
+    desired[3] = glm::vec4{5.0f, 0.0f, 0.0f, 1.0f};
+    REQUIRE(components.set_controller_world_xform(
+        controller_id, desired, &error));
+    REQUIRE(components.joint(joint_id)->translation[0]
+        == Catch::Approx(3.0));
+    REQUIRE(components.controller(controller_id)->xform[3].x
+        == Catch::Approx(2.0f));
+    REQUIRE(components.controller_world_xform(controller_id)[3].x
+        == Catch::Approx(5.0f));
+
+    REQUIRE_FALSE(components.attach_controller(
+        second_controller, joint_id, &error));
+    REQUIRE_FALSE(components.attach_controller(
+        controller_id, second_controller, &error));
+    REQUIRE(components.attach_controller(controller_id, locator_id, &error));
+    REQUIRE(components.controller_attachment(
+        controller_id)->target_kind == ORL::AttachmentTargetKind::Locator);
+    REQUIRE(components.controller_world_xform(controller_id)[3].x
+        == Catch::Approx(5.0f));
+    REQUIRE(components.validate_controller_attachments(&error));
+
+    REQUIRE(components.destroy(locator_id));
+    REQUIRE(components.controller_attachment(controller_id) == nullptr);
+    REQUIRE(components.controller(controller_id)->xform[3].x
+        == Catch::Approx(5.0f));
+    REQUIRE(components.attach_controller(controller_id, joint_id, &error));
+    REQUIRE(components.detach_controller(controller_id));
+    REQUIRE(components.validate_controller_attachments(&error));
+}
+
+TEST_CASE("attachment toggle accepts controller plus joint context",
+    "[scene-graph][attachment][controls]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    const auto joint = components.create_joint("joint");
+    const auto controller = components.create_controller("controller");
+    ORL::Selection selection(components, scene);
+    selection.add(ORL::SelectionRef::controller(controller));
+    selection.add(ORL::SelectionRef::joint(joint));
+
+    ORL::ToggleControllerAttachmentOp toggle(components, selection);
+    ORL::InputEvent event;
+    event.kind = ORL::InputEvent::Kind::Key;
+    event.key = vkkk::Key::B;
+    event.action = vkkk::InputAction::Press;
+    toggle.eval(event);
+    REQUIRE(components.controller_attachment(controller) != nullptr);
+    toggle.eval(event);
+    REQUIRE(components.controller_attachment(controller) == nullptr);
+}
+
+TEST_CASE("C toggles controller attachments from joint or locator selection",
+    "[scene-graph][attachment][controls]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    const auto joint = components.create_joint("joint");
+    const auto locator = components.create_locator(
+        "locator", orlrig::make_locator(glm::vec3{2.0f, 0.0f, 0.0f}));
+    ORL::Selection selection(components, scene);
+    ORL::ToggleControllerAttachmentOp toggle(components, selection);
+
+    ORL::InputEvent event;
+    event.kind = ORL::InputEvent::Kind::Key;
+    event.key = vkkk::Key::C;
+    event.action = vkkk::InputAction::Press;
+
+    selection.add(ORL::SelectionRef::joint(joint));
+    toggle.eval(event);
+    const auto joint_controller = components.attached_controller(joint);
+    REQUIRE(joint_controller);
+    REQUIRE(components.controller_shape(joint_controller)
+        == orlviewer::ControllerShape::Circle);
+    REQUIRE(components.controller_attachment(joint_controller) != nullptr);
+    toggle.eval(event);
+    REQUIRE_FALSE(components.attached_controller(joint));
+    REQUIRE(components.controller(joint_controller) != nullptr);
+
+    selection.clear();
+    selection.add(ORL::SelectionRef::locator(locator));
+    toggle.eval(event);
+    const auto locator_controller = components.attached_controller(locator);
+    REQUIRE(locator_controller);
+    REQUIRE(components.controller_attachment(locator_controller) != nullptr);
+    toggle.eval(event);
+    REQUIRE_FALSE(components.attached_controller(locator));
+}
+
+TEST_CASE("control map preserves contextual attachment and curve controls",
+    "[controls][attachment]")
+{
+    ORL::ControlMap controls;
+    controls.load_config("resource/config/control_map.json");
+    const auto find_key = [&controls](
+                              vkkk::Key key, std::uint32_t mods) {
+        return std::find_if(controls.bindings().begin(),
+            controls.bindings().end(), [key, mods](
+                const ORL::ControlBinding& binding) {
+            return binding.input.type == ORL::InputSpec::Type::Key
+                && binding.input.code == static_cast<int>(key)
+                && binding.input.action
+                    == static_cast<int>(vkkk::InputAction::Press)
+                && binding.input.mods == mods;
+        });
+    };
+
+    const auto b = find_key(vkkk::Key::B, 0);
+    REQUIRE(b != controls.bindings().end());
+    REQUIRE(std::find(b->ops.begin(), b->ops.end(),
+        "toggle_controller_attachment") != b->ops.end());
+
+    const auto c = find_key(vkkk::Key::C, 0);
+    REQUIRE(c != controls.bindings().end());
+    REQUIRE(std::find(c->ops.begin(), c->ops.end(),
+        "toggle_controller_attachment") != c->ops.end());
+    REQUIRE(std::find(c->ops.begin(), c->ops.end(),
+        "create_controller") == c->ops.end());
+
+    const auto shift_c = find_key(vkkk::Key::C, vkkk::input_mod::shift);
+    REQUIRE(shift_c != controls.bindings().end());
+    REQUIRE(std::find(shift_c->ops.begin(), shift_c->ops.end(),
+        "cycle_controller_curve") != shift_c->ops.end());
+}
+
 TEST_CASE("graph runtime executes ORL constraints and commits joint output",
     "[scene-graph][runtime][constraint]")
 {
@@ -333,7 +512,10 @@ TEST_CASE("graph runtime executes ORL constraints and commits joint output",
         make_controller_to_joint_graph(), std::move(registry));
 
     ORL::Selection selection(components, scene);
-    ORL::GraphSceneRuntime runtime(context, selection, {}, {});
+    auto runtime = [&]() -> ORL::GraphSceneRuntime {
+        ORL::GraphSceneRuntime temporary(context, selection, {}, {});
+        return std::move(temporary);
+    }();
     vkkk::Context backend(false);
     runtime.request_bind();
     runtime.on_update(backend);
@@ -373,10 +555,10 @@ TEST_CASE("graph runtime executes ORL solver mutations",
     const auto root_id = components.create_joint("root", root);
     components.create_joint("mid", mid);
     components.create_joint("end", end);
-    components.create_controller(
-        "target", orlrig::make_controller(glm::vec3{0.0f, 1.5f, 0.0f}));
-    components.create_controller(
-        "pole", orlrig::make_controller(glm::vec3{0.0f, 0.0f, 1.0f}));
+    components.create_locator(
+        "target", orlrig::make_locator(glm::vec3{0.0f, 1.5f, 0.0f}));
+    components.create_locator(
+        "pole", orlrig::make_locator(glm::vec3{0.0f, 0.0f, 1.0f}));
 
     ORL::SceneGraphContext context(scene, components);
     orlgraph::NodeRegistry registry;

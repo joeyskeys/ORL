@@ -58,11 +58,13 @@ public:
         const glm::vec3 mid_w = chain->mid_world;
         const glm::vec3 end_w = chain->end_world;
 
-        const auto target_id = create_handle("ik_target", end_w, orlviewer::ControllerShape::Curve);
-        const auto pole_id = create_handle("ik_pole",
+        const auto target = create_handle(
+            "ik_target", end_w, orlviewer::ControllerShape::Curve);
+        const auto pole = create_handle(
+            "ik_pole",
             orlrig::pole_position(root_w, mid_w, end_w),
             orlviewer::ControllerShape::Polygon);
-        if (!target_id || !pole_id) {
+        if (!target.locator || !pole.locator) {
             std::cerr << "IK: failed to create controllers\n";
             return;
         }
@@ -72,8 +74,8 @@ public:
         data.root = root_id;
         data.mid = mid_id;
         data.end = end_id;
-        data.target = target_id;
-        data.pole = pole_id;
+        data.target = target.locator;
+        data.pole = pole.locator;
         data.bound = true;
 
         const auto constraint_id = components.create_constraint(unique_name("ik_two_bone"), data);
@@ -82,10 +84,10 @@ public:
             return;
         }
 
-        selection.set(SelectionRef::controller(target_id));
+        selection.set(SelectionRef::controller(target.controller));
         const auto* end_meta = components.find(end_id);
-        const auto* target_meta = components.find(target_id);
-        const auto* pole_meta = components.find(pole_id);
+        const auto* target_meta = components.find(target.controller);
+        const auto* pole_meta = components.find(pole.controller);
         std::cout << "IK two-bone: "
             << (end_meta != nullptr ? end_meta->name : "?")
             << " -> " << (target_meta != nullptr ? target_meta->name : "?")
@@ -121,20 +123,42 @@ private:
         return found;
     }
 
-    std::string unique_name(const char* prefix) const {
+    std::string unique_name(std::string prefix) const {
         for (std::size_t i = 1;; ++i) {
-            std::string name = std::string{prefix} + std::to_string(i);
+            std::string name = prefix + std::to_string(i);
             if (!components.contains(name)) {
                 return name;
             }
         }
     }
 
-    ComponentId create_handle(const char* prefix, const glm::vec3& world,
+    struct Handle {
+        ComponentId locator;
+        ComponentId controller;
+    };
+
+    Handle create_handle(const char* prefix, const glm::vec3& world,
         orlviewer::ControllerShape shape)
     {
-        return components.create_controller(unique_name(prefix),
-            orlrig::make_controller(world), shape);
+        const std::string locator_name =
+            unique_name(std::string{prefix} + "_locator");
+        const auto locator = components.create_locator(locator_name,
+            orlrig::make_locator(world));
+        if (!locator) {
+            return {};
+        }
+        const auto controller = components.create_controller(
+            unique_name(prefix), orlrig::make_controller(world), shape);
+        if (!controller
+            || !components.attach_controller(controller, locator))
+        {
+            if (controller) {
+                components.destroy(controller);
+            }
+            components.destroy(locator);
+            return {};
+        }
+        return {locator, controller};
     }
 
     ComponentManager& components;

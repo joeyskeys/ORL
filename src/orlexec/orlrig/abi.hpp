@@ -14,6 +14,10 @@ inline constexpr const char* kPointOrlType = "point";
 inline constexpr std::size_t kPointStride = sizeof(double) * 4;
 inline constexpr const char* kMatrixOrlType = "matrix";
 inline constexpr std::size_t kMatrixStride = sizeof(double) * 16;
+inline constexpr const char* kLocatorOrlType = "Locator";
+inline constexpr std::size_t kLocatorStride = kMatrixStride;
+// Kept as a compatibility alias for graphs created before controllers became
+// viewer-only attachments.
 inline constexpr const char* kControllerOrlType = kMatrixOrlType;
 inline constexpr std::size_t kControllerXformStride = kMatrixStride;
 inline constexpr std::size_t kDefaultWeightCount = 5;

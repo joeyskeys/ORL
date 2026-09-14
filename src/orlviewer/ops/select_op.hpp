@@ -66,7 +66,9 @@ public:
 
         fallback_x = event.x;
         fallback_y = event.y;
-        if (pick_cpu_controllers(event.x, event.y)) {
+        if (pick_cpu_controllers(event.x, event.y)
+            || pick_cpu_locators(event.x, event.y))
+        {
             return;
         }
         awaiting_joint = gpu_picking != nullptr && gpu_picking->request(
@@ -167,6 +169,10 @@ private:
             selection.set(chosen);
             return;
         }
+        if (closest_locator(cursor_x, cursor_y, chosen, &best)) {
+            selection.set(chosen);
+            return;
+        }
         pick_cpu_joints(cursor_x, cursor_y);
     }
 
@@ -188,15 +194,17 @@ private:
             if (meta.kind != ComponentKind::Controller) {
                 return;
             }
-            const auto* controller = components.controller(meta.id);
-            if (controller == nullptr) {
+            if (components.controller(meta.id) == nullptr) {
                 return;
             }
+            const auto world = components.controller_world_xform(meta.id);
             const auto points = orlviewer::controller_shape_points(
                 components.controller_shape(meta.id));
             for (const auto& local : points) {
                 glm::vec2 pixel{};
-                if (!project(orlviewer::controller_world(*controller, local), width, height, pixel)) {
+                if (!project(glm::vec3{world * glm::vec4{local, 1.0f}},
+                        width, height, pixel))
+                {
                     continue;
                 }
                 const float dx = pixel.x - static_cast<float>(cursor_x);
@@ -213,6 +221,57 @@ private:
             *best_dist = best;
         }
         return found;
+    }
+
+    bool closest_locator(double cursor_x, double cursor_y,
+        SelectionRef& chosen, float* best_dist = nullptr)
+    {
+        if (window == nullptr) {
+            return false;
+        }
+        const auto size = window->window_size();
+        const int width = static_cast<int>(size.width);
+        const int height = static_cast<int>(size.height);
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+        float best = best_dist != nullptr ? *best_dist
+            : kPickPixels * kPickPixels;
+        bool found = false;
+        components.for_each([&](const Component& meta) {
+            if (meta.kind != ComponentKind::Locator) {
+                return;
+            }
+            const auto* locator = components.locator(meta.id);
+            if (locator == nullptr) {
+                return;
+            }
+            glm::vec2 pixel{};
+            if (!project(glm::vec3{locator->xform[3]}, width, height, pixel)) {
+                return;
+            }
+            const float dx = pixel.x - static_cast<float>(cursor_x);
+            const float dy = pixel.y - static_cast<float>(cursor_y);
+            const float dist = dx * dx + dy * dy;
+            if (dist < best) {
+                best = dist;
+                chosen = SelectionRef::locator(meta.id);
+                found = true;
+            }
+        });
+        if (found && best_dist != nullptr) {
+            *best_dist = best;
+        }
+        return found;
+    }
+
+    bool pick_cpu_locators(double cursor_x, double cursor_y) {
+        SelectionRef chosen;
+        if (!closest_locator(cursor_x, cursor_y, chosen)) {
+            return false;
+        }
+        selection.set(chosen);
+        return true;
     }
 
     void pick_cpu_joints(double cursor_x, double cursor_y) {

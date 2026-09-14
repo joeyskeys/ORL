@@ -27,9 +27,9 @@
 #endif
 #include "ops/camera_switch_op.hpp"
 #include "ops/clear_scene_op.hpp"
-#include "ops/create_controller_op.hpp"
 #include "ops/create_ik_op.hpp"
 #include "ops/create_joint_op.hpp"
+#include "ops/create_locator_op.hpp"
 #include "ops/cycle_controller_curve_op.hpp"
 #include "ops/display_mode_switch.hpp"
 #include "ops/load_model_op.hpp"
@@ -37,6 +37,7 @@
 #include "ops/rotate_op.hpp"
 #include "ops/scale_op.hpp"
 #include "ops/select_op.hpp"
+#include "ops/toggle_controller_attachment_op.hpp"
 #include "vp/auto_weight_feature.hpp"
 #include "vp/controller_feature.hpp"
 #include "vp/deformer_feature.hpp"
@@ -45,6 +46,7 @@
 #include "vp/grid.hpp"
 #include "vp/joint_feature.hpp"
 #include "vp/joint_picking_feature.hpp"
+#include "vp/locator_feature.hpp"
 #include "vp/mesh_csr_feature.hpp"
 #include "vp/mesh_picking_feature.hpp"
 #include "vp/ortho_grid_feature.hpp"
@@ -190,6 +192,7 @@ int main() {
         ORL::AutoWeightFeature,
         ORL::SolverFeature,
         ORL::DeformerFeature,
+        ORL::LocatorFeature,
         vkkk::vp::FrameAxisFeature,
         ORL::RuntimeHudFeature>;
     Viewport viewport(context);
@@ -213,6 +216,9 @@ int main() {
         scene_graph, deformer_id, weight_id, selection);
     viewport.add_feature<ORL::JointFeature>(
         components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    viewport.add_feature<ORL::LocatorFeature>(
+        components, camera,
+        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders", selection);
     viewport.add_feature<ORL::ControllerFeature>(
         components, camera, selection, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
@@ -227,7 +233,9 @@ int main() {
     ORL::LoadModelOp load_model(scene, context, &window_backend, world_frame);
     ORL::ClearSceneOp clear_scene(scene, context, components, selection, weight_id, deformer_id);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, &window_backend, selection);
-    ORL::CreateControllerOp create_controller(components, scene, selection);
+    ORL::CreateLocatorOp create_locator(components, scene, selection);
+    ORL::ToggleControllerAttachmentOp toggle_controller_attachment(
+        components, selection);
     ORL::CycleControllerCurveOp cycle_controller_curve(components, selection);
     ORL::CreateIkOp create_ik(components, selection);
     ORL::SelectOp select_op(
@@ -294,7 +302,65 @@ int main() {
     controls.bind_op("load_model", load_model);
     controls.bind_op("clear_scene", clear_scene);
     controls.bind_op("create_joint", create_joint);
-    controls.bind_op("create_controller", create_controller);
+    controls.bind_op("create_locator", create_locator);
+    const auto has_target_for_controller_toggle =
+        [&selection](const ORL::InputEvent& event) {
+            if (event.key != vkkk::Key::C
+                || !selection.selected_mesh_name().empty())
+            {
+                return false;
+            }
+            bool has_target = false;
+            for (const auto& ref : selection.refs()) {
+                if (ref.kind == ORL::SelectionRef::Kind::Joint
+                    || ref.kind == ORL::SelectionRef::Kind::Locator)
+                {
+                    if (has_target) {
+                        return false;
+                    }
+                    has_target = true;
+                }
+                else if (ref.kind == ORL::SelectionRef::Kind::SceneObject
+                    || ref.kind == ORL::SelectionRef::Kind::Vector)
+                {
+                    return false;
+                }
+            }
+            return has_target;
+        };
+    const auto has_controller_and_target =
+        [&selection](const ORL::InputEvent& event) {
+            if (event.key != vkkk::Key::B) {
+                return false;
+            }
+            if (!selection.selected_mesh_name().empty()
+                || !selection.has_selected_controller())
+            {
+                return false;
+            }
+            bool has_target = false;
+            for (const auto& ref : selection.refs()) {
+                if (ref.kind == ORL::SelectionRef::Kind::Joint
+                    || ref.kind == ORL::SelectionRef::Kind::Locator)
+                {
+                    if (has_target) {
+                        return false;
+                    }
+                    has_target = true;
+                }
+            }
+            return has_target;
+        };
+    controls.bind_op_variant("toggle_controller_attachment",
+        has_target_for_controller_toggle,
+        [&](const ORL::InputEvent& event) {
+            toggle_controller_attachment.eval(event);
+        });
+    controls.bind_op_variant("toggle_controller_attachment",
+        has_controller_and_target,
+        [&](const ORL::InputEvent& event) {
+            toggle_controller_attachment.eval(event);
+        });
     controls.bind_op("cycle_controller_curve", cycle_controller_curve);
     controls.bind_op("create_ik", create_ik);
     controls.bind_op("select", select_op);

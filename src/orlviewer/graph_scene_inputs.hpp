@@ -29,6 +29,7 @@ struct SceneInputDescriptor {
 enum class SceneElementKind {
     Joint,
     Controller,
+    Locator,
     Mesh,
 };
 
@@ -75,6 +76,9 @@ private:
         WeightBuffer,
         WeightCount,
         InverseBinds,
+        Locators,
+        LocatorCount,
+        LocatorXform,
         Controllers,
         ControllersCount,
         ControllerXform,
@@ -100,7 +104,9 @@ private:
     bool pack_mesh_positions(const std::string& object_name,
         const std::string& binding);
     bool pack_joints();
+    bool pack_locators();
     bool pack_controllers();
+    bool pack_locator(ComponentId id, const std::string& binding);
     bool pack_controller(ComponentId id, const std::string& binding);
     bool set_error(std::string* error, std::string message) const;
 
@@ -109,11 +115,14 @@ private:
     std::vector<SceneInputDescriptor> descriptors_;
     std::unordered_map<std::string, Source> sources_;
     std::unordered_map<std::string, exec::OrlBuffer> mesh_positions_;
+    std::unordered_map<std::string, exec::OrlBuffer> locator_xforms_;
     std::unordered_map<std::string, exec::OrlBuffer> controller_xforms_;
     exec::OrlBuffer joints_;
+    exec::OrlBuffer locators_;
     exec::OrlBuffer controllers_;
     std::vector<ComponentId> joint_ids_;
     std::vector<ComponentId> packed_joint_ids_;
+    std::vector<ComponentId> locator_ids_;
     std::vector<ComponentId> controller_ids_;
     std::size_t revision_ = 0;
 };

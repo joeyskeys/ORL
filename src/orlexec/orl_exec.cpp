@@ -43,6 +43,9 @@ std::size_t element_stride_for(std::string_view type_name) {
     if (type_name == orlrig::kJointOrlType) {
         return orlrig::kJointStride;
     }
+    if (type_name == orlrig::kLocatorOrlType) {
+        return orlrig::kLocatorStride;
+    }
     if (type_name == orlrig::kWeightOrlType) {
         return orlrig::kWeightStride;
     }

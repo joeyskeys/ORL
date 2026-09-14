@@ -11,6 +11,7 @@
 #include "controller.hpp"
 #include "deformer.hpp"
 #include "joint.hpp"
+#include "locator.hpp"
 #include "weight.hpp"
 
 namespace orlrig
@@ -30,6 +31,7 @@ enum class ComponentKind {
     Constraint,
     Deformer,
     Controller,
+    Locator,
 };
 
 struct ConstraintData {
@@ -58,6 +60,8 @@ public:
     // resources belong to the viewer adapter, not this store.
     ComponentId create_controller(std::string name,
         Controller controller = Controller{});
+    ComponentId create_locator(std::string name,
+        Locator locator = Locator{});
     ComponentId create_curve(std::string name);
     ComponentId create_weight(std::string name, WeightData weight = {});
     ComponentId create_constraint(std::string name,
@@ -79,6 +83,8 @@ public:
     const Joint* joint(ComponentId id) const;
     Controller* controller(ComponentId id);
     const Controller* controller(ComponentId id) const;
+    Locator* locator(ComponentId id);
+    const Locator* locator(ComponentId id) const;
     WeightData* weight(ComponentId id);
     const WeightData* weight(ComponentId id) const;
     ConstraintData* constraint(ComponentId id);
@@ -94,6 +100,9 @@ public:
     std::vector<Joint> packed_joints() const;
     std::vector<ComponentId> packed_joint_ids() const;
     std::int64_t joint_index(ComponentId id) const;
+    std::vector<Locator> packed_locators() const;
+    std::vector<ComponentId> packed_locator_ids() const;
+    std::int64_t locator_index(ComponentId id) const;
 
     template <typename Fn>
     void for_each(Fn&& fn) const {
@@ -109,7 +118,8 @@ private:
         Controller,
         WeightData,
         ConstraintData,
-        DeformerData>;
+        DeformerData,
+        Locator>;
 
     struct Record {
         Component meta;
@@ -129,6 +139,7 @@ private:
     std::unordered_map<std::uint64_t, Record> records;
     std::unordered_map<std::string, std::uint64_t> names;
     std::vector<ComponentId> joint_order;
+    std::vector<ComponentId> locator_order;
 };
 
 template <typename T>

@@ -349,6 +349,11 @@ TEST_CASE("oro serialization is deterministic and round trips", "[orlgraph][oro]
         LogicalType::buffer(LogicalType::point()), Domain::vertex(),
         Shape::one("vertex_count"), true, std::nullopt, false,
         "scene.mesh.body.positions", "mesh.positions", "world"}));
+    REQUIRE(module.add_input(InterfacePort{
+        StableId{"locator_input"}, "Locator Input", PortDirection::Input,
+        LogicalType::buffer(LogicalType::struct_type("Locator")),
+        Domain::rig(), Shape::one("locator_count"), true, std::nullopt, false,
+        "scene.rig.locators", "locators", "world"}));
     REQUIRE(module.add_node(NodeInstance{
         StableId{"node"}, StableId{"builtin.pass"}, "node",
         {{"name", ConstantValue{
@@ -396,6 +401,12 @@ TEST_CASE("oro serialization is deterministic and round trips", "[orlgraph][oro]
     REQUIRE(input->binding == "scene.mesh.body.positions");
     REQUIRE(input->semantic == "mesh.positions");
     REQUIRE(input->coordinate_space == "world");
+    const auto* locator_input =
+        loaded.module.input(StableId{"locator_input"});
+    REQUIRE(locator_input != nullptr);
+    REQUIRE(locator_input->type
+        == LogicalType::buffer(LogicalType::struct_type("Locator")));
+    REQUIRE(locator_input->binding == "scene.rig.locators");
     const auto* lookup = loaded.module.node(StableId{"node"});
     REQUIRE(lookup != nullptr);
     REQUIRE(lookup->parameter_values.contains("name"));

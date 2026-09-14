@@ -8,6 +8,8 @@
 #include <variant>
 #include <vector>
 
+#include <glm/mat4x4.hpp>
+
 #include "../orlexec/orlrig/component_store.hpp"
 #include "comps/controller.hpp"
 #include "comps/joint.hpp"
@@ -76,15 +78,32 @@ struct Component {
     DisplayLink display;
 };
 
-// Viewer adapter around the standalone rigging store. Controller xforms and
-// all other rigging data live in orlrig::ComponentStore; display links,
-// curve handles, and controller shapes stay here.
+enum class AttachmentTargetKind {
+    None,
+    Joint,
+    Locator,
+};
+
+// Viewer-only controller relationship. The xform is a target-local offset;
+// controllers are resolved to world transforms only for interaction and
+// display, never packed into the ORL runtime graph.
+struct ControllerAttachment {
+    AttachmentTargetKind target_kind = AttachmentTargetKind::None;
+    ComponentId target;
+    glm::mat4 xform{1.0f};
+};
+
+// Viewer adapter around the standalone rigging store. Runtime rigging data
+// lives in orlrig::ComponentStore; display links, curve handles, controller
+// shapes, and authoring-only controller attachments stay here.
 class ComponentManager {
 public:
     ComponentId create_joint(std::string name, orlviewer::Joint joint = orlviewer::make_identity_joint());
     ComponentId create_controller(std::string name,
         orlrig::Controller controller = orlrig::Controller{},
         orlviewer::ControllerShape shape = orlviewer::ControllerShape::Curve);
+    ComponentId create_locator(std::string name,
+        orlrig::Locator locator = orlrig::Locator{});
     ComponentId create_curve(std::string name, CurveLink curve = {});
     ComponentId create_weight(std::string name, WeightData weight = {});
     ComponentId create_constraint(std::string name, ConstraintData constraint = {});
@@ -107,6 +126,8 @@ public:
     const orlviewer::Joint* joint(ComponentId id) const;
     orlrig::Controller* controller(ComponentId id);
     const orlrig::Controller* controller(ComponentId id) const;
+    orlrig::Locator* locator(ComponentId id);
+    const orlrig::Locator* locator(ComponentId id) const;
     orlviewer::ControllerShape controller_shape(ComponentId id) const;
     bool set_controller_shape(ComponentId id, orlviewer::ControllerShape shape);
     CurveLink* curve(ComponentId id);
@@ -126,6 +147,22 @@ public:
     std::vector<orlviewer::Joint> packed_joints() const;
     std::vector<ComponentId> packed_joint_ids() const;
     std::int64_t joint_index(ComponentId id) const;
+    std::vector<orlrig::Locator> packed_locators() const;
+    std::vector<ComponentId> packed_locator_ids() const;
+    std::int64_t locator_index(ComponentId id) const;
+
+    bool attach_controller(ComponentId controller, ComponentId target,
+        std::string* error = nullptr);
+    bool detach_controller(ComponentId controller);
+    const ControllerAttachment* controller_attachment(
+        ComponentId controller) const;
+    ComponentId attached_controller(ComponentId target) const;
+    bool validate_controller_attachments(std::string* error = nullptr) const;
+    glm::mat4 controller_world_xform(ComponentId controller) const;
+    bool set_controller_world_xform(ComponentId controller,
+        const glm::mat4& world, std::string* error = nullptr);
+    bool set_locator_world_xform(ComponentId locator,
+        const glm::mat4& world);
 
     orlrig::ComponentStore& rigging() { return store; }
     const orlrig::ComponentStore& rigging() const { return store; }
@@ -138,10 +175,18 @@ public:
     }
 
 private:
+    bool target_world_xform(ComponentId target, glm::mat4& world) const;
+    bool set_target_world_xform(ComponentId target,
+        const glm::mat4& world, std::string* error);
+    bool set_error(std::string* error, std::string message) const;
+
     orlrig::ComponentStore store;
     std::unordered_map<std::uint64_t, Component> metadata;
     std::unordered_map<std::uint64_t, orlviewer::ControllerShape> controller_shapes;
     std::unordered_map<std::uint64_t, CurveLink> curves;
+    std::unordered_map<std::uint64_t, ControllerAttachment>
+        controller_attachments;
+    std::unordered_map<std::uint64_t, ComponentId> target_controllers;
 };
 
 } // namespace ORL

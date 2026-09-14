@@ -1,0 +1,22 @@
+// ORL locator value.
+//
+// A locator is a renderer-independent transform that can be supplied to
+// constraints and solvers. Its matrix uses ORL's row-major matrix convention:
+// translation is stored at indices [3], [7], and [11].
+
+struct Locator {
+    matrix xform;
+}
+
+Locator locator_identity() {
+    Locator result(mat_identity());
+    return result;
+}
+
+matrix locator_xform(Locator locator) {
+    return locator.xform;
+}
+
+point locator_origin(Locator locator) {
+    return locator.xform * point(0.0, 0.0, 0.0);
+}

@@ -54,6 +54,9 @@ std::optional<SceneElementKind> find_element_kind(
     if (qualified_name == "orlrig.input.find_controller") {
         return SceneElementKind::Controller;
     }
+    if (qualified_name == "orlrig.input.find_locator") {
+        return SceneElementKind::Locator;
+    }
     if (qualified_name == "orlrig.input.find_mesh") {
         return SceneElementKind::Mesh;
     }

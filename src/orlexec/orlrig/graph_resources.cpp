@@ -226,20 +226,27 @@ orlgraph::NodeDefinition make_find_definition(
     handle.required = false;
     handle.semantic = std::move(handle_semantic);
     definition.outputs.push_back(std::move(handle));
-    if (element == "joint" || element == "controller") {
+    if (element == "joint" || element == "controller"
+        || element == "locator")
+    {
         auto index = stdlib_scalar_port(
             "index", orlgraph::LogicalType::int64());
         index.direction = orlgraph::PortDirection::Output;
         index.required = false;
         index.semantic = std::string{kSceneArrayIndexSemantic};
         definition.outputs.push_back(std::move(index));
+        const bool locator = element == "locator";
         auto transform = buffer_port(
-            "xform", "xform", orlgraph::LogicalType::matrix(),
+            "xform", "xform",
+            locator
+                ? orlgraph::LogicalType::struct_type("Locator")
+                : orlgraph::LogicalType::matrix(),
             orlgraph::PortDirection::Output,
             orlgraph::Domain::buffer(), false);
         transform.shape = orlgraph::Shape::one("one");
         transform.semantic = element == "joint"
-            ? "scene.joint_xform" : "scene.controller_xform";
+            ? "scene.joint_xform"
+            : locator ? "scene.locator_xform" : "scene.controller_xform";
         transform.coordinate_space = "world";
         if (element == "joint") {
             transform.output_adapter = orlgraph::Port::OutputAdapter{
@@ -295,10 +302,16 @@ std::vector<orlgraph::NodeDefinition> make_input_definitions() {
             "controllers", orlgraph::LogicalType::matrix(),
             orlgraph::Domain::rig(), "controller_count",
             "controllers", "world"),
+        make_scene_buffer_definition(
+            "locators", orlgraph::LogicalType::struct_type("Locator"),
+            orlgraph::Domain::rig(), "locator_count",
+            "locators", "world"),
         make_find_definition("joint",
             std::string{kSceneJointHandleSemantic}),
         make_find_definition("controller",
             std::string{kSceneControllerHandleSemantic}),
+        make_find_definition("locator",
+            std::string{kSceneLocatorHandleSemantic}),
         make_find_definition("mesh", "scene.mesh.handle"),
     };
 }
@@ -504,9 +517,9 @@ std::vector<orlgraph::NodeDefinition> make_solver_definitions() {
                 index_port("mid"),
                 index_port("end"),
                 untyped_buffer("target",
-                    orlgraph::LogicalType::matrix(), "one"),
+                    orlgraph::LogicalType::struct_type("Locator"), "one"),
                 untyped_buffer("pole",
-                    orlgraph::LogicalType::matrix(), "one"),
+                    orlgraph::LogicalType::struct_type("Locator"), "one"),
                 stdlib_scalar_port("joint_count", orlgraph::LogicalType::int64()),
             },
             parameter_effects("solver_ik_two_bone",
@@ -615,10 +628,18 @@ std::vector<orlgraph::NodeDefinition> make_constraint_definitions() {
     aim_inputs[4].default_value = orlgraph::ConstantValue{
         orlgraph::LogicalType::int64(), std::int64_t{0}};
     aim_inputs[1].access = orlgraph::AccessMode::ReadWrite;
+    auto locator_aim_inputs = aim_inputs;
+    locator_aim_inputs[0].type =
+        orlgraph::LogicalType::buffer(
+            orlgraph::LogicalType::struct_type("Locator"));
     return {
         make_stdlib_definition("constraint", "aim", std::move(aim_inputs),
             parameter_effects("constraint_aim", {"targets", "axes"}, {},
                 {"subjects"}), false),
+        make_stdlib_definition("constraint", "aim_locator",
+            std::move(locator_aim_inputs),
+            parameter_effects("constraint_aim_locator",
+                {"targets", "axes"}, {}, {"subjects"}), false),
         copy_definition("copy_xform"),
         copy_definition("copy_translation"),
         copy_definition("copy_rotation"),
@@ -665,6 +686,14 @@ std::string scene_controller_xform_binding(std::string_view component_name) {
 
 std::string scene_controller_count_binding(std::string_view component_name) {
     return scene_binding("scene.rig.controller", component_name, "count");
+}
+
+std::string scene_locator_xform_binding(std::string_view component_name) {
+    return scene_binding("scene.rig.locator", component_name, "xform");
+}
+
+std::string scene_locator_count_binding(std::string_view component_name) {
+    return scene_binding("scene.rig.locator", component_name, "count");
 }
 
 orlgraph::ValidationResult RigGraph::validate() const {

@@ -7,18 +7,14 @@
 #include <vector>
 
 #include "component_store.hpp"
+#include "locator.hpp"
 #include "mesh.hpp"
 #include "../orl_exec.hpp"
+#include "runner_status.hpp"
+#include "two_stage_runner.hpp"
 
 namespace orlrig
 {
-
-struct RunnerStatus {
-    bool ok = false;
-    std::vector<std::string> errors;
-
-    explicit operator bool() const { return ok; }
-};
 
 class LbsRunner {
 public:
@@ -27,9 +23,16 @@ public:
     RunnerStatus capture_bind(DeformerData& deformer,
         const MeshData& mesh,
         const std::vector<Joint>& joints);
+    RunnerStatus capture_bind(DeformerData& deformer,
+        const MeshData& mesh,
+        ORL::exec::OrlBuffer& joints);
     RunnerStatus evaluate(DeformerData& deformer,
         WeightData& weights,
         const std::vector<Joint>& joints,
+        bool device_only = false);
+    RunnerStatus evaluate(DeformerData& deformer,
+        WeightData& weights,
+        ORL::exec::OrlBuffer& joints,
         bool device_only = false);
     RunnerStatus readback();
 
@@ -39,9 +42,9 @@ public:
 
 private:
     RunnerStatus ensure_programs(const std::string& type);
-    RunnerStatus bind_capture(const std::vector<Joint>& joints,
+    RunnerStatus bind_capture(ORL::exec::OrlBuffer& joints,
         DeformerData& deformer);
-    RunnerStatus bind_deform(const std::vector<Joint>& joints,
+    RunnerStatus bind_deform(ORL::exec::OrlBuffer& joints,
         DeformerData& deformer,
         WeightData& weights,
         std::int64_t vertex_count);
@@ -89,6 +92,18 @@ class SolverRunner {
 public:
     explicit SolverRunner(ORL::exec::Backend backend = ORL::exec::Backend::Cpu);
 
+    RunnerStatus evaluate_two_bone(std::vector<Joint>& joints,
+        std::int64_t root,
+        std::int64_t mid,
+        std::int64_t end,
+        const Locator& target,
+        const Locator& pole);
+    RunnerStatus evaluate_two_bone(ORL::exec::OrlBuffer& joints,
+        std::int64_t root,
+        std::int64_t mid,
+        std::int64_t end,
+        const Locator& target,
+        const Locator& pole);
     RunnerStatus evaluate_two_bone(std::vector<Joint>& joints,
         std::int64_t root,
         std::int64_t mid,

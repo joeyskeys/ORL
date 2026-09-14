@@ -71,9 +71,9 @@ public:
             const auto shape = components.controller_shape(meta.id);
             if (shape == orlviewer::ControllerShape::Polygon)
             {
-                record_poly(context, cmd, image_index, *controller, selected);
+                record_poly(context, cmd, image_index, meta.id, selected);
             } else {
-                record_curve(context, cmd, image_index, *controller, shape, selected);
+                record_curve(context, cmd, image_index, meta.id, shape, selected);
             }
         });
     }
@@ -187,14 +187,14 @@ private:
     }
 
     void record_curve(vkkk::Context& context, vk::raii::CommandBuffer& cmd,
-        uint32_t image_index, const orlrig::Controller& controller,
+        uint32_t image_index, ComponentId controller_id,
         orlviewer::ControllerShape shape, bool selected)
     {
         if (!lines_ready) {
             return;
         }
         ControllerModelUBO model{};
-        model.model = controller.xform;
+        model.model = components.controller_world_xform(controller_id);
         context.sync_ubo(kLinePipeline, vkkk::buf::CameraUBO, &camera.ubo_data, image_index);
         context.sync_ubo(kLinePipeline, kModelBlock, &model, image_index);
         const auto color = color_for(selected);
@@ -206,13 +206,13 @@ private:
     }
 
     void record_poly(vkkk::Context& context, vk::raii::CommandBuffer& cmd, uint32_t image_index,
-        const orlrig::Controller& controller, bool selected)
+        ComponentId controller_id, bool selected)
     {
         if (!poly_ready) {
             return;
         }
         ControllerModelUBO model{};
-        model.model = controller.xform;
+        model.model = components.controller_world_xform(controller_id);
         context.sync_ubo(kPolyPipeline, vkkk::buf::CameraUBO, &camera.ubo_data, image_index);
         context.sync_ubo(kPolyPipeline, kModelBlock, &model, image_index);
         const auto color = color_for(selected);
