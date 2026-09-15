@@ -21,6 +21,8 @@ inline constexpr const char* kOroLogicalAbiVersion = "orlgraph-0";
 // the caller's NodeRegistry.
 inline constexpr const char* kGraphJsonMagic = "ORL_GRAPH";
 inline constexpr std::uint32_t kGraphJsonFormatVersion = 1;
+inline constexpr const char* kGraphStagesJsonMagic = "ORL_GRAPH_STAGES";
+inline constexpr std::uint32_t kGraphStagesJsonFormatVersion = 1;
 
 struct OroSerializationResult {
     bool ok = false;
@@ -51,6 +53,21 @@ struct GraphJsonDocument {
     std::vector<Diagnostic> diagnostics;
 };
 
+struct GraphStagesJsonSerializationResult {
+    bool ok = false;
+    std::string text;
+    std::string content_hash;
+    std::vector<Diagnostic> diagnostics;
+};
+
+struct GraphStagesJsonDocument {
+    bool ok = false;
+    GraphModule solver;
+    GraphModule deformer;
+    std::string content_hash;
+    std::vector<Diagnostic> diagnostics;
+};
+
 OroSerializationResult serialize_oro(const GraphModule& module,
     const NodeRegistry& registry);
 
@@ -68,5 +85,13 @@ GraphJsonDocument deserialize_graph_json(std::string_view text);
 bool save_graph_json(const std::string& path, const GraphModule& module,
     std::vector<Diagnostic>* diagnostics = nullptr);
 GraphJsonDocument load_graph_json(const std::string& path);
+
+GraphStagesJsonSerializationResult serialize_graph_stages_json(
+    const GraphModule& solver, const GraphModule& deformer);
+GraphStagesJsonDocument deserialize_graph_stages_json(std::string_view text);
+bool save_graph_stages_json(const std::string& path,
+    const GraphModule& solver, const GraphModule& deformer,
+    std::vector<Diagnostic>* diagnostics = nullptr);
+GraphStagesJsonDocument load_graph_stages_json(const std::string& path);
 
 } // namespace orlgraph

@@ -6,7 +6,8 @@
 
 use auto_weight/closest_joint;
 
-int auto_weight_closest_distance(point positions[],
+export int auto_weight_closest_distance [[ string stage = "deformer" ]]
+    (point positions[],
                                  Joint joints[],
                                  Weight weights[],
                                  int vertex_count,

@@ -23,17 +23,18 @@ struct NodeImportOptions {
     std::string module_name = "orl";
     std::string source_name = "<source>";
     std::vector<std::string> include_paths;
-    // Empty means import every analyzed function; otherwise only these
-    // public entry names are exposed as graph nodes.
+    // Empty means import every exported function; otherwise only these
+    // exported entry names are exposed as graph nodes.
     std::vector<std::string> exported_functions;
 };
 
 NodeImportResult import_node_definitions(const AnalysisResult& analysis,
     std::string module_name = "orl");
 
-// Parses and analyzes external ORL source, then imports every function as a
-// graph node definition. The returned registry can be merged into any
-// application-owned NodeRegistry without rebuilding the application.
+// Parses and analyzes external ORL source, then imports only functions
+// prefixed with `export` as graph node definitions. The returned registry can
+// be merged into any application-owned NodeRegistry without rebuilding the
+// application.
 NodeImportResult import_node_definitions(std::string_view source,
     NodeImportOptions options = {});
 

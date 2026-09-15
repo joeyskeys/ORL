@@ -78,3 +78,21 @@ TEST_CASE("lexer recognizes use keyword", "[orl][lexer]") {
     REQUIRE(lexer.NextToken().kind == TokenKind::Semi);
     REQUIRE(lexer.NextToken().kind == TokenKind::EndOfFile);
 }
+
+TEST_CASE("lexer recognizes export keyword and metadata brackets",
+    "[orl][lexer][export]")
+{
+    Lexer lexer("export int solve [[ string stage = \"solver\" ]]");
+
+    REQUIRE(lexer.NextToken().kind == TokenKind::KwExport);
+    REQUIRE(lexer.NextToken().kind == TokenKind::KwInt);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Identifier);
+    REQUIRE(lexer.NextToken().kind == TokenKind::LBracket);
+    REQUIRE(lexer.NextToken().kind == TokenKind::LBracket);
+    REQUIRE(lexer.NextToken().kind == TokenKind::KwString);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Identifier);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Assign);
+    REQUIRE(lexer.NextToken().kind == TokenKind::StringLiteral);
+    REQUIRE(lexer.NextToken().kind == TokenKind::RBracket);
+    REQUIRE(lexer.NextToken().kind == TokenKind::RBracket);
+}

@@ -3,6 +3,7 @@
 #include "orl_ast.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,7 +34,9 @@ struct FunctionSummary {
     orlgraph::LogicalType return_type;
     std::vector<FunctionParameterSummary> parameters;
     std::vector<std::string> calls;
+    std::map<std::string, orlgraph::ConstantValue> metadata;
     orlgraph::SourceLocation source;
+    bool exported = false;
     bool pure = true;
     bool stateful = false;
     bool has_parallel_for = false;

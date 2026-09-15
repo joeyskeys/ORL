@@ -17,10 +17,59 @@ void SceneGraphContext::set_graph(orlgraph::GraphModule module,
     orlgraph::NodeRegistry registry)
 {
     graph_ = std::move(module);
+    solver_graph_ = {};
     registry_ = std::move(registry);
+    scene_inputs_.clear_computed_joints_device();
     input_mappings_.clear();
     pending_operations_.clear();
+    staged_graphs_ = false;
     ++graph_revision_;
+}
+
+void SceneGraphContext::set_stage_graphs(
+    orlgraph::GraphModule solver,
+    orlgraph::GraphModule deformer,
+    orlgraph::NodeRegistry registry)
+{
+    solver_graph_ = std::move(solver);
+    graph_ = std::move(deformer);
+    registry_ = std::move(registry);
+    scene_inputs_.clear_computed_joints_device();
+    input_mappings_.clear();
+    pending_operations_.clear();
+    staged_graphs_ = true;
+    ++graph_revision_;
+}
+
+void SceneGraphContext::ensure_stage_graphs()
+{
+    if (staged_graphs_) {
+        return;
+    }
+    solver_graph_ = {};
+    solver_graph_.module_id = graph_.module_id.empty()
+        ? "orlrig.solver" : graph_.module_id + ".solver";
+    solver_graph_.language_version = graph_.language_version;
+    solver_graph_.logical_abi_version = graph_.logical_abi_version;
+    staged_graphs_ = true;
+    ++graph_revision_;
+}
+
+orlgraph::GraphModule& SceneGraphContext::stage_graph(
+    orlgraph::GraphStage stage)
+{
+    if (stage == orlgraph::GraphStage::Solver) {
+        ensure_stage_graphs();
+        return solver_graph_;
+    }
+    return graph_;
+}
+
+const orlgraph::GraphModule& SceneGraphContext::stage_graph(
+    orlgraph::GraphStage stage) const
+{
+    return stage == orlgraph::GraphStage::Solver
+        ? solver_graph_ : graph_;
 }
 
 void SceneGraphContext::refresh_scene_inputs()
@@ -30,6 +79,19 @@ void SceneGraphContext::refresh_scene_inputs()
     if (scene_inputs_.revision() != previous_revision) {
         ++graph_revision_;
     }
+}
+
+void SceneGraphContext::set_computed_joints_device(
+    std::optional<exec::DeviceBufferView> view,
+    std::size_t element_count)
+{
+    scene_inputs_.set_computed_joints_device(
+        std::move(view), element_count);
+}
+
+void SceneGraphContext::clear_computed_joints_device()
+{
+    scene_inputs_.clear_computed_joints_device();
 }
 
 bool SceneGraphContext::map_input(
@@ -136,6 +198,12 @@ bool SceneGraphContext::commit_scene_writes(
 orlgraph::ValidationResult SceneGraphContext::validate() const
 {
     return orlgraph::validate(graph_, registry_);
+}
+
+orlgraph::ValidationResult SceneGraphContext::validate(
+    orlgraph::GraphStage stage) const
+{
+    return orlgraph::validate(stage_graph(stage), registry_, stage);
 }
 
 bool SceneGraphContext::has_runtime_node(

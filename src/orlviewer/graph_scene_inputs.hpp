@@ -59,6 +59,18 @@ public:
         exec::GraphInputBinding& binding, std::string* error = nullptr);
     bool resolve_binding(std::string_view binding,
         exec::GraphInputBinding& result, std::string* error = nullptr);
+    // The view is borrowed from the solver execution. Its owner must keep the
+    // target allocation alive until the deformer has finished.
+    void set_computed_joints_device(
+        std::optional<exec::DeviceBufferView> view,
+        std::size_t element_count);
+    void clear_computed_joints_device();
+    exec::OrlBuffer& computed_joints_buffer() {
+        return joints_;
+    }
+    const exec::OrlBuffer& computed_joints_buffer() const {
+        return joints_;
+    }
     bool bind_graph_inputs(exec::OrlGraphExecution& execution,
         const orlgraph::GraphModule& module);
     // Copies the host-side packed joint buffer back to component storage after
@@ -72,6 +84,7 @@ private:
         MeshPositions,
         MeshVertexCount,
         Joints,
+        ComputedJoints,
         JointCount,
         WeightBuffer,
         WeightCount,
@@ -118,6 +131,8 @@ private:
     std::unordered_map<std::string, exec::OrlBuffer> locator_xforms_;
     std::unordered_map<std::string, exec::OrlBuffer> controller_xforms_;
     exec::OrlBuffer joints_;
+    std::optional<exec::DeviceBufferView> computed_joints_device_;
+    std::size_t computed_joints_device_count_ = 0;
     exec::OrlBuffer locators_;
     exec::OrlBuffer controllers_;
     std::vector<ComponentId> joint_ids_;

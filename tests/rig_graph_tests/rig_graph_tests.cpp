@@ -86,17 +86,30 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
         "orlrig.input.find_controller",
         "orlrig.input.find_locator",
         "orlrig.input.find_mesh",
+        "orlrig.stage.computed_joints",
     };
 
     for (const auto& name : definitions) {
         const auto* definition = graph.registry.find(name);
         REQUIRE(definition != nullptr);
         const bool is_scene_input = name.rfind("orlrig.input.", 0) == 0;
+        const bool is_stage_boundary = name.rfind("orlrig.stage.", 0) == 0;
+        if (is_stage_boundary) {
+            REQUIRE(definition->implementation.kind
+                == ImplementationKind::Runtime);
+            REQUIRE(definition->allowed_stages
+                == GraphStageMask::Deformer);
+            REQUIRE(definition->inputs.empty());
+            REQUIRE(definition->outputs.size() == 1);
+            REQUIRE(definition->output("joints") != nullptr);
+            continue;
+        }
         REQUIRE(definition->implementation.kind
             == (is_scene_input
                 ? ImplementationKind::Runtime
                 : ImplementationKind::OrlFunction));
         if (is_scene_input) {
+            REQUIRE(definition->allowed_stages == GraphStageMask::All);
             const bool is_find_input =
                 name.rfind("orlrig.input.find_", 0) == 0;
             if (!is_find_input) {
@@ -117,6 +130,11 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
             }
             REQUIRE(definition->parameter("name") != nullptr);
         } else {
+            REQUIRE(definition->allowed_stages
+                == (name.rfind("orlrig.solver.", 0) == 0
+                    || name.rfind("orlrig.constraint.", 0) == 0
+                    ? GraphStageMask::Solver
+                    : GraphStageMask::Deformer));
             REQUIRE(definition->outputs.size() == 1);
             REQUIRE(definition->outputs.front().name == "status");
         }

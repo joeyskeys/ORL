@@ -52,6 +52,7 @@ orlgraph::NodeDefinition make_capture_definition(
     orlgraph::NodeDefinition definition;
     definition.id = orlgraph::StableId{"orlrig.deformer.lbs.capture_bind"};
     definition.qualified_name = "orlrig.deformer.lbs.capture_bind";
+    definition.allowed_stages = orlgraph::GraphStageMask::Deformer;
     definition.implementation.kind = orlgraph::ImplementationKind::Runtime;
     definition.implementation.runtime_name = definition.qualified_name;
     definition.inputs.push_back(buffer_port(
@@ -77,6 +78,7 @@ orlgraph::NodeDefinition make_deform_definition(
     orlgraph::NodeDefinition definition;
     definition.id = orlgraph::StableId{"orlrig.deformer.lbs.evaluate"};
     definition.qualified_name = "orlrig.deformer.lbs.evaluate";
+    definition.allowed_stages = orlgraph::GraphStageMask::Deformer;
     definition.implementation.kind = orlgraph::ImplementationKind::Runtime;
     definition.implementation.runtime_name = definition.qualified_name;
     definition.inputs = {
@@ -104,6 +106,30 @@ orlgraph::NodeDefinition make_deform_definition(
     };
     definition.pure = false;
     definition.inline_policy = orlgraph::InlinePolicy::Never;
+    return definition;
+}
+
+orlgraph::NodeDefinition make_computed_joints_definition() {
+    const std::string qualified_name{kComputedJointsNodeDefinition};
+    orlgraph::NodeDefinition definition;
+    definition.id = orlgraph::StableId{qualified_name};
+    definition.qualified_name = qualified_name;
+    definition.allowed_stages = orlgraph::GraphStageMask::Deformer;
+    definition.implementation.kind = orlgraph::ImplementationKind::Runtime;
+    definition.implementation.runtime_name = qualified_name;
+    definition.operation = "computed_joints";
+    definition.capabilities = {"stage", "cpu", "cuda"};
+    definition.pure = false;
+    definition.inline_policy = orlgraph::InlinePolicy::Never;
+
+    auto joints = buffer_port(
+        "joints", "joints",
+        orlgraph::LogicalType::struct_type("Joint"),
+        orlgraph::PortDirection::Output,
+        orlgraph::Domain::joint(), false);
+    joints.shape = orlgraph::Shape::one("joint_count");
+    joints.semantic = "joints";
+    definition.outputs.push_back(std::move(joints));
     return definition;
 }
 
@@ -214,6 +240,7 @@ orlgraph::NodeDefinition make_find_definition(
     orlgraph::NodeDefinition definition;
     definition.id = orlgraph::StableId{qualified_name};
     definition.qualified_name = qualified_name;
+    definition.allowed_stages = orlgraph::GraphStageMask::All;
     definition.implementation.kind = orlgraph::ImplementationKind::Runtime;
     definition.implementation.runtime_name = qualified_name;
     definition.parameters.push_back({
@@ -276,6 +303,7 @@ orlgraph::NodeDefinition make_scene_buffer_definition(
     orlgraph::NodeDefinition definition;
     definition.id = orlgraph::StableId{qualified_name};
     definition.qualified_name = qualified_name;
+    definition.allowed_stages = orlgraph::GraphStageMask::All;
     definition.implementation.kind = orlgraph::ImplementationKind::Runtime;
     definition.implementation.runtime_name = qualified_name;
 
@@ -361,6 +389,12 @@ orlgraph::NodeDefinition make_stdlib_definition(std::string category,
     orlgraph::NodeDefinition definition;
     definition.id = orlgraph::StableId{qualified_name};
     definition.qualified_name = qualified_name;
+    definition.allowed_stages =
+        category == "solver" || category == "constraint"
+            ? orlgraph::GraphStageMask::Solver
+            : category == "deformer" || category == "auto_weight"
+                ? orlgraph::GraphStageMask::Deformer
+                : orlgraph::GraphStageMask::All;
     definition.implementation.kind = orlgraph::ImplementationKind::OrlFunction;
     definition.implementation.module = category + "/" + function;
     definition.implementation.function = category + "_" + function;
@@ -775,6 +809,7 @@ bool register_rig_node_definitions(orlgraph::NodeRegistry& registry,
 
     register_conversion(make_joint_world_matrix_conversion());
     register_conversion(make_joint_world_matrix_writeback_conversion());
+    register_definition(make_computed_joints_definition());
     register_definition(make_capture_definition(resources));
     register_definition(make_deform_definition(resources));
     for (auto& definition : make_input_definitions()) {

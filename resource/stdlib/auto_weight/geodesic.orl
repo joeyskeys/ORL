@@ -9,7 +9,8 @@
 
 use auto_weight/common;
 
-int auto_weight_geodesic(point positions[],
+export int auto_weight_geodesic [[ string stage = "deformer" ]]
+    (point positions[],
                          int offsets[],
                          int neighbors[],
                          Joint joints[],

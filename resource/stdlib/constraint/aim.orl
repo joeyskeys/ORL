@@ -7,7 +7,8 @@
 
 use constraint/common;
 
-int constraint_aim(matrix targets[],
+export int constraint_aim [[ string stage = "solver" ]]
+    (matrix targets[],
                    matrix subjects[],
                    vector axes[],
                    int target_index,

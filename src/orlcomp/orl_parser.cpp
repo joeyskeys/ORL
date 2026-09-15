@@ -121,8 +121,17 @@ bool Parser::ParseTopLevel() {
         return ParseStructDefinition();
     }
 
-    if (IsTypeName(Peek()) && Peek(1).kind == TokenKind::Identifier && Peek(2).kind == TokenKind::LParen) {
-        return ParseFunctionDefinition();
+    const bool exported = Match(TokenKind::KwExport);
+    if (exported) {
+        return ParseFunctionDefinition(true);
+    }
+
+    if (IsTypeName(Peek()) && Peek(1).kind == TokenKind::Identifier
+        && (Peek(2).kind == TokenKind::LParen
+            || (Peek(2).kind == TokenKind::LBracket
+                && Peek(3).kind == TokenKind::LBracket)))
+    {
+        return ParseFunctionDefinition(false);
     }
 
     return ParseStatement();
@@ -177,7 +186,7 @@ bool Parser::ParseStructDefinition() {
     return true;
 }
 
-bool Parser::ParseFunctionDefinition() {
+bool Parser::ParseFunctionDefinition(bool exported) {
     const Token return_type_token = Peek();
     if (!ParseTypeName()) {
         return false;
@@ -187,6 +196,16 @@ bool Parser::ParseFunctionDefinition() {
     if (name.kind != TokenKind::Identifier) {
         AddError(name, "Expected function name");
         return false;
+    }
+    std::vector<FunctionMetadata> metadata;
+    if (Peek().kind == TokenKind::LBracket) {
+        if (!exported) {
+            AddError(Peek(),
+                "Function metadata is only allowed on exported functions");
+        }
+        if (!ParseFunctionMetadata(&metadata)) {
+            return false;
+        }
     }
     if (!Expect(TokenKind::LParen, "Expected '(' after function name")) {
         return false;
@@ -235,9 +254,80 @@ bool Parser::ParseFunctionDefinition() {
     function->return_type = return_type_token.lexeme;
     function->name = name.lexeme;
     function->parameters = std::move(parameters);
+    function->exported = exported;
+    function->metadata = std::move(metadata);
     function->body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement *>(body_statement.release()));
     last_statement_ = std::move(function);
     return true;
+}
+
+bool Parser::ParseFunctionMetadata(
+    std::vector<FunctionMetadata>* metadata)
+{
+    if (metadata == nullptr) {
+        AddError(Peek(), "Function metadata destination is null");
+        return false;
+    }
+    if (!Expect(TokenKind::LBracket,
+            "Expected '[[' to start function metadata")
+        || !Expect(TokenKind::LBracket,
+            "Expected '[[' to start function metadata"))
+    {
+        return false;
+    }
+
+    while (!IsAtEnd()
+        && !(Peek().kind == TokenKind::RBracket
+            && Peek(1).kind == TokenKind::RBracket))
+    {
+        if (!IsTypeName(Peek())) {
+            AddError(Peek(),
+                "Function metadata requires a simple type name");
+            return false;
+        }
+        const Token type = Advance();
+        if (Peek().kind != TokenKind::Identifier) {
+            AddError(Peek(), "Expected function metadata name");
+            return false;
+        }
+        const Token name = Advance();
+        if (!Expect(TokenKind::Assign,
+                "Expected '=' after function metadata name"))
+        {
+            return false;
+        }
+        const Token value = Peek();
+        if (value.kind != TokenKind::StringLiteral
+            && value.kind != TokenKind::IntLiteral
+            && value.kind != TokenKind::FloatLiteral)
+        {
+            AddError(value,
+                "Function metadata value must be a literal");
+            return false;
+        }
+        Advance();
+
+        FunctionMetadata entry;
+        entry.type_name = type.lexeme;
+        entry.name = name.lexeme;
+        entry.raw_value = value.lexeme;
+        entry.value_kind = value.kind == TokenKind::StringLiteral
+            ? LiteralKind::String
+            : value.kind == TokenKind::IntLiteral
+                ? LiteralKind::Int : LiteralKind::Float;
+        entry.int_value = value.int_value;
+        entry.float_value = value.float_value;
+        metadata->push_back(std::move(entry));
+
+        if (!Match(TokenKind::Comma)) {
+            break;
+        }
+    }
+
+    return Expect(TokenKind::RBracket,
+            "Expected ']]' after function metadata")
+        && Expect(TokenKind::RBracket,
+            "Expected ']]' after function metadata");
 }
 
 bool Parser::ParseTypeName() {

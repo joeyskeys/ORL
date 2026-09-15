@@ -7,7 +7,8 @@
 use locator;
 use constraint/common;
 
-int constraint_aim_locator(Locator targets[],
+export int constraint_aim_locator [[ string stage = "solver" ]]
+    (Locator targets[],
     matrix subjects[],
     vector axes[],
     int target_index,

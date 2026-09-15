@@ -12,7 +12,7 @@ using namespace orlcomp;
 
 TEST_CASE("semantic analysis imports a typed ORL function", "[orl][analysis]") {
     Parser parser(R"(
-        int add(int left, int right) {
+        export int add(int left, int right) {
             return left + right;
         }
     )");
@@ -50,7 +50,7 @@ TEST_CASE("external ORL source registers node definitions at runtime",
             return value + 1;
         }
 
-        int add_external(int left, int right) {
+        export int add_external(int left, int right) {
             return add_helper(left) + right - 1;
         }
     )", options);
@@ -72,6 +72,61 @@ TEST_CASE("external ORL source registers node definitions at runtime",
     REQUIRE_FALSE(duplicate.ok());
     REQUIRE(duplicate.registered_count == 0);
     REQUIRE(registry.find("external_nodes.add_external") != nullptr);
+}
+
+TEST_CASE("only exported functions become stage-aware node definitions",
+    "[orl][analysis][export]")
+{
+    const auto imported = import_node_definitions(R"(
+        export int solve [[ string stage = "solver" ]] (int value) {
+            return value;
+        }
+
+        export int deform [[ string stage = "deformer" ]] (int value) {
+            return value;
+        }
+
+        int helper(int value) {
+            return value + 1;
+        }
+    )", NodeImportOptions{.module_name = "stage_nodes"});
+
+    REQUIRE(imported.ok());
+    REQUIRE(imported.registry.find("stage_nodes.solve") != nullptr);
+    REQUIRE(imported.registry.find("stage_nodes.deform") != nullptr);
+    REQUIRE(imported.registry.find("stage_nodes.helper") == nullptr);
+
+    const auto* solve = imported.registry.find("stage_nodes.solve");
+    REQUIRE(solve->allowed_stages == orlgraph::GraphStageMask::Solver);
+    REQUIRE(solve->metadata.contains("stage"));
+    REQUIRE(std::get<std::string>(
+        solve->metadata.at("stage").value) == "solver");
+    REQUIRE(imported.registry.is_available(
+        solve->id, orlgraph::GraphStage::Solver));
+    REQUIRE_FALSE(imported.registry.is_available(
+        solve->id, orlgraph::GraphStage::Deformer));
+
+    const auto solver_nodes = imported.registry.definitions_for(
+        orlgraph::GraphStage::Solver);
+    const auto deformer_nodes = imported.registry.definitions_for(
+        orlgraph::GraphStage::Deformer);
+    REQUIRE(std::any_of(solver_nodes.begin(), solver_nodes.end(),
+        [solve](const auto* definition) {
+            return definition->id == solve->id;
+        }));
+    const auto* deform = imported.registry.find("stage_nodes.deform");
+    REQUIRE(std::none_of(solver_nodes.begin(), solver_nodes.end(),
+        [deform](const auto* definition) {
+            return definition->id == deform->id;
+        }));
+    REQUIRE(std::any_of(deformer_nodes.begin(), deformer_nodes.end(),
+        [deform](const auto* definition) {
+            return definition->id == deform->id;
+        }));
+    REQUIRE(std::none_of(deformer_nodes.begin(), deformer_nodes.end(),
+        [solve](const auto* definition) {
+            return definition->id == solve->id;
+        }));
 }
 
 TEST_CASE("semantic analysis rejects unresolved calls and unsupported types",

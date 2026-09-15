@@ -19,7 +19,8 @@ int auto_weight_heat_pin(float d0, float d1, float radius) {
     return pin;
 }
 
-int auto_weight_heat(point positions[],
+export int auto_weight_heat [[ string stage = "deformer" ]]
+    (point positions[],
                      int offsets[],
                      int neighbors[],
                      Joint joints[],

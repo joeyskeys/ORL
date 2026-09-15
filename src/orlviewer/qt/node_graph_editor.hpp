@@ -40,6 +40,8 @@ public:
     void set_graph(orlgraph::GraphModule& module,
         orlgraph::NodeRegistry& registry);
     void set_scene_graph_context(SceneGraphContext* context);
+    void set_stage(orlgraph::GraphStage stage);
+    orlgraph::GraphStage stage() const { return stage_; }
     void set_scene_input_catalog(const SceneInputCatalog* catalog);
     void refresh_scene_inputs();
 
@@ -147,11 +149,13 @@ private:
     int dragging_node_ = -1;
     bool panning_ = false;
     PendingConnection pending_connection_;
-    orlgraph::GraphModule graph_storage_;
+    orlgraph::GraphModule solver_graph_storage_;
+    orlgraph::GraphModule deformer_graph_storage_;
     orlgraph::NodeRegistry registry_storage_;
-    orlgraph::GraphModule* graph_ = &graph_storage_;
+    orlgraph::GraphModule* graph_ = &solver_graph_storage_;
     orlgraph::NodeRegistry* registry_ = &registry_storage_;
     SceneGraphContext* scene_graph_context_ = nullptr;
+    orlgraph::GraphStage stage_ = orlgraph::GraphStage::Solver;
     std::size_t attached_graph_revision_ = 0;
     std::optional<QString> graph_file_path_;
     const SceneInputCatalog* scene_input_catalog_ = nullptr;

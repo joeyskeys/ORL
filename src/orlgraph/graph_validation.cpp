@@ -160,7 +160,8 @@ void ValidationResult::error(std::string code, std::string message,
     });
 }
 
-ValidationResult validate(const GraphModule& module, const NodeRegistry& registry) {
+ValidationResult validate(const GraphModule& module,
+    const NodeRegistry& registry, std::optional<GraphStage> stage) {
     ValidationResult result;
     std::map<StableId, std::set<StableId>> connected_inputs;
     std::map<StableId, std::size_t> output_connections;
@@ -172,6 +173,14 @@ ValidationResult validate(const GraphModule& module, const NodeRegistry& registr
                 "Node references an unknown definition: " + node.definition.value,
                 node_id);
             continue;
+        }
+        if (stage.has_value()
+            && !graph_stage_allowed(definition->allowed_stages, *stage))
+        {
+            result.error("ORLGRAPH_STAGE_MISMATCH",
+                "Node definition is not available in the selected graph stage: "
+                    + definition->qualified_name,
+                node_id);
         }
 
         std::set<StableId> port_ids;

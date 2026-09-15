@@ -247,6 +247,21 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
         binding.buffer = &joints_;
         binding.element_count = joints_.count();
         return true;
+    case SourceKind::ComputedJoints:
+        if (computed_joints_device_.has_value()) {
+            binding.kind = exec::ParameterKind::Buffer;
+            binding.device_ptr = computed_joints_device_->device_ptr;
+            binding.bytes = computed_joints_device_->bytes;
+            binding.element_count = computed_joints_device_count_;
+            return true;
+        }
+        if (joints_.count() == 0 && !pack_joints()) {
+            return set_error(error, "Unable to pack computed scene joints");
+        }
+        binding.kind = exec::ParameterKind::Buffer;
+        binding.buffer = &joints_;
+        binding.element_count = joints_.count();
+        return true;
     case SourceKind::JointCount:
         binding.kind = exec::ParameterKind::Int64;
         binding.int_value = static_cast<std::int64_t>(
@@ -363,6 +378,20 @@ bool SceneInputCatalog::resolve_binding(std::string_view binding,
     return resolve(descriptor->port, result, error);
 }
 
+void SceneInputCatalog::set_computed_joints_device(
+    std::optional<exec::DeviceBufferView> view,
+    std::size_t element_count)
+{
+    computed_joints_device_ = view;
+    computed_joints_device_count_ = view.has_value() ? element_count : 0;
+}
+
+void SceneInputCatalog::clear_computed_joints_device()
+{
+    computed_joints_device_.reset();
+    computed_joints_device_count_ = 0;
+}
+
 bool SceneInputCatalog::bind_graph_inputs(exec::OrlGraphExecution& execution,
     const orlgraph::GraphModule& module)
 {
@@ -422,6 +451,15 @@ void SceneInputCatalog::add_descriptors() {
             orlgraph::StableId{std::string{orlrig::kSceneJointCountBinding}},
             "Joint Count", "joint_count",
             Source{SourceKind::JointCount, {}, {}});
+        add_buffer_descriptor(
+            orlgraph::StableId{std::string{orlrig::kComputedJointsBinding}},
+            "Computed Joints",
+            orlgraph::LogicalType::struct_type("Joint"),
+            orlgraph::Domain::joint(),
+            orlgraph::Shape::one("joint_count"),
+            "joints", "world", orlrig::kJointStride,
+            std::string{orlrig::kSceneJointCountBinding},
+            Source{SourceKind::ComputedJoints, {}, {}});
     }
 
     if (pack_locators() && locators_.count() != 0) {
@@ -656,6 +694,7 @@ bool SceneInputCatalog::pack_joints() {
     packed_joint_ids_ = joint_ids_;
     if (joint_ids_ != previous_ids) {
         ++revision_;
+        clear_computed_joints_device();
     }
     const auto packed = components_.packed_joints();
     if (!joints_.resize(packed.size())) {

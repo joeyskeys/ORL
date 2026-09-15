@@ -6,6 +6,7 @@
 #include <QCursor>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFont>
 #include <QFontMetrics>
 #include <QHash>
 #include <QKeyEvent>
@@ -90,9 +91,11 @@ NodeGraphEditor::NodeGraphEditor(QWidget* parent)
 void NodeGraphEditor::set_graph(const orlgraph::GraphModule& module,
     const orlgraph::NodeRegistry& registry)
 {
-    graph_storage_ = module;
+    solver_graph_storage_ = module;
+    deformer_graph_storage_ = module;
     registry_storage_ = registry;
-    graph_ = &graph_storage_;
+    graph_ = stage_ == orlgraph::GraphStage::Solver
+        ? &solver_graph_storage_ : &deformer_graph_storage_;
     registry_ = &registry_storage_;
     scene_graph_context_ = nullptr;
     attached_graph_revision_ = 0;
@@ -103,8 +106,12 @@ void NodeGraphEditor::set_graph(const orlgraph::GraphModule& module,
 void NodeGraphEditor::set_graph(orlgraph::GraphModule& module,
     orlgraph::NodeRegistry& registry)
 {
-    graph_ = &module;
-    registry_ = &registry;
+    solver_graph_storage_ = module;
+    deformer_graph_storage_ = module;
+    registry_storage_ = registry;
+    graph_ = stage_ == orlgraph::GraphStage::Solver
+        ? &solver_graph_storage_ : &deformer_graph_storage_;
+    registry_ = &registry_storage_;
     scene_graph_context_ = nullptr;
     attached_graph_revision_ = 0;
     graph_file_path_.reset();
@@ -115,17 +122,36 @@ void NodeGraphEditor::set_scene_graph_context(SceneGraphContext* context)
 {
     scene_graph_context_ = context;
     if (scene_graph_context_ == nullptr) {
-        graph_ = &graph_storage_;
+        graph_ = stage_ == orlgraph::GraphStage::Solver
+            ? &solver_graph_storage_ : &deformer_graph_storage_;
         registry_ = &registry_storage_;
         scene_input_catalog_ = nullptr;
         attached_graph_revision_ = 0;
     } else {
-        graph_ = &scene_graph_context_->graph();
+        scene_graph_context_->ensure_stage_graphs();
+        graph_ = &scene_graph_context_->stage_graph(stage_);
         registry_ = &scene_graph_context_->registry();
         scene_input_catalog_ = &scene_graph_context_->scene_inputs();
         attached_graph_revision_ = scene_graph_context_->graph_revision();
     }
     graph_file_path_.reset();
+    rebuild_view();
+}
+
+void NodeGraphEditor::set_stage(orlgraph::GraphStage stage)
+{
+    if (stage_ == stage && graph_ != nullptr) {
+        return;
+    }
+    stage_ = stage;
+    if (scene_graph_context_ != nullptr) {
+        scene_graph_context_->ensure_stage_graphs();
+        graph_ = &scene_graph_context_->stage_graph(stage_);
+        attached_graph_revision_ = scene_graph_context_->graph_revision();
+    } else {
+        graph_ = stage_ == orlgraph::GraphStage::Solver
+            ? &solver_graph_storage_ : &deformer_graph_storage_;
+    }
     rebuild_view();
 }
 
@@ -346,13 +372,13 @@ bool NodeGraphEditor::save_graph_file(bool save_as)
         path = *graph_file_path_;
     } else {
         const QString suggested_path = graph_file_path_.value_or(
-            QStringLiteral("graph.json"));
+            QStringLiteral("graph_stages.json"));
         path = QFileDialog::getSaveFileName(
             this,
-            save_as ? QStringLiteral("Save Node Graph As")
-                    : QStringLiteral("Save Node Graph"),
+            save_as ? QStringLiteral("Save Staged Node Graph As")
+                    : QStringLiteral("Save Staged Node Graph"),
             suggested_path,
-            QStringLiteral("ORL Graph (*.json);;All Files (*)"));
+            QStringLiteral("ORL Staged Graph (*.json);;All Files (*)"));
         if (path.isEmpty()) {
             return false;
         }
@@ -363,15 +389,25 @@ bool NodeGraphEditor::save_graph_file(bool save_as)
     }
 
     std::vector<orlgraph::Diagnostic> diagnostics;
-    if (!orlgraph::save_graph_json(
-            path.toStdString(), active_graph(), &diagnostics))
+    if (scene_graph_context_ != nullptr) {
+        scene_graph_context_->ensure_stage_graphs();
+    }
+    const auto& solver = scene_graph_context_ != nullptr
+        ? scene_graph_context_->stage_graph(orlgraph::GraphStage::Solver)
+        : solver_graph_storage_;
+    const auto& deformer = scene_graph_context_ != nullptr
+        ? scene_graph_context_->stage_graph(orlgraph::GraphStage::Deformer)
+        : deformer_graph_storage_;
+    if (!orlgraph::save_graph_stages_json(
+            path.toStdString(), solver, deformer, &diagnostics))
     {
-        QString message = QStringLiteral("Unable to save node graph.");
+        QString message = QStringLiteral("Unable to save staged node graph.");
         if (!diagnostics.empty()) {
             message += QStringLiteral("\n")
                 + QString::fromStdString(diagnostics.front().message);
         }
-        QMessageBox::warning(this, QStringLiteral("Save Node Graph"), message);
+        QMessageBox::warning(
+            this, QStringLiteral("Save Staged Node Graph"), message);
         return false;
     }
 
@@ -385,7 +421,7 @@ void NodeGraphEditor::create_node(const orlgraph::StableId& definition_id,
     orlgraph::StableId created_id;
     std::string error;
     if (!node_graph::create_node(active_graph(), active_registry(),
-            definition_id, &created_id, &error)) {
+            stage_, definition_id, &created_id, &error)) {
         std::cerr << "Node graph: failed to create node: " << error << '\n';
         return;
     }
@@ -981,6 +1017,18 @@ void NodeGraphEditor::paintEvent(QPaintEvent*)
         draw_node(painter, index);
     }
     painter.restore();
+
+    painter.setPen(QColor{QStringLiteral("#f6f6f6")});
+    QFont stage_font = painter.font();
+    stage_font.setBold(true);
+    stage_font.setPointSizeF(std::max(10.0, stage_font.pointSizeF() + 2.0));
+    painter.setFont(stage_font);
+    painter.drawText(
+        QRectF{16.0, 12.0, 260.0, 28.0},
+        Qt::AlignLeft | Qt::AlignVCenter,
+        stage_ == orlgraph::GraphStage::Solver
+            ? QStringLiteral("Stage: Solver")
+            : QStringLiteral("Stage: Deformer"));
 }
 
 void NodeGraphEditor::mousePressEvent(QMouseEvent* event)
@@ -1094,6 +1142,20 @@ void NodeGraphEditor::wheelEvent(QWheelEvent* event)
 void NodeGraphEditor::keyPressEvent(QKeyEvent* event)
 {
     if (!event->isAutoRepeat()
+        && event->modifiers() == Qt::NoModifier)
+    {
+        if (event->key() == Qt::Key_1) {
+            set_stage(orlgraph::GraphStage::Solver);
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_2) {
+            set_stage(orlgraph::GraphStage::Deformer);
+            event->accept();
+            return;
+        }
+    }
+    if (!event->isAutoRepeat()
         && (event->key() == Qt::Key_Delete
             || event->key() == Qt::Key_Backspace))
     {
@@ -1136,7 +1198,8 @@ void NodeGraphEditor::keyPressEvent(QKeyEvent* event)
                 input.name.empty() ? id.value : input.name,
             });
         }
-        node_graph::show_create_menu(this, active_registry(), graph_inputs,
+        node_graph::show_create_menu(
+            this, active_registry(), stage_, graph_inputs,
             global_position,
             [this, scene](const orlgraph::StableId& definition_id) {
                 create_node(definition_id, scene);

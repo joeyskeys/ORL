@@ -279,6 +279,40 @@ int main() {
         }
     });
     ORL::ControlMap controls;
+#if ORL_USE_QT6
+    controls.bind_op_variant("graph_stage_solver",
+        [node_graph_editor](const ORL::InputEvent& event) {
+            return node_graph_editor != nullptr
+                && node_graph_editor->hasFocus()
+                && event.key == vkkk::Key::Digit1;
+        },
+        [node_graph_editor](const ORL::InputEvent&) {
+            if (node_graph_editor != nullptr) {
+                node_graph_editor->set_stage(orlgraph::GraphStage::Solver);
+            }
+        });
+    controls.bind_op_variant("graph_stage_deformer",
+        [node_graph_editor](const ORL::InputEvent& event) {
+            return node_graph_editor != nullptr
+                && node_graph_editor->hasFocus()
+                && event.key == vkkk::Key::Digit2;
+        },
+        [node_graph_editor](const ORL::InputEvent&) {
+            if (node_graph_editor != nullptr) {
+                node_graph_editor->set_stage(orlgraph::GraphStage::Deformer);
+            }
+        });
+    controls.bind_op_variant("display_mode_switch",
+        [node_graph_editor](const ORL::InputEvent&) {
+            return node_graph_editor == nullptr
+                || !node_graph_editor->hasFocus();
+        },
+        [&](const ORL::InputEvent& event) {
+            display_mode.eval(event);
+        });
+#else
+    controls.bind_op("display_mode_switch", display_mode);
+#endif
     controls.bind_op("toggle_grid", [&](const ORL::InputEvent&) {
         show_grid = !show_grid;
         if (auto* ortho_grid = viewport.find_feature(ortho_grid_handle)) {
@@ -368,7 +402,6 @@ int main() {
     controls.bind_op("rotate", rotate_op);
     controls.bind_op("scale", scale_op);
     controls.bind_op("camera_switch", camera_switch);
-    controls.bind_op("display_mode_switch", display_mode);
     const auto has_mesh_and_joint_selection =
         [&selection](const ORL::InputEvent&) {
             return selection.valid_for_bind();

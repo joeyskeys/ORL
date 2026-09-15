@@ -218,6 +218,13 @@ Json definition_value(const NodeDefinition& definition, Allocator& allocator) {
     Json result(rapidjson::kObjectType);
     add(result, "id", string_value(definition.id.value, allocator), allocator);
     add(result, "qualified_name", string_value(definition.qualified_name, allocator), allocator);
+    add(result, "allowed_stages",
+        Json(static_cast<std::uint32_t>(definition.allowed_stages)), allocator);
+    Json metadata(rapidjson::kObjectType);
+    for (const auto& [name, value] : definition.metadata) {
+        add(metadata, name.c_str(), constant_value(value, allocator), allocator);
+    }
+    add(result, "metadata", std::move(metadata), allocator);
     add(result, "version", version_value(definition.version, allocator), allocator);
     Json implementation(rapidjson::kObjectType);
     add(implementation, "kind",
@@ -889,6 +896,20 @@ bool parse_definition(const Json& value, NodeDefinition* output,
         return false;
     }
     output->id = StableId{std::move(id)};
+    std::uint32_t allowed_stages = static_cast<std::uint32_t>(
+        GraphStageMask::None);
+    read_u32(value, "allowed_stages", &allowed_stages, diagnostics);
+    output->allowed_stages = static_cast<GraphStageMask>(allowed_stages);
+    const Json* metadata = member(value, "metadata");
+    if (metadata != nullptr && metadata->IsObject()) {
+        for (const auto& item : metadata->GetObject()) {
+            ConstantValue constant;
+            if (parse_constant(item.value, &constant, diagnostics)) {
+                output->metadata.emplace(item.name.GetString(),
+                    std::move(constant));
+            }
+        }
+    }
     const Json* version = member(value, "version");
     if (version == nullptr || !parse_version(*version, &output->version, diagnostics)) {
         return false;
@@ -1651,6 +1672,174 @@ GraphJsonSerializationResult serialize_graph_json(const GraphModule& module)
     return result;
 }
 
+GraphStagesJsonSerializationResult serialize_graph_stages_json(
+    const GraphModule& solver, const GraphModule& deformer)
+{
+    GraphStagesJsonSerializationResult result;
+    rapidjson::Document document;
+    document.SetObject();
+    auto& allocator = document.GetAllocator();
+
+    Json header(rapidjson::kObjectType);
+    add(header, "magic",
+        string_value(kGraphStagesJsonMagic, allocator), allocator);
+    add(header, "format_version",
+        Json(kGraphStagesJsonFormatVersion), allocator);
+    add(header, "language_version",
+        string_value(solver.language_version, allocator), allocator);
+    add(header, "logical_abi_version",
+        string_value(solver.logical_abi_version, allocator), allocator);
+    add(header, "module_id",
+        string_value(solver.module_id, allocator), allocator);
+    add(header, "content_hash", string_value("", allocator), allocator);
+    add(document, "header", std::move(header), allocator);
+
+    Json stages(rapidjson::kObjectType);
+    add(stages, "solver", graph_value(solver, allocator), allocator);
+    add(stages, "deformer", graph_value(deformer, allocator), allocator);
+    add(document, "stages", std::move(stages), allocator);
+
+    const std::string base = write_json(document);
+    result.content_hash = hash_text(base);
+    auto& header_value = document["header"];
+    header_value["content_hash"].SetString(
+        result.content_hash.data(),
+        static_cast<rapidjson::SizeType>(result.content_hash.size()),
+        allocator);
+    result.text = write_json(document);
+    result.ok = true;
+    return result;
+}
+
+GraphStagesJsonDocument deserialize_graph_stages_json(std::string_view text)
+{
+    GraphStagesJsonDocument result;
+    rapidjson::Document document;
+    document.Parse(text.data(), text.size());
+    if (document.HasParseError() || !document.IsObject()) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_INVALID_JSON",
+            "The staged graph JSON payload is not valid JSON", {}, {}, {},
+        });
+        return result;
+    }
+
+    const Json* header = member(document, "header");
+    const Json* stages = member(document, "stages");
+    if (header == nullptr || stages == nullptr
+        || !header->IsObject() || !stages->IsObject())
+    {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_INVALID_DOCUMENT",
+            "The staged graph JSON document is missing required sections",
+            {}, {}, {},
+        });
+        return result;
+    }
+
+    std::string magic;
+    if (!read_string(*header, "magic", &magic, &result.diagnostics)
+        || magic != kGraphStagesJsonMagic)
+    {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_BAD_MAGIC",
+            "The staged graph JSON magic value is invalid", {}, {}, {},
+        });
+        return result;
+    }
+
+    std::uint32_t format_version = 0;
+    read_u32(*header, "format_version", &format_version,
+        &result.diagnostics);
+    if (format_version != kGraphStagesJsonFormatVersion) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_UNSUPPORTED_FORMAT",
+            "Unsupported staged graph JSON format version", {}, {}, {},
+        });
+        return result;
+    }
+
+    std::string header_language;
+    std::string header_abi;
+    read_string(*header, "language_version", &header_language,
+        &result.diagnostics, false);
+    read_string(*header, "logical_abi_version", &header_abi,
+        &result.diagnostics, false);
+    read_string(*header, "content_hash", &result.content_hash,
+        &result.diagnostics, false);
+    if (!header_language.empty() && header_language != kOroLanguageVersion) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_LANGUAGE_MISMATCH",
+            "The staged graph language version is not supported: "
+                + header_language, {}, {}, {},
+        });
+    }
+    if (!header_abi.empty() && header_abi != kOroLogicalAbiVersion) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_ABI_MISMATCH",
+            "The staged graph logical ABI version is not supported: "
+                + header_abi, {}, {}, {},
+        });
+    }
+
+    const Json* solver = member(*stages, "solver");
+    const Json* deformer = member(*stages, "deformer");
+    if (solver == nullptr || deformer == nullptr
+        || !solver->IsObject() || !deformer->IsObject())
+    {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_INVALID_STAGES",
+            "Staged graph JSON must contain solver and deformer graphs",
+            {}, {}, {},
+        });
+        return result;
+    }
+    parse_graph(*solver, &result.solver, &result.diagnostics);
+    parse_graph(*deformer, &result.deformer, &result.diagnostics);
+
+    const auto check_graph_versions =
+        [&result](const GraphModule& graph, const char* stage) {
+            if (graph.language_version != kOroLanguageVersion) {
+                result.diagnostics.push_back({
+                    DiagnosticSeverity::Error, "ORLGRAPH_LANGUAGE_MISMATCH",
+                    std::string{stage}
+                        + " graph language version is not supported: "
+                        + graph.language_version, {}, {}, {},
+                });
+            }
+            if (graph.logical_abi_version != kOroLogicalAbiVersion) {
+                result.diagnostics.push_back({
+                    DiagnosticSeverity::Error, "ORLGRAPH_ABI_MISMATCH",
+                    std::string{stage}
+                        + " graph logical ABI version is not supported: "
+                        + graph.logical_abi_version, {}, {}, {},
+                });
+            }
+        };
+    check_graph_versions(result.solver, "Solver");
+    check_graph_versions(result.deformer, "Deformer");
+
+    if (result.diagnostics.empty()) {
+        const auto canonical = serialize_graph_stages_json(
+            result.solver, result.deformer);
+        if (canonical.ok && !result.content_hash.empty()
+            && canonical.content_hash != result.content_hash)
+        {
+            result.diagnostics.push_back({
+                DiagnosticSeverity::Error, "ORLGRAPH_HASH_MISMATCH",
+                "The staged graph JSON content hash does not match its "
+                "canonical payload", {}, {}, {},
+            });
+        }
+    }
+    result.ok = std::none_of(result.diagnostics.begin(),
+        result.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.severity == DiagnosticSeverity::Error;
+        });
+    return result;
+}
+
 GraphJsonDocument deserialize_graph_json(std::string_view text)
 {
     GraphJsonDocument result;
@@ -1809,6 +1998,50 @@ GraphJsonDocument load_graph_json(const std::string& path)
     std::ostringstream contents;
     contents << input.rdbuf();
     return deserialize_graph_json(contents.str());
+}
+
+bool save_graph_stages_json(const std::string& path,
+    const GraphModule& solver, const GraphModule& deformer,
+    std::vector<Diagnostic>* diagnostics)
+{
+    const GraphStagesJsonSerializationResult serialized =
+        serialize_graph_stages_json(solver, deformer);
+    if (diagnostics != nullptr) {
+        *diagnostics = serialized.diagnostics;
+    }
+    if (!serialized.ok) {
+        return false;
+    }
+    std::ofstream output(path, std::ios::binary);
+    if (!output.is_open()) {
+        if (diagnostics != nullptr) {
+            diagnostics->push_back({
+                DiagnosticSeverity::Error, "ORLGRAPH_WRITE_FAILED",
+                "Unable to open staged graph JSON output file: " + path,
+                {}, {}, {},
+            });
+        }
+        return false;
+    }
+    output << serialized.text;
+    return static_cast<bool>(output);
+}
+
+GraphStagesJsonDocument load_graph_stages_json(const std::string& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+        GraphStagesJsonDocument result;
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_READ_FAILED",
+            "Unable to open staged graph JSON input file: " + path,
+            {}, {}, {},
+        });
+        return result;
+    }
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    return deserialize_graph_stages_json(contents.str());
 }
 
 } // namespace orlgraph

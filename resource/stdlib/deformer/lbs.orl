@@ -8,7 +8,8 @@
 use joint;
 use weight;
 
-int deformer_lbs_capture_bind(Joint joints[], matrix inverse_binds[], int joint_count) {
+export int deformer_lbs_capture_bind [[ string stage = "deformer" ]]
+    (Joint joints[], matrix inverse_binds[], int joint_count) {
     int j = 0;
     while (j < joint_count) {
         matrix world = joint_world_matrix(joints, j);
@@ -18,7 +19,8 @@ int deformer_lbs_capture_bind(Joint joints[], matrix inverse_binds[], int joint_
     return joint_count;
 }
 
-int deformer_lbs(point bind_positions[],
+export int deformer_lbs [[ string stage = "deformer" ]]
+    (point bind_positions[],
                  point output_positions[],
                  Joint joints[],
                  matrix inverse_binds[],

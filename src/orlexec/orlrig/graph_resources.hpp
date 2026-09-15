@@ -40,6 +40,10 @@ inline constexpr std::string_view kJointWorldMatrixConversion =
     "orlrig.convert.joint_world_matrix";
 inline constexpr std::string_view kJointWorldMatrixWritebackConversion =
     "orlrig.convert.joint_world_matrix_to_trs";
+inline constexpr std::string_view kComputedJointsNodeDefinition =
+    "orlrig.stage.computed_joints";
+inline constexpr std::string_view kComputedJointsBinding =
+    "stage.rig.computed_joints";
 
 std::string scene_mesh_positions_binding(std::string_view object_name);
 std::string scene_mesh_vertex_count_binding(std::string_view object_name);

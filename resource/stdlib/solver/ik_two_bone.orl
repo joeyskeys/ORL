@@ -85,7 +85,8 @@ quat solver_quat_from_to(vector from, vector to) {
     return quat_normalize(q);
 }
 
-int solver_ik_two_bone(Joint joints[],
+export int solver_ik_two_bone [[ string stage = "solver" ]]
+    (Joint joints[],
                        int root,
                        int mid,
                        int end,

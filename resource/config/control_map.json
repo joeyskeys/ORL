@@ -74,6 +74,22 @@
       }
     },
     {
+      "op": "graph_stage_solver",
+      "input": {
+        "type": "key",
+        "key": "1",
+        "action": "press"
+      }
+    },
+    {
+      "op": "graph_stage_deformer",
+      "input": {
+        "type": "key",
+        "key": "2",
+        "action": "press"
+      }
+    },
+    {
       "op": "create_joint",
       "input": {
         "type": "key",

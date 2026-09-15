@@ -3,8 +3,10 @@
 
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <utility>
+#include <variant>
 
 namespace orlcomp
 {
@@ -36,6 +38,36 @@ orlgraph::Port make_input(const FunctionSummary& function,
     return port;
 }
 
+std::optional<orlgraph::GraphStageMask> stage_mask(
+    const FunctionSummary& function, std::string* error)
+{
+    const auto found = function.metadata.find("stage");
+    if (found == function.metadata.end()) {
+        return orlgraph::GraphStageMask::All;
+    }
+    const auto* value = std::get_if<std::string>(&found->second.value);
+    if (value == nullptr) {
+        if (error != nullptr) {
+            *error = "Function metadata 'stage' must be a string";
+        }
+        return std::nullopt;
+    }
+    if (*value == "solver") {
+        return orlgraph::GraphStageMask::Solver;
+    }
+    if (*value == "deformer") {
+        return orlgraph::GraphStageMask::Deformer;
+    }
+    if (*value == "all" || *value == "both") {
+        return orlgraph::GraphStageMask::All;
+    }
+    if (error != nullptr) {
+        *error = "Unknown function metadata stage '" + *value
+            + "' (expected solver, deformer, or all)";
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 bool NodeImportResult::ok() const {
@@ -56,9 +88,25 @@ NodeImportResult import_node_definitions(const AnalysisResult& analysis,
     }
 
     for (const auto& function : analysis.functions) {
+        if (!function.exported) {
+            continue;
+        }
+        std::string stage_error;
+        const auto allowed_stages = stage_mask(function, &stage_error);
+        if (!allowed_stages.has_value()) {
+            result.diagnostics.push_back({
+                "ORL_IMPORT_STAGE",
+                std::move(stage_error),
+                function.source,
+                true,
+            });
+            continue;
+        }
         orlgraph::NodeDefinition definition;
         definition.id = orlgraph::StableId::from("orl.function", function.name);
         definition.qualified_name = module_name + "." + function.name;
+        definition.allowed_stages = *allowed_stages;
+        definition.metadata = function.metadata;
         definition.implementation.kind = orlgraph::ImplementationKind::OrlFunction;
         definition.implementation.module = module_name;
         definition.implementation.function = function.name;
@@ -170,6 +218,15 @@ NodeImportResult import_node_definitions(std::string_view source,
                 "ORL_IMPORT_FUNCTION",
                 "Requested exported function was not found: " + function_name,
                 {options.source_name, 0, 0, 0, 0},
+                true,
+            });
+            continue;
+        }
+        if (!function->exported) {
+            exported.diagnostics.push_back({
+                "ORL_IMPORT_EXPORT",
+                "Requested function is not exported: " + function_name,
+                function->source,
                 true,
             });
             continue;

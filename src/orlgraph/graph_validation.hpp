@@ -4,6 +4,7 @@
 #include "graph_schedule.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,7 @@ struct ValidationResult {
         StableId node = {}, StableId port = {});
 };
 
-ValidationResult validate(const GraphModule& module, const NodeRegistry& registry);
+ValidationResult validate(const GraphModule& module, const NodeRegistry& registry,
+    std::optional<GraphStage> stage = std::nullopt);
 
 } // namespace orlgraph

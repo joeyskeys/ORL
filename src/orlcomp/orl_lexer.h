@@ -38,6 +38,7 @@ enum class TokenKind : std::uint16_t {
     KwStruct,
     KwUse,
     KwReturn,
+    KwExport,
 
     Plus,
     Minus,

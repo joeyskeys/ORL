@@ -25,7 +25,8 @@ matrix solver_fk_world_matrix(Joint joints[], int index, int joint_count) {
     return world;
 }
 
-int solver_fk(Joint joints[], matrix world[], int joint_count) {
+export int solver_fk [[ string stage = "solver" ]]
+    (Joint joints[], matrix world[], int joint_count) {
     int index = 0;
     while (index < joint_count) {
         world[index] = solver_fk_world_matrix(joints, index, joint_count);

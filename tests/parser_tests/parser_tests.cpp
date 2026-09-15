@@ -217,3 +217,53 @@ TEST_CASE("parser accepts GLSL-style vector and matrix type names", "[orl][parse
     REQUIRE(ret != nullptr);
     REQUIRE(dynamic_cast<const CallExpression *>(ret->value.get()) != nullptr);
 }
+
+TEST_CASE("parser recognizes exported functions and OSL-style metadata",
+    "[orl][parser][export]")
+{
+    Parser parser(R"(
+        export int solve [[
+            string stage = "solver",
+            string label = "Solve"
+        ]] (int value) {
+            return value;
+        }
+
+        int helper(int value) {
+            return value + 1;
+        }
+    )");
+
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Ast() != nullptr);
+    REQUIRE(parser.Ast()->items.size() == 2);
+
+    const auto* solve = dynamic_cast<const FunctionDefinitionStatement*>(
+        parser.Ast()->items[0].get());
+    REQUIRE(solve != nullptr);
+    REQUIRE(solve->exported);
+    REQUIRE(solve->metadata.size() == 2);
+    REQUIRE(solve->metadata[0].type_name == "string");
+    REQUIRE(solve->metadata[0].name == "stage");
+    REQUIRE(solve->metadata[0].value_kind == LiteralKind::String);
+    REQUIRE(solve->metadata[0].raw_value == "\"solver\"");
+
+    const auto* helper = dynamic_cast<const FunctionDefinitionStatement*>(
+        parser.Ast()->items[1].get());
+    REQUIRE(helper != nullptr);
+    REQUIRE_FALSE(helper->exported);
+    REQUIRE(helper->metadata.empty());
+}
+
+TEST_CASE("parser rejects metadata on non-exported functions",
+    "[orl][parser][export]")
+{
+    Parser parser(R"(
+        int helper [[ string label = "hidden" ]] (int value) {
+            return value;
+        }
+    )");
+
+    REQUIRE_FALSE(parser.Parse());
+    REQUIRE_FALSE(parser.Errors().empty());
+}

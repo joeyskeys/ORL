@@ -48,7 +48,7 @@ void print_usage(std::ostream& output) {
         << "      --print-ir          Print generated IR to stdout\n"
         << "      --emit-oro <file>   Export analyzed functions as an .oro node library\n"
         << "      --module <name>     Module ID for --emit-oro\n"
-        << "      --export <name>    Export only this function to .oro (repeatable)\n"
+        << "      --export <name>    Export only this exported function to .oro (repeatable)\n"
         << "  -h, --help              Show this help\n";
 }
 

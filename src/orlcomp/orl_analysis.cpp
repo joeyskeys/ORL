@@ -34,6 +34,32 @@ ParameterAccess add_access(ParameterAccess value, ParameterAccess access) {
         static_cast<std::uint8_t>(value) | static_cast<std::uint8_t>(access));
 }
 
+std::string decode_string_literal(std::string_view raw) {
+    if (raw.size() < 2 || raw.front() != '"' || raw.back() != '"') {
+        return std::string{raw};
+    }
+    std::string result;
+    result.reserve(raw.size() - 2);
+    bool escaped = false;
+    for (std::size_t i = 1; i + 1 < raw.size(); ++i) {
+        const char c = raw[i];
+        if (escaped) {
+            switch (c) {
+            case 'n': result.push_back('\n'); break;
+            case 'r': result.push_back('\r'); break;
+            case 't': result.push_back('\t'); break;
+            default: result.push_back(c); break;
+            }
+            escaped = false;
+        } else if (c == '\\') {
+            escaped = true;
+        } else {
+            result.push_back(c);
+        }
+    }
+    return result;
+}
+
 const IdentifierExpression* identifier(const Expression* expression) {
     return dynamic_cast<const IdentifierExpression*>(expression);
 }
@@ -68,6 +94,8 @@ public:
         summary_.return_type_name = definition.return_type;
         summary_.return_type = LogicalType::from_orl_name(definition.return_type);
         summary_.source.file = source_name_;
+        summary_.exported = definition.exported;
+        collect_metadata();
         for (const auto& parameter : definition.parameters) {
             FunctionParameterSummary value;
             value.name = parameter.name;
@@ -97,6 +125,62 @@ public:
     }
 
 private:
+    void collect_metadata() {
+        if (!definition_.exported && !definition_.metadata.empty()) {
+            add_error("ORL_ANALYSIS_METADATA_EXPORT",
+                "Function metadata is only allowed on exported functions");
+        }
+        for (const auto& entry : definition_.metadata) {
+            if (summary_.metadata.contains(entry.name)) {
+                add_error("ORL_ANALYSIS_METADATA_DUPLICATE",
+                    "Duplicate function metadata: " + entry.name);
+                continue;
+            }
+            const auto type = LogicalType::from_orl_name(entry.type_name);
+            if (type.kind != orlgraph::LogicalTypeKind::Int64
+                && type.kind != orlgraph::LogicalTypeKind::Float64
+                && type.kind != orlgraph::LogicalTypeKind::String)
+            {
+                add_error("ORL_ANALYSIS_METADATA_TYPE",
+                    "Function metadata must use int, float, or string: "
+                    + entry.type_name);
+                continue;
+            }
+
+            orlgraph::ConstantValue value;
+            value.type = type;
+            if (type.kind == orlgraph::LogicalTypeKind::String) {
+                if (entry.value_kind != LiteralKind::String) {
+                    add_error("ORL_ANALYSIS_METADATA_VALUE",
+                        "String metadata requires a string literal: "
+                        + entry.name);
+                    continue;
+                }
+                value.value = decode_string_literal(entry.raw_value);
+            } else if (type.kind == orlgraph::LogicalTypeKind::Int64) {
+                if (entry.value_kind != LiteralKind::Int) {
+                    add_error("ORL_ANALYSIS_METADATA_VALUE",
+                        "Integer metadata requires an integer literal: "
+                        + entry.name);
+                    continue;
+                }
+                value.value = entry.int_value;
+            } else {
+                if (entry.value_kind == LiteralKind::Float) {
+                    value.value = entry.float_value;
+                } else if (entry.value_kind == LiteralKind::Int) {
+                    value.value = static_cast<double>(entry.int_value);
+                } else {
+                    add_error("ORL_ANALYSIS_METADATA_VALUE",
+                        "Float metadata requires a numeric literal: "
+                        + entry.name);
+                    continue;
+                }
+            }
+            summary_.metadata.emplace(entry.name, std::move(value));
+        }
+    }
+
     void add_error(std::string code, std::string message) {
         diagnostics_->push_back(AnalysisDiagnostic{
             std::move(code),

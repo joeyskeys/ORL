@@ -26,15 +26,18 @@ struct GraphInputMenuEntry {
 // Show the searchable, category-based node creation menu at a global screen
 // position. The callback receives the selected definition ID.
 void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
-    const QPoint& global_position, CreateNodeCallback callback);
+    orlgraph::GraphStage stage, const QPoint& global_position,
+    CreateNodeCallback callback);
 void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
+    orlgraph::GraphStage stage,
     const std::vector<GraphInputMenuEntry>& graph_inputs,
     const QPoint& global_position, CreateNodeCallback node_callback,
     CreateGraphInputCallback graph_input_callback);
 
 // Add a uniquely named instance of a registered definition to a graph.
 bool create_node(orlgraph::GraphModule& graph, const orlgraph::NodeRegistry& registry,
-    const orlgraph::StableId& definition_id, orlgraph::StableId* created_id = nullptr,
+    orlgraph::GraphStage stage, const orlgraph::StableId& definition_id,
+    orlgraph::StableId* created_id = nullptr,
     std::string* error = nullptr);
 
 // Remove a node instance and any graph data that references it.

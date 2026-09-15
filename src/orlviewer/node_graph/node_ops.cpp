@@ -56,6 +56,12 @@ QString display_name(std::string_view qualified_name) {
 }
 
 QString category_name(std::string_view qualified_name) {
+    if (qualified_name == "orlrig.stage.computed_joints") {
+        return QStringLiteral("Input");
+    }
+    if (qualified_name.find(".stage.") != std::string_view::npos) {
+        return QStringLiteral("Stage");
+    }
     if (qualified_name.find(".deformer.") != std::string_view::npos) {
         return QStringLiteral("Deformer");
     }
@@ -80,13 +86,15 @@ QString category_name(std::string_view qualified_name) {
 } // namespace
 
 void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
-    const QPoint& global_position, CreateNodeCallback callback)
+    orlgraph::GraphStage stage, const QPoint& global_position,
+    CreateNodeCallback callback)
 {
-    show_create_menu(parent, registry, {}, global_position,
+    show_create_menu(parent, registry, stage, {}, global_position,
         std::move(callback), {});
 }
 
 void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
+    orlgraph::GraphStage stage,
     const std::vector<GraphInputMenuEntry>& graph_inputs,
     const QPoint& global_position, CreateNodeCallback node_callback,
     CreateGraphInputCallback graph_input_callback)
@@ -109,10 +117,11 @@ void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
 
     std::map<std::string, QMenu*> categories;
     std::vector<MenuEntry> entries;
+    const auto definitions = registry.definitions_for(stage);
     const bool has_registry_input = std::any_of(
-        registry.definitions().begin(), registry.definitions().end(),
-        [](const auto& entry) {
-            return category_name(entry.second.qualified_name)
+        definitions.begin(), definitions.end(),
+        [](const auto* definition) {
+            return category_name(definition->qualified_name)
                 == QStringLiteral("Input");
         });
     QMenu* input_category = nullptr;
@@ -121,8 +130,8 @@ void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
         categories.emplace("Input", input_category);
     }
 
-    for (const auto& [id, definition] : registry.definitions()) {
-        const QString category = category_name(definition.qualified_name);
+    for (const auto* definition : definitions) {
+        const QString category = category_name(definition->qualified_name);
         const std::string category_key = category.toStdString();
         auto category_it = categories.find(category_key);
         if (category_it == categories.end()) {
@@ -130,10 +139,10 @@ void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
             category_it = categories.emplace(category_key, category_menu).first;
         }
 
-        const QString label = display_name(definition.qualified_name);
+        const QString label = display_name(definition->qualified_name);
         auto* action = category_it->second->addAction(label);
         const QString search_text = category + QStringLiteral(" ") + label;
-        const orlgraph::StableId definition_id = id;
+        const orlgraph::StableId definition_id = definition->id;
         QObject::connect(action, &QAction::triggered, &menu,
             [node_callback, definition_id] {
                 if (node_callback) {
@@ -189,12 +198,17 @@ void show_create_menu(QWidget* parent, const orlgraph::NodeRegistry& registry,
 }
 
 bool create_node(orlgraph::GraphModule& graph, const orlgraph::NodeRegistry& registry,
-    const orlgraph::StableId& definition_id, orlgraph::StableId* created_id,
+    orlgraph::GraphStage stage, const orlgraph::StableId& definition_id,
+    orlgraph::StableId* created_id,
     std::string* error)
 {
     const auto* definition = registry.find(definition_id);
     if (definition == nullptr) {
         return set_error(error, "Unknown node definition: " + definition_id.value);
+    }
+    if (!registry.is_available(definition_id, stage)) {
+        return set_error(error, "Node definition '" + definition_id.value
+            + "' is not available in the selected graph stage");
     }
 
     const std::string base_name = short_name(definition->qualified_name);

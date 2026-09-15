@@ -28,7 +28,8 @@ private:
 
     bool ParseTopLevel();
     bool ParseStructDefinition();
-    bool ParseFunctionDefinition();
+    bool ParseFunctionDefinition(bool exported);
+    bool ParseFunctionMetadata(std::vector<FunctionMetadata>* metadata);
     bool ParseTypeName();
     bool ParseBlock();
     bool ParseStatement();

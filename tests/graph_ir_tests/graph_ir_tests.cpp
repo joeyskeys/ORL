@@ -91,6 +91,31 @@ TEST_CASE("graph module validates typed connections", "[orlgraph][validation]") 
     REQUIRE(result.schedule.order == std::vector<StableId>{StableId{"add"}});
 }
 
+TEST_CASE("graph validation enforces definition stage masks",
+    "[orlgraph][validation][stage]")
+{
+    NodeRegistry registry;
+    NodeDefinition definition;
+    definition.id = StableId{"stage.solver_only"};
+    definition.qualified_name = "stage.solver_only";
+    definition.allowed_stages = GraphStageMask::Solver;
+    REQUIRE(registry.register_definition(std::move(definition)));
+
+    GraphModule module;
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"node"}, StableId{"stage.solver_only"}, "node",
+        {}, {}, InlinePolicy::Default}));
+
+    REQUIRE(validate(module, registry, GraphStage::Solver).ok());
+    const auto deformer = validate(module, registry, GraphStage::Deformer);
+    REQUIRE_FALSE(deformer.ok());
+    REQUIRE(std::any_of(deformer.diagnostics.begin(),
+        deformer.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "ORLGRAPH_STAGE_MISMATCH";
+        }));
+}
+
 TEST_CASE("graph interface removal cleans its connections",
     "[orlgraph][editing]")
 {
@@ -444,6 +469,33 @@ TEST_CASE("editable graph JSON is deterministic and round trips",
     REQUIRE(input->binding == "scene.mesh.body.positions");
     REQUIRE(input->semantic == "mesh.positions");
     REQUIRE(input->coordinate_space == "world");
+}
+
+TEST_CASE("staged graph JSON preserves solver and deformer graphs",
+    "[orlgraph][graph-stages][graph-json]")
+{
+    GraphModule solver;
+    solver.module_id = "character.solver";
+
+    GraphModule deformer;
+    deformer.module_id = "character.deformer";
+    REQUIRE(deformer.add_node(NodeInstance{
+        StableId{"computed_joints"},
+        StableId{"orlrig.stage.computed_joints"},
+        "computed_joints", {}, {}, InlinePolicy::Never}));
+
+    const auto first = serialize_graph_stages_json(solver, deformer);
+    const auto second = serialize_graph_stages_json(solver, deformer);
+    REQUIRE(first.ok);
+    REQUIRE(first.text == second.text);
+    REQUIRE(first.content_hash == second.content_hash);
+
+    const auto loaded = deserialize_graph_stages_json(first.text);
+    REQUIRE(loaded.ok);
+    REQUIRE(loaded.solver.module_id == "character.solver");
+    REQUIRE(loaded.deformer.module_id == "character.deformer");
+    REQUIRE(loaded.solver.node(StableId{"computed_joints"}) == nullptr);
+    REQUIRE(loaded.deformer.node(StableId{"computed_joints"}) != nullptr);
 }
 #endif
 

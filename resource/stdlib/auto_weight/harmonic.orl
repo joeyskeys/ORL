@@ -17,7 +17,8 @@ int auto_weight_harmonic_pin(float d0, float d1, float radius2) {
     return pin;
 }
 
-int auto_weight_harmonic(point positions[],
+export int auto_weight_harmonic [[ string stage = "deformer" ]]
+    (point positions[],
                          int offsets[],
                          int neighbors[],
                          Joint joints[],

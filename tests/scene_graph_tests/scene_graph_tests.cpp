@@ -595,11 +595,12 @@ TEST_CASE("scene graph commits host-readback joint writeback",
     std::string error;
     REQUIRE(context.map_input_by_binding(
         "joints", std::string{orlrig::kSceneJointsBinding}, &error));
-    const auto* joints_input =
+    const auto* scene_joints_input =
         context.graph().input(orlgraph::StableId{"joints"});
-    REQUIRE(joints_input != nullptr);
+    REQUIRE(scene_joints_input != nullptr);
     ORL::exec::GraphInputBinding binding;
-    REQUIRE(context.resolve_graph_input(*joints_input, binding, &error));
+    REQUIRE(context.resolve_graph_input(
+        *scene_joints_input, binding, &error));
     REQUIRE(binding.buffer != nullptr);
     auto* packed = static_cast<orlrig::Joint*>(binding.buffer->data());
     REQUIRE(packed != nullptr);
@@ -611,6 +612,44 @@ TEST_CASE("scene graph commits host-readback joint writeback",
     REQUIRE(context.commit_scene_writes(true, &error));
     REQUIRE(components.joint(joint_id)->translation[0]
         == 3.0);
+}
+
+TEST_CASE("computed joints resolves the shared device buffer",
+    "[scene-graph][stages][computed-joints]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    components.create_joint("root");
+
+    ORL::SceneGraphContext context(scene, components);
+    context.refresh_scene_inputs();
+    const auto* descriptor = context.scene_inputs().find(
+        orlgraph::StableId{std::string{orlrig::kComputedJointsBinding}});
+    REQUIRE(descriptor != nullptr);
+
+    ORL::exec::GraphInputBinding binding;
+    std::string error;
+    REQUIRE(context.scene_inputs().resolve(
+        descriptor->port, binding, &error));
+    REQUIRE(binding.buffer != nullptr);
+    REQUIRE(binding.device_ptr == 0);
+
+    context.set_computed_joints_device(
+        ORL::exec::DeviceBufferView{
+            0x1234, orlrig::kJointStride},
+        1);
+    REQUIRE(context.scene_inputs().resolve(
+        descriptor->port, binding, &error));
+    REQUIRE(binding.buffer == nullptr);
+    REQUIRE(binding.device_ptr == 0x1234);
+    REQUIRE(binding.bytes == orlrig::kJointStride);
+    REQUIRE(binding.element_count == 1);
+
+    context.clear_computed_joints_device();
+    REQUIRE(context.scene_inputs().resolve(
+        descriptor->port, binding, &error));
+    REQUIRE(binding.buffer != nullptr);
+    REQUIRE(binding.device_ptr == 0);
 }
 
 TEST_CASE("stable scene handles survive packed index changes",

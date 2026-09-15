@@ -253,6 +253,9 @@ void GraphSceneRuntime::register_runtime_adapters() {
     runtime_adapters_.emplace(
         std::string{kEvaluateRuntime},
         &GraphSceneRuntime::execute_lbs_evaluate_adapter);
+    runtime_adapters_.emplace(
+        std::string{orlrig::kComputedJointsNodeDefinition},
+        &GraphSceneRuntime::execute_computed_joints_adapter);
     for (const std::string_view runtime_name : {
              std::string_view{"orlrig.input.joints"},
              std::string_view{"orlrig.input.controllers"},
@@ -397,8 +400,17 @@ bool GraphSceneRuntime::ensure_lbs_graph()
     // useful without requiring users to manually rebuild the standard LBS
     // pipeline before they can inspect or save it.
     auto lbs_graph = orlrig::make_lbs_graph();
-    graph_context_.set_graph(
-        std::move(lbs_graph.module), std::move(lbs_graph.registry));
+    if (graph_context_.has_stage_graphs()) {
+        auto solver_graph = graph_context_.stage_graph(
+            orlgraph::GraphStage::Solver);
+        graph_context_.set_stage_graphs(
+            std::move(solver_graph),
+            std::move(lbs_graph.module),
+            std::move(lbs_graph.registry));
+    } else {
+        graph_context_.set_graph(
+            std::move(lbs_graph.module), std::move(lbs_graph.registry));
+    }
     return true;
 }
 
@@ -511,7 +523,8 @@ bool GraphSceneRuntime::setup(vkkk::Context& context) {
 bool GraphSceneRuntime::dispatch_graph(vkkk::Context& context, bool capture)
 {
     graph_context_.refresh_scene_inputs();
-    const auto validation = graph_context_.validate();
+    const auto validation = graph_context_.validate(
+        orlgraph::GraphStage::Deformer);
     if (!validation.ok()) {
         for (const auto& diagnostic : validation.diagnostics) {
             std::cerr << "Deformer: graph validation: "
@@ -573,14 +586,20 @@ bool GraphSceneRuntime::resolve_scene_input_node(
 
     if (runtime_name == "orlrig.input.joints"
         || runtime_name == "orlrig.input.controllers"
-        || runtime_name == "orlrig.input.locators")
+        || runtime_name == "orlrig.input.locators"
+        || runtime_name
+            == std::string{orlrig::kComputedJointsNodeDefinition})
     {
-        const std::string_view binding =
-            runtime_name == "orlrig.input.joints"
-            ? orlrig::kSceneJointsBinding
-            : runtime_name == "orlrig.input.locators"
-                ? orlrig::kSceneLocatorsBinding
-                : orlrig::kSceneControllersBinding;
+        const bool is_computed_joints =
+            runtime_name
+                == std::string{orlrig::kComputedJointsNodeDefinition};
+        const std::string_view binding = is_computed_joints
+            ? orlrig::kComputedJointsBinding
+            : runtime_name == "orlrig.input.joints"
+                ? orlrig::kSceneJointsBinding
+                : runtime_name == "orlrig.input.locators"
+                    ? orlrig::kSceneLocatorsBinding
+                    : orlrig::kSceneControllersBinding;
         exec::GraphInputBinding resolved;
         std::string error;
         if (!graph_context_.scene_inputs().resolve_binding(
@@ -808,7 +827,21 @@ bool GraphSceneRuntime::prepare_runtime_output_expressions(
         const auto runtime_name = definition->implementation.runtime_name;
         for (const auto& output : definition->outputs) {
             std::string output_expression;
-            if (runtime_name == "orlrig.input.joints"
+            if (runtime_name
+                    == std::string{orlrig::kComputedJointsNodeDefinition}
+                && output.name == "joints")
+            {
+                if (!add_scene_execution_input(
+                        module, orlrig::kComputedJointsBinding,
+                        "computed_joints",
+                        orlgraph::LogicalType::struct_type("Joint"),
+                        orlgraph::Domain::joint(),
+                        orlgraph::Shape::one("joint_count"),
+                        "joints", "world", &output_expression, error))
+                {
+                    return false;
+                }
+            } else if (runtime_name == "orlrig.input.joints"
                 && output.name == "joints")
             {
                 if (!add_scene_execution_input(
@@ -1153,6 +1186,7 @@ bool GraphSceneRuntime::ensure_execution_plan(
     }
 
     execution_plan_ready_ = false;
+    graph_context_.clear_computed_joints_device();
     execution_plan_.clear();
     orl_segments_.clear();
 
@@ -1213,7 +1247,10 @@ bool GraphSceneRuntime::ensure_execution_plan(
             }
             const bool is_scene_input =
                 runtime_name.rfind("orlrig.input.", 0) == 0;
-            if (contains_orl && is_scene_input) {
+            const bool is_computed_joints_source =
+                runtime_name
+                    == std::string{orlrig::kComputedJointsNodeDefinition};
+            if (contains_orl && (is_scene_input || is_computed_joints_source)) {
                 segment_nodes.push_back(node_id);
                 continue;
             }
@@ -1283,6 +1320,31 @@ bool GraphSceneRuntime::execute_orl_segment(
         return false;
     }
 
+    // A solver graph uses the scene joints input as its in-place working
+    // buffer. Keep the solver-owned CUDA allocation available to the
+    // deformer through the implicit computed-joints binding.
+    for (const auto& [id, input] : segment.graph.inputs()) {
+        if (input.binding != orlrig::kSceneJointsBinding) {
+            continue;
+        }
+        const std::string parameter =
+            input.name.empty() ? id.value : input.name;
+        if (execution.backend() == exec::Backend::Cuda) {
+            const auto device = execution.device_buffer_view(parameter);
+            if (!device.has_value()) {
+                std::cerr << "Deformer: computed joints device buffer is "
+                             "unavailable\n";
+                return false;
+            }
+            graph_context_.set_computed_joints_device(
+                device, graph_context_.scene_inputs()
+                    .computed_joints_buffer().count());
+        } else {
+            graph_context_.clear_computed_joints_device();
+        }
+        break;
+    }
+
     std::string error;
     if (!graph_context_.commit_scene_writes(result, true, &error)) {
         std::cerr << "Deformer: graph scene writeback failed: "
@@ -1321,6 +1383,22 @@ bool GraphSceneRuntime::execute_scene_input_adapter(
     (void)capture;
     const auto* definition =
         graph_context_.registry().find(instance.definition);
+    return definition != nullptr
+        && resolve_scene_input_node(*definition, instance);
+}
+
+bool GraphSceneRuntime::execute_computed_joints_adapter(
+    vkkk::Context& context,
+    const orlgraph::NodeInstance& instance,
+    bool capture)
+{
+    (void)context;
+    (void)capture;
+    const auto* definition =
+        graph_context_.registry().find(instance.definition);
+    // The computed-joints node is lowered as a read-only stage input when it
+    // is connected to an ORL segment. If a graph contains only this node,
+    // resolving the binding is the only runtime work required.
     return definition != nullptr
         && resolve_scene_input_node(*definition, instance);
 }

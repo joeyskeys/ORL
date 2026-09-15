@@ -62,7 +62,8 @@ int solver_hd_id_has_chain(Joint joints[], int root, int end, int joint_count) {
     return found;
 }
 
-int solver_hd_id(Joint joints[],
+export int solver_hd_id [[ string stage = "solver" ]]
+    (Joint joints[],
                  Joint history[],
                  int root,
                  int end,

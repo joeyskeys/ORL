@@ -118,6 +118,26 @@ const NodeDefinition* NodeRegistry::find(std::string_view qualified_name) const 
     return nullptr;
 }
 
+bool NodeRegistry::is_available(
+    const StableId& id, GraphStage stage) const
+{
+    const auto* definition = find(id);
+    return definition != nullptr
+        && graph_stage_allowed(definition->allowed_stages, stage);
+}
+
+std::vector<const NodeDefinition*> NodeRegistry::definitions_for(
+    GraphStage stage) const
+{
+    std::vector<const NodeDefinition*> result;
+    for (const auto& [_, definition] : values_) {
+        if (graph_stage_allowed(definition.allowed_stages, stage)) {
+            result.push_back(&definition);
+        }
+    }
+    return result;
+}
+
 const ConversionDefinition* NodeRegistry::find_conversion(
     const StableId& id) const
 {

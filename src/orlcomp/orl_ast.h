@@ -174,10 +174,21 @@ struct StructDefinitionStatement final : Statement {
     std::vector<StructField> fields;
 };
 
+struct FunctionMetadata {
+    std::string type_name;
+    std::string name;
+    LiteralKind value_kind = LiteralKind::String;
+    std::string raw_value;
+    std::int64_t int_value = 0;
+    double float_value = 0.0;
+};
+
 struct FunctionDefinitionStatement final : Statement {
     std::string return_type;
     std::string name;
     std::vector<Parameter> parameters;
+    bool exported = false;
+    std::vector<FunctionMetadata> metadata;
     std::unique_ptr<BlockStatement> body;
 };
 

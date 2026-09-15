@@ -14,6 +14,28 @@
 namespace orlgraph
 {
 
+enum class GraphStage : std::uint8_t {
+    Solver,
+    Deformer,
+};
+
+enum class GraphStageMask : std::uint8_t {
+    None = 0,
+    Solver = 1u << 0u,
+    Deformer = 1u << 1u,
+    All = (1u << 0u) | (1u << 1u),
+};
+
+constexpr GraphStageMask graph_stage_mask(GraphStage stage) {
+    return stage == GraphStage::Solver
+        ? GraphStageMask::Solver : GraphStageMask::Deformer;
+}
+
+constexpr bool graph_stage_allowed(GraphStageMask mask, GraphStage stage) {
+    return (static_cast<std::uint8_t>(mask)
+        & static_cast<std::uint8_t>(graph_stage_mask(stage))) != 0;
+}
+
 enum class PortDirection : std::uint8_t {
     Input,
     Output,
@@ -127,6 +149,8 @@ struct ParameterSpec {
 struct NodeDefinition {
     StableId id;
     std::string qualified_name;
+    GraphStageMask allowed_stages = GraphStageMask::None;
+    std::map<std::string, ConstantValue> metadata;
     Version version;
     ImplementationRef implementation;
     std::vector<Port> inputs;
@@ -172,6 +196,9 @@ public:
         std::string* error = nullptr);
     const NodeDefinition* find(const StableId& id) const;
     const NodeDefinition* find(std::string_view qualified_name) const;
+    bool is_available(const StableId& id, GraphStage stage) const;
+    std::vector<const NodeDefinition*> definitions_for(
+        GraphStage stage) const;
     const ConversionDefinition* find_conversion(const StableId& id) const;
     const ConversionDefinition* find_conversion(
         std::string_view qualified_name) const;

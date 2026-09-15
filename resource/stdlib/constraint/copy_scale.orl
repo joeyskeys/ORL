@@ -6,7 +6,8 @@
 
 use constraint/common;
 
-int constraint_copy_scale(matrix source[],
+export int constraint_copy_scale [[ string stage = "solver" ]]
+    (matrix source[],
                           matrix destination[],
                           int source_index,
                           int destination_index,

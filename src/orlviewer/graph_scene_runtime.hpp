@@ -81,6 +81,10 @@ private:
         vkkk::Context& context,
         const orlgraph::NodeInstance& instance,
         bool capture);
+    bool execute_computed_joints_adapter(
+        vkkk::Context& context,
+        const orlgraph::NodeInstance& instance,
+        bool capture);
     bool execute_lbs_capture_adapter(
         vkkk::Context& context,
         const orlgraph::NodeInstance& instance,

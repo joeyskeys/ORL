@@ -41,7 +41,8 @@ quat solver_full_body_ik_quat_from_to(vector from, vector to) {
     return quat_normalize(q);
 }
 
-int solver_full_body_ik(Joint joints[],
+export int solver_full_body_ik [[ string stage = "solver" ]]
+    (Joint joints[],
                         int effectors[],
                         matrix targets[],
                         int effector_count,
