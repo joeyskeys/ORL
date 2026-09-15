@@ -56,8 +56,9 @@ class ComponentStore {
 public:
     ComponentId create_joint(std::string name,
         Joint joint = make_identity_joint());
-    // A core Controller is only an xform. Viewer handle shapes and display
-    // resources belong to the viewer adapter, not this store.
+    // Controller setup and animation input transforms are authoring data.
+    // Viewer handle shapes and display resources belong to the viewer
+    // adapter, not this store.
     ComponentId create_controller(std::string name,
         Controller controller = Controller{});
     ComponentId create_locator(std::string name,

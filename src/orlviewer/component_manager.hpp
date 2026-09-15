@@ -84,13 +84,15 @@ enum class AttachmentTargetKind {
     Locator,
 };
 
-// Viewer-only controller relationship. The xform is a target-local offset;
-// controllers are resolved to world transforms only for interaction and
-// display, never packed into the ORL runtime graph.
+// Viewer-only controller relationship. The xform is the target-local setup
+// offset; controller animation input is stored on Controller::input_xform.
+// Controllers are resolved to world transforms for interaction, display, and
+// scene-input packing.
 struct ControllerAttachment {
     AttachmentTargetKind target_kind = AttachmentTargetKind::None;
     ComponentId target;
     glm::mat4 xform{1.0f};
+    bool input_drives_target = false;
 };
 
 // Viewer adapter around the standalone rigging store. Runtime rigging data
@@ -154,13 +156,21 @@ public:
     bool attach_controller(ComponentId controller, ComponentId target,
         std::string* error = nullptr);
     bool detach_controller(ComponentId controller);
+    ControllerAttachment* controller_attachment(ComponentId controller);
     const ControllerAttachment* controller_attachment(
         ComponentId controller) const;
     ComponentId attached_controller(ComponentId target) const;
     bool validate_controller_attachments(std::string* error = nullptr) const;
+    // Effective transform used by display and runtime scene inputs.
     glm::mat4 controller_world_xform(ComponentId controller) const;
+    // Animation mode: record input. Runtime evaluation applies it to an
+    // attached target before solver/deformer kernels run.
     bool set_controller_world_xform(ComponentId controller,
         const glm::mat4& world, std::string* error = nullptr);
+    // Rigging mode: update setup placement without changing the target.
+    bool set_controller_setup_world_xform(ComponentId controller,
+        const glm::mat4& world, std::string* error = nullptr);
+    bool apply_controller_inputs(std::string* error = nullptr);
     bool set_locator_world_xform(ComponentId locator,
         const glm::mat4& world);
 

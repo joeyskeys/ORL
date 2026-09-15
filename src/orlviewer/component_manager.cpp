@@ -316,7 +316,11 @@ bool ComponentManager::attach_controller(ComponentId controller,
     controller_attachments[controller.value] = attachment;
     target_controllers[target.value] = controller;
     if (auto* value = this->controller(controller)) {
-        value->xform = attachment.xform;
+        // Keep the current world placement as the setup transform. The
+        // target-local attachment offset must not absorb the control's
+        // display scale as animation input.
+        value->xform = controller_world;
+        value->input_xform = glm::mat4{1.0f};
     }
     return true;
 }
@@ -328,6 +332,7 @@ bool ComponentManager::detach_controller(ComponentId controller) {
     }
     if (auto* value = this->controller(controller)) {
         value->xform = controller_world_xform(controller);
+        value->input_xform = glm::mat4{1.0f};
     }
     const auto target = found->second.target;
     if (const auto target_controller = target_controllers.find(target.value);
@@ -338,6 +343,13 @@ bool ComponentManager::detach_controller(ComponentId controller) {
     }
     controller_attachments.erase(found);
     return true;
+}
+
+ControllerAttachment* ComponentManager::controller_attachment(
+    ComponentId controller)
+{
+    const auto found = controller_attachments.find(controller.value);
+    return found == controller_attachments.end() ? nullptr : &found->second;
 }
 
 const ControllerAttachment* ComponentManager::controller_attachment(
@@ -403,15 +415,7 @@ glm::mat4 ComponentManager::controller_world_xform(ComponentId controller) const
     if (value == nullptr) {
         return glm::mat4{1.0f};
     }
-    const auto* attachment = controller_attachment(controller);
-    if (attachment == nullptr) {
-        return value->xform;
-    }
-    glm::mat4 target_world{1.0f};
-    if (!target_world_xform(attachment->target, target_world)) {
-        return value->xform;
-    }
-    return target_world * attachment->xform;
+    return value->xform * value->input_xform;
 }
 
 bool ComponentManager::set_controller_world_xform(ComponentId controller,
@@ -421,17 +425,61 @@ bool ComponentManager::set_controller_world_xform(ComponentId controller,
     if (value == nullptr) {
         return set_error(error, "Transform target is not a controller");
     }
-    const auto* attachment = controller_attachment(controller);
+    auto* attachment = controller_attachment(controller);
     if (attachment == nullptr) {
-        value->xform = world;
+        value->input_xform = glm::inverse(value->xform) * world;
         return true;
     }
-    const glm::mat4 target_world =
-        world * glm::inverse(attachment->xform);
-    if (!set_target_world_xform(attachment->target, target_world, error)) {
-        return false;
+    // xform is the stable rig setup. Keep input_xform cumulative relative
+    // to that setup instead of replacing it with the per-frame drag delta.
+    const glm::mat4 input = glm::inverse(value->xform) * world;
+    value->input_xform = input;
+    attachment->input_drives_target = true;
+    return true;
+}
+
+bool ComponentManager::set_controller_setup_world_xform(
+    ComponentId controller, const glm::mat4& world, std::string* error)
+{
+    auto* value = this->controller(controller);
+    if (value == nullptr) {
+        return set_error(error, "Transform target is not a controller");
     }
-    value->xform = attachment->xform;
+    auto* attachment = controller_attachment(controller);
+    if (attachment == nullptr) {
+        value->xform = world;
+        value->input_xform = glm::mat4{1.0f};
+        return true;
+    }
+    const glm::mat4 target_setup_world =
+        value->xform * glm::inverse(attachment->xform);
+    attachment->xform = glm::inverse(target_setup_world) * world;
+    value->xform = world;
+    value->input_xform = glm::mat4{1.0f};
+    attachment->input_drives_target = false;
+    return true;
+}
+
+bool ComponentManager::apply_controller_inputs(std::string* error) {
+    for (const auto& [controller_id, attachment] : controller_attachments) {
+        if (!attachment.input_drives_target) {
+            continue;
+        }
+        const auto* controller = this->controller(ComponentId{controller_id});
+        if (controller == nullptr) {
+            return set_error(error,
+                "Controller input source is no longer available");
+        }
+        const glm::mat4 controller_world =
+            controller->xform * controller->input_xform;
+        const glm::mat4 target_world =
+            controller_world * glm::inverse(attachment.xform);
+        if (!set_target_world_xform(
+                attachment.target, target_world, error))
+        {
+            return false;
+        }
+    }
     return true;
 }
 

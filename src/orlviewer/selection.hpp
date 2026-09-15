@@ -259,6 +259,11 @@ public:
         return items.empty() ? nullptr : &items.back();
     }
 
+    void set_controller_input_mode(bool enabled) {
+        controller_input_mode_ = enabled;
+    }
+    bool controller_input_mode() const { return controller_input_mode_; }
+
     std::string selected_mesh_name() const {
         for (const auto& item : items) {
             if (item.kind != SelectionRef::Kind::SceneObject) {
@@ -416,7 +421,9 @@ private:
             };
             attr.write_world = [this, id = ref.component](
                                    const glm::mat4& world) {
-                return components.set_controller_world_xform(id, world);
+                return controller_input_mode_
+                    ? components.set_controller_world_xform(id, world)
+                    : components.set_controller_setup_world_xform(id, world);
             };
             return attr;
         }
@@ -440,6 +447,7 @@ private:
     ComponentManager& components;
     vkkk::Scene& scene;
     std::vector<SelectionRef> items;
+    bool controller_input_mode_ = true;
 };
 
 } // namespace ORL

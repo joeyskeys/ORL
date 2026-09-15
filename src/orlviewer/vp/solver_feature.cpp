@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include "comps/controller.hpp"
@@ -40,6 +41,15 @@ SolverFeature::SolverFeature(ComponentManager& components)
 }
 
 void SolverFeature::on_update(vkkk::Context&, const vkkk::Context::Frame&) {
+    if (!runtime_config.evaluate_orl) {
+        return;
+    }
+    std::string input_error;
+    if (!components.apply_controller_inputs(&input_error)) {
+        std::cerr << "Solver: controller input application failed: "
+                  << input_error << '\n';
+        return;
+    }
     if (components.size(ComponentKind::Constraint) == 0) {
         return;
     }

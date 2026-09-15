@@ -22,6 +22,7 @@
 #if ORL_USE_QT6
 #include "gui/qt_backend.hpp"
 #include "qt/node_graph_editor.hpp"
+#include "qt/property_editor.hpp"
 #else
 #include "gui/glfw_backend.hpp"
 #endif
@@ -38,6 +39,7 @@
 #include "ops/scale_op.hpp"
 #include "ops/select_op.hpp"
 #include "ops/toggle_controller_attachment_op.hpp"
+#include "runtime_config.hpp"
 #include "vp/auto_weight_feature.hpp"
 #include "vp/controller_feature.hpp"
 #include "vp/deformer_feature.hpp"
@@ -173,12 +175,19 @@ int main() {
 #if ORL_USE_QT6
     auto* node_graph_editor = new ORL::NodeGraphEditor();
     node_graph_editor->set_scene_graph_context(&scene_graph);
-    if (window_backend.add_tab(node_graph_editor, "Node Graph") < 0) {
+    if (window_backend.add_dock_panel(node_graph_editor, "Node Graph") < 0) {
         delete node_graph_editor;
         node_graph_editor = nullptr;
     }
 #endif
     ORL::Selection selection(components, scene);
+#if ORL_USE_QT6
+    auto* property_editor = new ORL::PropertyEditor(selection, components);
+    if (window_backend.set_hud_panel(property_editor, "Properties") < 0) {
+        delete property_editor;
+        property_editor = nullptr;
+    }
+#endif
 
     using Viewport = vkkk::vp::Viewport<
         vkkk::vp::GridFeature,
@@ -397,6 +406,13 @@ int main() {
         });
     controls.bind_op("cycle_controller_curve", cycle_controller_curve);
     controls.bind_op("create_ik", create_ik);
+    controls.bind_op("toggle_orl_evaluation", [&](const ORL::InputEvent&) {
+        ORL::runtime_config.evaluate_orl = !ORL::runtime_config.evaluate_orl;
+        selection.set_controller_input_mode(ORL::runtime_config.evaluate_orl);
+        std::cout << "ORL evaluation: "
+                  << (ORL::runtime_config.evaluate_orl ? "enabled" : "disabled")
+                  << '\n';
+    });
     controls.bind_op("select", select_op);
     controls.bind_op("move", move_op);
     controls.bind_op("rotate", rotate_op);
@@ -442,6 +458,9 @@ int main() {
         scene_graph.refresh_scene_inputs();
         if (node_graph_editor != nullptr) {
             node_graph_editor->refresh_scene_inputs();
+        }
+        if (property_editor != nullptr) {
+            property_editor->refresh();
         }
 #endif
         vkkk::Context::Frame frame{};

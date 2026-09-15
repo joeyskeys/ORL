@@ -362,6 +362,10 @@ TEST_CASE("controller attachments preserve target-local transforms",
     REQUIRE(attachment != nullptr);
     REQUIRE(attachment->target_kind == ORL::AttachmentTargetKind::Joint);
     REQUIRE(attachment->xform[3].x == Catch::Approx(2.0f));
+    REQUIRE(components.controller(controller_id)->xform[3].x
+        == Catch::Approx(4.0f));
+    REQUIRE(components.controller(controller_id)->input_xform[3].x
+        == Catch::Approx(0.0f));
     REQUIRE(components.controller_world_xform(controller_id)[3].x
         == Catch::Approx(4.0f));
 
@@ -370,9 +374,14 @@ TEST_CASE("controller attachments preserve target-local transforms",
     REQUIRE(components.set_controller_world_xform(
         controller_id, desired, &error));
     REQUIRE(components.joint(joint_id)->translation[0]
-        == Catch::Approx(3.0));
+        == Catch::Approx(2.0));
     REQUIRE(components.controller(controller_id)->xform[3].x
-        == Catch::Approx(2.0f));
+        == Catch::Approx(4.0f));
+    REQUIRE(components.controller(controller_id)->input_xform[3].x
+        == Catch::Approx(1.0f));
+    REQUIRE(components.apply_controller_inputs(&error));
+    REQUIRE(components.joint(joint_id)->translation[0]
+        == Catch::Approx(3.0));
     REQUIRE(components.controller_world_xform(controller_id)[3].x
         == Catch::Approx(5.0f));
 
@@ -416,6 +425,45 @@ TEST_CASE("attachment toggle accepts controller plus joint context",
     REQUIRE(components.controller_attachment(controller) != nullptr);
     toggle.eval(event);
     REQUIRE(components.controller_attachment(controller) == nullptr);
+}
+
+TEST_CASE("controller setup scale is not applied to attachment target",
+    "[scene-graph][attachment][controller-input]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    const auto joint = components.create_joint("joint");
+    orlrig::Controller controller = orlrig::make_controller(
+        glm::vec3{4.0f, 0.0f, 0.0f});
+    controller.xform[0][0] = 3.0f;
+    controller.xform[1][1] = 3.0f;
+    controller.xform[2][2] = 3.0f;
+    const auto controller_id = components.create_controller(
+        "controller", controller);
+
+    std::string error;
+    REQUIRE(components.attach_controller(controller_id, joint, &error));
+    REQUIRE(components.joint(joint)->scale[0] == Catch::Approx(1.0));
+    REQUIRE(components.joint(joint)->scale[1] == Catch::Approx(1.0));
+    REQUIRE(components.joint(joint)->scale[2] == Catch::Approx(1.0));
+    REQUIRE(components.controller(controller_id)->xform[0][0]
+        == Catch::Approx(3.0f));
+    REQUIRE(components.controller(controller_id)->input_xform[0][0]
+        == Catch::Approx(1.0f));
+
+    ORL::Selection selection(components, scene);
+    selection.set(ORL::SelectionRef::controller(controller_id));
+    selection.set_controller_input_mode(false);
+    glm::mat4 setup_world =
+        components.controller_world_xform(controller_id);
+    setup_world[0][0] = 5.0f;
+    setup_world[1][1] = 5.0f;
+    setup_world[2][2] = 5.0f;
+    auto setup_attr = selection.dest();
+    REQUIRE(setup_attr.set_world_matrix(setup_world));
+    REQUIRE(components.joint(joint)->scale[0] == Catch::Approx(1.0));
+    REQUIRE(components.controller(controller_id)->input_xform[0][0]
+        == Catch::Approx(1.0f));
 }
 
 TEST_CASE("C toggles controller attachments from joint or locator selection",
@@ -489,6 +537,11 @@ TEST_CASE("control map preserves contextual attachment and curve controls",
     REQUIRE(shift_c != controls.bindings().end());
     REQUIRE(std::find(shift_c->ops.begin(), shift_c->ops.end(),
         "cycle_controller_curve") != shift_c->ops.end());
+
+    const auto tab = find_key(vkkk::Key::Tab, 0);
+    REQUIRE(tab != controls.bindings().end());
+    REQUIRE(std::find(tab->ops.begin(), tab->ops.end(),
+        "toggle_orl_evaluation") != tab->ops.end());
 }
 
 TEST_CASE("graph runtime executes ORL constraints and commits joint output",

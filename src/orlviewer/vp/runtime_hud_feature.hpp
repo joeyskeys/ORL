@@ -27,7 +27,9 @@ public:
     void on_attach(vkkk::Context& context, vk::Extent2D) {
 #if ORL_USE_QT6
         if (auto* qt = dynamic_cast<vkkk::QtBackend*>(context.window())) {
-            qt->set_status(std::string("Device: ") + compute_device_label());
+            qt->set_status(
+                std::string("Device: ") + compute_device_label()
+                + " | ORL evaluation: " + orl_evaluation_label());
         }
 #else
         hud.init(&context);
@@ -37,7 +39,9 @@ public:
     void on_update(vkkk::Context& context, const vkkk::Context::Frame&) {
 #if ORL_USE_QT6
         if (auto* qt = dynamic_cast<vkkk::QtBackend*>(context.window())) {
-            qt->set_status(std::string("Device: ") + compute_device_label());
+            qt->set_status(
+                std::string("Device: ") + compute_device_label()
+                + " | ORL evaluation: " + orl_evaluation_label());
         }
 #else
         hud.begin_frame();
@@ -46,7 +50,8 @@ public:
         ImGui::Begin("Compute device", nullptr,
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize
                 | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
-        ImGui::Text("Device: %s", compute_device_label());
+        ImGui::Text("Device: %s | ORL evaluation: %s",
+            compute_device_label(), orl_evaluation_label());
         ImGui::End();
 #endif
     }

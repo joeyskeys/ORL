@@ -315,6 +315,9 @@ void GraphSceneRuntime::unbind() {
 }
 
 void GraphSceneRuntime::on_update(vkkk::Context& context) {
+    if (!runtime_config.evaluate_orl) {
+        return;
+    }
     if (graph_context_.take_operation(kBindOperation)) {
         auto* deformer = graph_context_.components().deformer(deformer_id);
         if (!setup(context)
@@ -1528,6 +1531,9 @@ bool GraphSceneRuntime::execute_lbs_evaluate_adapter(
 
 bool GraphSceneRuntime::evaluate(vkkk::Context& context)
 {
+    if (!runtime_config.evaluate_orl) {
+        return true;
+    }
     return dispatch_graph(context, false);
 }
 

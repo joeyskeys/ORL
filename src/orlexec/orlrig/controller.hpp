@@ -11,11 +11,13 @@
 namespace orlrig
 {
 
-// Authoring-only controller payload. The viewer uses xform as the free
-// controller world transform when unattached and as the target-local
-// attachment transform when attached. New ORL graphs do not consume it.
+// Authoring-only controller payload. xform is the setup transform used to
+// place the control shape in the rig. input_xform records the user animation
+// input separately, so setup scale/orientation is never mistaken for a pose.
+// New ORL graphs do not consume this payload directly.
 struct Controller {
     glm::mat4 xform{1.0f};
+    glm::mat4 input_xform{1.0f};
 };
 
 inline glm::vec3 controller_origin(const Controller& controller) {
@@ -42,7 +44,8 @@ inline Controller make_controller(const glm::vec3& origin) {
 }
 
 inline glm::vec3 controller_world(const Controller& controller, const glm::vec3& local) {
-    return glm::vec3{controller.xform * glm::vec4{local, 1.0f}};
+    return glm::vec3{controller.xform * controller.input_xform
+        * glm::vec4{local, 1.0f}};
 }
 
 } // namespace orlrig
