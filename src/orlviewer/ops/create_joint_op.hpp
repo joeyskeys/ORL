@@ -19,16 +19,22 @@ class Selection;
 // previous joint created in that session.
 class CreateJointOp : public VpOperation<CreateJointOp> {
 public:
+    static constexpr OpMode kMode = OpMode::Modal;
+
     CreateJointOp(ComponentManager& components, vkkk::Camera& camera, const glm::vec3& pivot,
         vkkk::WindowBackend* window, Selection& selection);
 
+    void on_enter() { begin_session(); }
+    void on_confirm();
     void on_eval(const InputEvent& event);
     bool active() const { return active_; }
     bool is_active() const { return active_; }
     void on_cancel();
 
 private:
-    void enter();
+    // Keep this distinct from VpOperation::enter(), which ControlMap
+    // discovers when registering the modal operation.
+    void begin_session();
     void exit();
     void place(double cursor_x, double cursor_y);
     bool hit_pivot_plane(double cursor_x, double cursor_y, glm::vec3& world) const;

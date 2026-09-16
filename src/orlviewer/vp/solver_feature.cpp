@@ -34,14 +34,28 @@ void write_rotation(orlviewer::Joint& destination,
 
 } // namespace
 
-SolverFeature::SolverFeature(ComponentManager& components)
+SolverFeature::SolverFeature(SceneGraphContext& graph_context,
+    ComponentManager& components, const Selection& selection)
     : components(components)
     , runner(backend_from_config())
+    , graph_runtime(
+        graph_context, selection, {}, {},
+        orlgraph::GraphStage::Solver)
 {
+    graph_context.ensure_stage_graphs();
 }
 
-void SolverFeature::on_update(vkkk::Context&, const vkkk::Context::Frame&) {
+void SolverFeature::on_update(
+    vkkk::Context& context, const vkkk::Context::Frame&)
+{
     if (!runtime_config.evaluate_orl) {
+        return;
+    }
+    // A populated solver-stage graph is authoritative. Keep the component
+    // constraint path as a compatibility fallback for scenes authored before
+    // staged graphs existed.
+    if (graph_runtime.has_active_graph_content()) {
+        graph_runtime.on_update(context);
         return;
     }
     std::string input_error;

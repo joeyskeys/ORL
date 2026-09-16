@@ -2,6 +2,7 @@
 
 #if ORL_USE_QT6
 
+#include <QAbstractItemView>
 #include <QComboBox>
 #include <QCursor>
 #include <QFileDialog>
@@ -18,6 +19,7 @@
 #include <QPaintEvent>
 #include <QSignalBlocker>
 #include <QShortcut>
+#include <QStringList>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -172,6 +174,13 @@ void NodeGraphEditor::refresh_scene_inputs()
     }
     refresh_find_controls();
     position_find_controls();
+}
+
+void NodeGraphEditor::notify_graph_changed()
+{
+    if (scene_graph_context_ != nullptr) {
+        scene_graph_context_->touch_graph();
+    }
 }
 
 void NodeGraphEditor::rebuild_view()
@@ -426,6 +435,7 @@ void NodeGraphEditor::create_node(const orlgraph::StableId& definition_id,
         return;
     }
 
+    notify_graph_changed();
     rebuild_view();
     for (int index = 0; index < nodes_.size(); ++index) {
         if (nodes_[index].id != QString::fromStdString(created_id.value)) {
@@ -477,6 +487,7 @@ void NodeGraphEditor::create_graph_input(
         return;
     }
 
+    notify_graph_changed();
     rebuild_view();
     for (int index = 0; index < nodes_.size(); ++index) {
         if (nodes_[index].kind != Node::Kind::GraphInput
@@ -531,13 +542,24 @@ void NodeGraphEditor::rebuild_find_controls()
                     return;
                 }
                 if (text.isEmpty()) {
-                    iterator->second.parameter_values.erase("name");
+                    if (iterator->second.parameter_values.erase("name") != 0) {
+                        notify_graph_changed();
+                    }
                     return;
                 }
                 orlgraph::ConstantValue value;
                 value.type = orlgraph::LogicalType::string();
                 value.value = text.toStdString();
+                const auto parameter =
+                    iterator->second.parameter_values.find("name");
+                const bool changed = parameter
+                    == iterator->second.parameter_values.end()
+                    || parameter->second.type != value.type
+                    || parameter->second.value != value.value;
                 iterator->second.parameter_values["name"] = std::move(value);
+                if (changed) {
+                    notify_graph_changed();
+                }
             });
         find_controls_.push_back(FindControl{node.id, combo});
     }
@@ -585,38 +607,62 @@ void NodeGraphEditor::refresh_find_controls()
 
         {
             const QSignalBlocker blocker{control.combo};
-            control.combo->clear();
+            if (selected.empty() && !names.empty()) {
+                selected = names.front();
+            }
+            QStringList desired_items;
+            desired_items.reserve(static_cast<qsizetype>(names.size()));
             for (const auto& name : names) {
-                control.combo->addItem(QString::fromStdString(name));
+                desired_items.push_back(QString::fromStdString(name));
             }
+            const QString selected_text = QString::fromStdString(selected);
             if (!selected.empty()
-                && control.combo->findText(
-                    QString::fromStdString(selected)) < 0)
+                && !desired_items.contains(selected_text))
             {
-                control.combo->addItem(
-                    QString::fromStdString(selected));
+                desired_items.push_back(selected_text);
             }
-            if (selected.empty() && control.combo->count() > 0) {
-                selected = control.combo->itemText(0).toStdString();
+
+            bool items_match = control.combo->count()
+                == desired_items.size();
+            for (int index = 0; items_match
+                && index < control.combo->count(); ++index)
+            {
+                items_match = control.combo->itemText(index)
+                    == desired_items.at(index);
             }
-            if (!selected.empty()) {
-                control.combo->setCurrentText(
-                    QString::fromStdString(selected));
-            } else {
-                control.combo->setCurrentIndex(-1);
+            const bool popup_visible = control.combo->view() != nullptr
+                && control.combo->view()->isVisible();
+            if (!popup_visible || items_match) {
+                if (!items_match) {
+                    control.combo->clear();
+                    control.combo->addItems(desired_items);
+                }
+                const int selected_index = selected.empty()
+                    ? -1 : control.combo->findText(selected_text);
+                if (control.combo->currentIndex() != selected_index) {
+                    control.combo->setCurrentIndex(selected_index);
+                }
             }
             control.combo->setEnabled(!names.empty());
         }
 
         auto& node = active_graph().mutable_nodes().find(
             orlgraph::StableId{control.node_id.toStdString()})->second;
+        bool changed = false;
         if (selected.empty()) {
-            node.parameter_values.erase("name");
+            changed = node.parameter_values.erase("name") != 0;
         } else {
             orlgraph::ConstantValue value;
             value.type = orlgraph::LogicalType::string();
             value.value = selected;
+            const auto parameter = node.parameter_values.find("name");
+            changed = parameter == node.parameter_values.end()
+                || parameter->second.type != value.type
+                || parameter->second.value != value.value;
             node.parameter_values["name"] = std::move(value);
+        }
+        if (changed) {
+            notify_graph_changed();
         }
     }
 }
@@ -832,6 +878,7 @@ bool NodeGraphEditor::add_connection(const Socket& first, const Socket& second)
         }
         return false;
     }
+    notify_graph_changed();
     rebuild_view();
     return true;
 }
@@ -1179,6 +1226,7 @@ void NodeGraphEditor::keyPressEvent(QKeyEvent* event)
                 std::cerr << "Node graph: failed to delete node: "
                           << error << '\n';
             } else {
+                notify_graph_changed();
                 rebuild_view();
             }
         }

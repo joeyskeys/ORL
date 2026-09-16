@@ -625,13 +625,13 @@ RunnerStatus SolverRunner::evaluate_two_bone(exec::OrlBuffer& joint_buffer,
     }
 
     const auto joint_count = static_cast<std::int64_t>(joint_buffer.count());
-    if (!execution->bind_buffer("joints", joint_buffer)
+    if (!execution->set_solver_context(joint_count, 0)
+        || !execution->bind_buffer("joints", joint_buffer)
         || !execution->bind_int("root", root)
         || !execution->bind_int("mid", mid)
         || !execution->bind_int("end", end)
         || !execution->bind_buffer("target", target_xform)
-        || !execution->bind_buffer("pole", pole_xform)
-        || !execution->bind_int("joint_count", joint_count))
+        || !execution->bind_buffer("pole", pole_xform))
     {
         return bind_error(*execution, "solver binding");
     }

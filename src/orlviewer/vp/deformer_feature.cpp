@@ -8,7 +8,8 @@ namespace ORL
 DeformerFeature::DeformerFeature(SceneGraphContext& graph_context,
     ComponentId deformer_id, ComponentId weight_id,
     const Selection& selection)
-    : runtime(graph_context, selection, deformer_id, weight_id)
+    : runtime(graph_context, selection, deformer_id, weight_id,
+        orlgraph::GraphStage::Deformer)
 {
 }
 

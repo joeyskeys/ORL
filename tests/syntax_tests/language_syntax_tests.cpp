@@ -254,8 +254,8 @@ TEST_CASE("syntax includes stdlib two-bone IK solver", "[orl][syntax][stdlib][so
     const std::string src =
         "use locator;\n"
         "use solver/ik_two_bone;\n"
-        "int solve(Joint joints[], int root, int mid, int end, Locator target[], Locator pole[], int jcount) {\n"
-        "    return solver_ik_two_bone(joints, root, mid, end, target, pole, jcount);\n"
+        "int solve(Joint joints[], int root, int mid, int end, Locator target[], Locator pole[]) {\n"
+        "    return solver_ik_two_bone(joints, root, mid, end, target, pole);\n"
         "}\n";
 
     RequireParses(src);
@@ -274,8 +274,8 @@ TEST_CASE("syntax includes locator and authoring controller values",
 TEST_CASE("syntax includes stdlib FK solver", "[orl][syntax][stdlib][solver]") {
     const std::string src =
         "use solver/fk;\n"
-        "int solve(Joint joints[], matrix world[], int joint_count) {\n"
-        "    return solver_fk(joints, world, joint_count);\n"
+        "int solve(Joint joints[], matrix world[]) {\n"
+        "    return solver_fk(joints, world);\n"
         "}\n";
 
     RequireParses(src);
@@ -286,14 +286,14 @@ TEST_CASE("syntax includes stdlib advanced IK solvers", "[orl][syntax][stdlib][s
         "use solver/hd_id;\n"
         "use solver/spline_ik;\n"
         "use solver/full_body_ik;\n"
-        "int solve_hd(Joint joints[], Joint history[], int root, int end, matrix target[], int jcount, int iterations) {\n"
-        "    return solver_hd_id(joints, history, root, end, target, jcount, iterations);\n"
+        "int solve_hd(Joint joints[], Joint history[], int root, int end, matrix target[], int iterations) {\n"
+        "    return solver_hd_id(joints, history, root, end, target, iterations);\n"
         "}\n"
-        "int solve_spline(Joint joints[], int chain[], point spline[], int chain_count, int point_count, int jcount) {\n"
-        "    return solver_spline_ik(joints, chain, spline, chain_count, point_count, jcount);\n"
+        "int solve_spline(Joint joints[], int chain[], point spline[], int chain_count, int point_count) {\n"
+        "    return solver_spline_ik(joints, chain, spline, chain_count, point_count);\n"
         "}\n"
-        "int solve_body(Joint joints[], int effectors[], matrix targets[], int effector_count, int jcount, int iterations) {\n"
-        "    return solver_full_body_ik(joints, effectors, targets, effector_count, jcount, iterations);\n"
+        "int solve_body(Joint joints[], int effectors[], matrix targets[], int effector_count, int iterations) {\n"
+        "    return solver_full_body_ik(joints, effectors, targets, effector_count, iterations);\n"
         "}\n";
 
     RequireParses(src);

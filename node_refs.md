@@ -743,6 +743,10 @@ Solver procedures mutate the supplied `Joint` buffer. They are generally
 stateful or effectful from a graph perspective and should not be optimized as
 pure arithmetic nodes.
 
+All solver procedures can read the implicit `solver_context` global. Its
+`joint_count` and `controller_count` fields are supplied by the runtime and
+are not graph-node sockets.
+
 ### 6.1 `solver_fk`
 
 Source: `resource/stdlib/solver/fk.orl`
@@ -752,8 +756,7 @@ Signature:
 ```orl
 int solver_fk(
     Joint joints[],
-    matrix world[],
-    int joint_count
+    matrix world[]
 )
 ```
 
@@ -762,7 +765,7 @@ Behavior:
 - reads local joint transforms and parent indices;
 - computes one world matrix per joint;
 - writes `world[index]`;
-- returns `joint_count`.
+- returns the current `solver_context.joint_count`.
 
 The local joint buffer is not rewritten. `solver_fk_world_matrix` is the
 per-joint helper and can be used when only one world matrix is needed.
@@ -786,8 +789,7 @@ int solver_ik_two_bone(
     int mid,
     int end,
     matrix target[],
-    matrix pole[],
-    int joint_count
+    matrix pole[]
 )
 ```
 
@@ -797,7 +799,7 @@ Inputs:
 - `root`, `mid`, `end`: indices of a strict three-joint chain;
 - `target[]`: one-element target transform buffer;
 - `pole[]`: one-element pole transform buffer;
-- `joint_count`: joint extent.
+- `solver_context.joint_count`: implicit joint extent.
 
 Behavior:
 
@@ -827,7 +829,6 @@ int solver_hd_id(
     int root,
     int end,
     matrix target[],
-    int joint_count,
     int iterations
 )
 ```
@@ -862,8 +863,7 @@ int solver_spline_ik(
     int chain[],
     point spline[],
     int chain_count,
-    int point_count,
-    int joint_count
+    int point_count
 )
 ```
 
@@ -871,7 +871,8 @@ Inputs:
 
 - `chain[]`: joint indices in root-to-end order;
 - `spline[]`: world-space Catmull-Rom control points;
-- `chain_count`, `point_count`, `joint_count`: extents.
+- `chain_count` and `point_count`: explicit buffer extents;
+  `solver_context.joint_count` is the implicit joint extent.
 
 Behavior:
 
@@ -899,7 +900,6 @@ int solver_full_body_ik(
     int effectors[],
     matrix targets[],
     int effector_count,
-    int joint_count,
     int iterations
 )
 ```

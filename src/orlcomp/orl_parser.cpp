@@ -148,6 +148,10 @@ bool Parser::ParseStructDefinition() {
         AddError(name, "Duplicate struct definition: " + name.lexeme);
         return false;
     }
+    if (name.lexeme == "SolverContext") {
+        AddError(name, "The type name 'SolverContext' is reserved");
+        return false;
+    }
     if (!Expect(TokenKind::LBrace, "Expected '{' after struct name")) {
         return false;
     }
@@ -195,6 +199,10 @@ bool Parser::ParseFunctionDefinition(bool exported) {
     const Token name = Advance();
     if (name.kind != TokenKind::Identifier) {
         AddError(name, "Expected function name");
+        return false;
+    }
+    if (name.lexeme == "solver_context") {
+        AddError(name, "The name 'solver_context' is reserved");
         return false;
     }
     std::vector<FunctionMetadata> metadata;
@@ -958,6 +966,9 @@ bool Parser::ParsePrimary() {
         if (token.kind == TokenKind::Identifier || IsTypeToken(token.kind)) {
             auto identifier = std::make_unique<IdentifierExpression>();
             identifier->name = token.lexeme;
+            if (token.lexeme == "solver_context" && program_ != nullptr) {
+                program_->uses_solver_context = true;
+            }
             last_expression_ = std::move(identifier);
             return true;
         }

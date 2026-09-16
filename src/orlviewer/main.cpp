@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <string_view>
 #include <utility>
 
 #include <glm/geometric.hpp>
@@ -220,7 +221,8 @@ int main() {
             auto_weight->set_csr(*csr);
         }
     }
-    viewport.add_feature<ORL::SolverFeature>(components);
+    viewport.add_feature<ORL::SolverFeature>(
+        scene_graph, components, selection);
     const auto deformer_handle = viewport.add_feature<ORL::DeformerFeature>(
         scene_graph, deformer_id, weight_id, selection);
     viewport.add_feature<ORL::JointFeature>(
@@ -242,7 +244,8 @@ int main() {
     ORL::LoadModelOp load_model(scene, context, &window_backend, world_frame);
     ORL::ClearSceneOp clear_scene(scene, context, components, selection, weight_id, deformer_id);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, &window_backend, selection);
-    ORL::CreateLocatorOp create_locator(components, scene, selection);
+    ORL::CreateLocatorOp create_locator(
+        components, navigator, &window_backend, selection);
     ORL::ToggleControllerAttachmentOp toggle_controller_attachment(
         components, selection);
     ORL::CycleControllerCurveOp cycle_controller_curve(components, selection);
@@ -272,6 +275,7 @@ int main() {
         clear_scene.set_auto_weight(*auto_weight);
     }
     clear_scene.set_create_joint(create_joint);
+    clear_scene.set_create_locator(create_locator);
     clear_scene.set_move(move_op);
     clear_scene.set_rotate(rotate_op);
     clear_scene.set_scale(scale_op);
@@ -288,6 +292,31 @@ int main() {
         }
     });
     ORL::ControlMap controls;
+    std::size_t edit_scope_depth = 0;
+    bool edit_scope_was_enabled = false;
+    controls.set_operation_scope_handler(
+        [&](std::string_view, bool entering) {
+            if (entering) {
+                if (edit_scope_depth++ == 0) {
+                    edit_scope_was_enabled =
+                        ORL::runtime_config.evaluate_orl;
+                    if (edit_scope_was_enabled) {
+                        // Keep controller editing in animation mode while
+                        // only the kernel pass is paused.
+                        ORL::runtime_config.evaluate_orl = false;
+                    }
+                }
+                return;
+            }
+            if (edit_scope_depth == 0) {
+                return;
+            }
+            if (--edit_scope_depth == 0 && edit_scope_was_enabled) {
+                ORL::runtime_config.evaluate_orl = true;
+                selection.set_controller_input_mode(true);
+                scene_graph.request_evaluation();
+            }
+        });
 #if ORL_USE_QT6
     controls.bind_op_variant("graph_stage_solver",
         [node_graph_editor](const ORL::InputEvent& event) {
@@ -342,10 +371,10 @@ int main() {
     controls.bind_op("camera_zoom", [&](const ORL::InputEvent& event) {
         navigator.zoom(static_cast<float>(event.scroll_y));
     });
-    controls.bind_op("load_model", load_model);
-    controls.bind_op("clear_scene", clear_scene);
-    controls.bind_op("create_joint", create_joint);
-    controls.bind_op("create_locator", create_locator);
+    controls.bind_edit_op("load_model", load_model);
+    controls.bind_edit_op("clear_scene", clear_scene);
+    controls.bind_edit_op("create_joint", create_joint);
+    controls.bind_edit_op("create_locator", create_locator);
     const auto has_target_for_controller_toggle =
         [&selection](const ORL::InputEvent& event) {
             if (event.key != vkkk::Key::C
@@ -394,35 +423,38 @@ int main() {
             }
             return has_target;
         };
-    controls.bind_op_variant("toggle_controller_attachment",
+    controls.bind_edit_op_variant("toggle_controller_attachment",
         has_target_for_controller_toggle,
         [&](const ORL::InputEvent& event) {
             toggle_controller_attachment.eval(event);
         });
-    controls.bind_op_variant("toggle_controller_attachment",
+    controls.bind_edit_op_variant("toggle_controller_attachment",
         has_controller_and_target,
         [&](const ORL::InputEvent& event) {
             toggle_controller_attachment.eval(event);
         });
-    controls.bind_op("cycle_controller_curve", cycle_controller_curve);
-    controls.bind_op("create_ik", create_ik);
+    controls.bind_edit_op("cycle_controller_curve", cycle_controller_curve);
+    controls.bind_edit_op("create_ik", create_ik);
     controls.bind_op("toggle_orl_evaluation", [&](const ORL::InputEvent&) {
         ORL::runtime_config.evaluate_orl = !ORL::runtime_config.evaluate_orl;
         selection.set_controller_input_mode(ORL::runtime_config.evaluate_orl);
+        if (ORL::runtime_config.evaluate_orl) {
+            scene_graph.request_evaluation();
+        }
         std::cout << "ORL evaluation: "
                   << (ORL::runtime_config.evaluate_orl ? "enabled" : "disabled")
                   << '\n';
     });
     controls.bind_op("select", select_op);
-    controls.bind_op("move", move_op);
-    controls.bind_op("rotate", rotate_op);
-    controls.bind_op("scale", scale_op);
+    controls.bind_edit_op("move", move_op);
+    controls.bind_edit_op("rotate", rotate_op);
+    controls.bind_edit_op("scale", scale_op);
     controls.bind_op("camera_switch", camera_switch);
     const auto has_mesh_and_joint_selection =
         [&selection](const ORL::InputEvent&) {
             return selection.valid_for_bind();
         };
-    controls.bind_op_variant("auto_weight",
+    controls.bind_edit_op_variant("auto_weight",
         has_mesh_and_joint_selection,
         [&](const ORL::InputEvent&) {
             if (auto* auto_weight = viewport.find_feature(auto_weight_handle)) {
@@ -434,7 +466,7 @@ int main() {
             auto_weight->cycle_algorithm();
         }
     });
-    controls.bind_op_variant("setup_deformer",
+    controls.bind_edit_op_variant("setup_deformer",
         has_mesh_and_joint_selection,
         [&](const ORL::InputEvent&) {
             scene_graph.request_operation("bind");

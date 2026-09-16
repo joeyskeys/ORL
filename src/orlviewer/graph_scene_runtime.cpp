@@ -236,14 +236,34 @@ std::string runtime_identifier(std::string_view value) {
 
 GraphSceneRuntime::GraphSceneRuntime(SceneGraphContext& graph_context,
     const Selection& selection, ComponentId deformer_id,
-    ComponentId weight_id)
+    ComponentId weight_id, std::optional<orlgraph::GraphStage> stage)
     : graph_context_(graph_context)
     , selection_(selection)
     , deformer_id(deformer_id)
     , weight_id(weight_id)
+    , stage_(stage)
     , runner_(backend_from_config())
 {
     register_runtime_adapters();
+}
+
+orlgraph::GraphModule& GraphSceneRuntime::active_graph() {
+    return stage_.has_value()
+        ? graph_context_.stage_graph(*stage_)
+        : graph_context_.graph();
+}
+
+const orlgraph::GraphModule& GraphSceneRuntime::active_graph() const {
+    return stage_.has_value()
+        ? graph_context_.stage_graph(*stage_)
+        : graph_context_.graph();
+}
+
+bool GraphSceneRuntime::has_active_graph_content() const {
+    const auto& graph = active_graph();
+    return !graph.nodes().empty()
+        || !graph.inputs().empty()
+        || !graph.outputs().empty();
 }
 
 void GraphSceneRuntime::register_runtime_adapters() {
@@ -318,9 +338,65 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
     if (!runtime_config.evaluate_orl) {
         return;
     }
+
+    const bool graph_invalidated =
+        observed_graph_edit_revision_
+            != graph_context_.graph_edit_revision()
+        || observed_evaluation_revision_
+            != graph_context_.evaluation_revision();
+    if (graph_invalidated) {
+        observed_graph_edit_revision_ =
+            graph_context_.graph_edit_revision();
+        observed_evaluation_revision_ =
+            graph_context_.evaluation_revision();
+        execution_plan_ready_ = false;
+        execution_plan_.clear();
+        orl_segments_.clear();
+        graph_active_ = true;
+    }
+
+    const bool solver_stage = stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver;
+    if (solver_stage) {
+        // The solver owns the producer allocation for the implicit
+        // computed-joints handoff. Clear the previous frame before deciding
+        // whether this frame produces a new device view.
+        graph_context_.clear_computed_joints_device();
+        const auto& graph = active_graph();
+        if (graph.nodes().empty()
+            && graph.inputs().empty()
+            && graph.outputs().empty())
+        {
+            graph_active_ = false;
+            return;
+        }
+        std::string input_error;
+        if (!graph_context_.components().apply_controller_inputs(
+                &input_error))
+        {
+            std::cerr << "Solver: controller input application failed: "
+                      << input_error << '\n';
+            graph_active_ = false;
+            return;
+        }
+        if (graph_active_ && !dispatch_graph(context, false)) {
+            graph_active_ = false;
+        }
+        return;
+    }
+
     if (graph_context_.take_operation(kBindOperation)) {
         auto* deformer = graph_context_.components().deformer(deformer_id);
-        if (!setup(context)
+        OrlEvaluationPause pause;
+        const bool setup_ok = setup(context);
+        pause.resume();
+        if (setup_ok) {
+            observed_graph_edit_revision_ =
+                graph_context_.graph_edit_revision();
+            observed_evaluation_revision_ =
+                graph_context_.evaluation_revision();
+        }
+        if (!setup_ok
             || !dispatch_graph(context, true))
         {
             if (deformer != nullptr) {
@@ -331,6 +407,32 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
             graph_active_ = true;
         }
         return;
+    }
+
+    if (graph_invalidated && has_lbs_nodes()) {
+        auto* deformer = graph_context_.components().deformer(deformer_id);
+        if (deformer == nullptr || !deformer->bound) {
+            OrlEvaluationPause pause;
+            const bool setup_ok = setup(context);
+            pause.resume();
+            if (setup_ok) {
+                observed_graph_edit_revision_ =
+                    graph_context_.graph_edit_revision();
+                observed_evaluation_revision_ =
+                    graph_context_.evaluation_revision();
+            }
+            if (!setup_ok
+                || !dispatch_graph(context, true))
+            {
+                if (deformer != nullptr) {
+                    deformer->bound = false;
+                }
+                graph_active_ = false;
+            } else {
+                graph_active_ = true;
+            }
+            return;
+        }
     }
 
     const auto* deformer = graph_context_.components().deformer(deformer_id);
@@ -380,7 +482,7 @@ bool GraphSceneRuntime::prepare_lbs_inputs(std::string* error)
         return false;
     }
 
-    for (const auto& [_, input] : graph_context_.graph().inputs()) {
+    for (const auto& [_, input] : active_graph().inputs()) {
         exec::GraphInputBinding binding;
         if (!graph_context_.resolve_graph_input(input, binding, error)) {
             return false;
@@ -391,7 +493,11 @@ bool GraphSceneRuntime::prepare_lbs_inputs(std::string* error)
 
 bool GraphSceneRuntime::ensure_lbs_graph()
 {
-    const auto& graph = graph_context_.graph();
+    if (stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver) {
+        return true;
+    }
+    const auto& graph = active_graph();
     if (!graph.nodes().empty()
         || !graph.inputs().empty()
         || !graph.outputs().empty())
@@ -419,7 +525,7 @@ bool GraphSceneRuntime::ensure_lbs_graph()
 
 bool GraphSceneRuntime::has_lbs_nodes() const
 {
-    for (const auto& [_, instance] : graph_context_.graph().nodes()) {
+    for (const auto& [_, instance] : active_graph().nodes()) {
         const auto* definition =
             graph_context_.registry().find(instance.definition);
         if (definition == nullptr) {
@@ -437,7 +543,7 @@ bool GraphSceneRuntime::has_lbs_nodes() const
 
 bool GraphSceneRuntime::has_orl_nodes() const
 {
-    for (const auto& [_, instance] : graph_context_.graph().nodes()) {
+    for (const auto& [_, instance] : active_graph().nodes()) {
         const auto* definition =
             graph_context_.registry().find(instance.definition);
         if (definition != nullptr
@@ -526,22 +632,26 @@ bool GraphSceneRuntime::setup(vkkk::Context& context) {
 bool GraphSceneRuntime::dispatch_graph(vkkk::Context& context, bool capture)
 {
     graph_context_.refresh_scene_inputs();
-    const auto validation = graph_context_.validate(
-        orlgraph::GraphStage::Deformer);
+    const auto validation = stage_.has_value()
+        ? graph_context_.validate(*stage_)
+        : graph_context_.validate();
+    const char* label = stage_.has_value()
+            && *stage_ == orlgraph::GraphStage::Solver
+        ? "Solver" : "Deformer";
     if (!validation.ok()) {
         for (const auto& diagnostic : validation.diagnostics) {
-            std::cerr << "Deformer: graph validation: "
+            std::cerr << label << ": graph validation: "
                 << diagnostic.message << '\n';
         }
         for (const auto& error : validation.schedule.errors) {
-            std::cerr << "Deformer: graph schedule: " << error << '\n';
+            std::cerr << label << ": graph schedule: " << error << '\n';
         }
         return false;
     }
 
     std::string plan_error;
     if (!ensure_execution_plan(validation, &plan_error)) {
-        std::cerr << "Deformer: graph execution plan failed: "
+        std::cerr << label << ": graph execution plan failed: "
                   << plan_error << '\n';
         return false;
     }
@@ -556,7 +666,7 @@ bool GraphSceneRuntime::dispatch_graph(vkkk::Context& context, bool capture)
             continue;
         }
 
-        const auto* instance = graph_context_.graph().node(step.node_id);
+        const auto* instance = active_graph().node(step.node_id);
         if (instance == nullptr
             || !execute_runtime_node(context, *instance, capture))
         {
@@ -571,7 +681,10 @@ bool GraphSceneRuntime::dispatch_graph(vkkk::Context& context, bool capture)
                 || definition->implementation.runtime_name == kEvaluateRuntime;
         }
     }
-    if (has_lbs_nodes() && ((capture && !saw_capture) || !saw_evaluate)) {
+    if ((!stage_.has_value()
+            || *stage_ != orlgraph::GraphStage::Solver)
+        && has_lbs_nodes()
+        && ((capture && !saw_capture) || !saw_evaluate)) {
         std::cerr << "Deformer: active graph does not contain the required "
                      "LBS capture/deform nodes\n";
         return false;
@@ -660,7 +773,7 @@ bool GraphSceneRuntime::resolve_scene_input_node(
 std::size_t GraphSceneRuntime::graph_fingerprint() const
 {
     std::ostringstream stream;
-    const auto& graph = graph_context_.graph();
+    const auto& graph = active_graph();
     stream << graph.module_id;
     for (const auto& [id, node] : graph.nodes()) {
         stream << "|node:" << id.value << ':' << node.definition.value
@@ -742,7 +855,7 @@ bool GraphSceneRuntime::add_scene_execution_input(
             return false;
         }
         if (input.binding != binding
-            && graph_context_.graph().input(id) != nullptr)
+            && active_graph().input(id) != nullptr)
         {
             if (!graph_context_.map_input(
                     id, orlgraph::StableId{std::string{binding}}, error))
@@ -816,8 +929,9 @@ bool GraphSceneRuntime::prepare_runtime_output_expressions(
         return false;
     };
 
+    const auto& source_graph = active_graph();
     for (const auto& node_id : node_ids) {
-        const auto* instance = graph_context_.graph().node(node_id);
+        const auto* instance = source_graph.node(node_id);
         const auto* definition = instance == nullptr
             ? nullptr : graph_context_.registry().find(instance->definition);
         if (instance == nullptr || definition == nullptr
@@ -1040,17 +1154,18 @@ bool GraphSceneRuntime::build_orl_segment(
 
     std::set<orlgraph::StableId> node_set(
         node_ids.begin(), node_ids.end());
+    const auto& source_graph = active_graph();
     OrlSegment segment;
-    segment.graph.module_id = graph_context_.graph().module_id
+    segment.graph.module_id = source_graph.module_id
         + ".runtime_segment." + std::to_string(segment_index);
 
-    for (const auto& [id, resource] : graph_context_.graph().resources()) {
+    for (const auto& [id, resource] : source_graph.resources()) {
         if (!segment.graph.add_resource(resource, error)) {
             return false;
         }
     }
     for (const auto& node_id : node_ids) {
-        const auto* node = graph_context_.graph().node(node_id);
+        const auto* node = source_graph.node(node_id);
         if (node == nullptr || !segment.graph.add_node(*node, error)) {
             return false;
         }
@@ -1063,12 +1178,12 @@ bool GraphSceneRuntime::build_orl_segment(
         return false;
     }
 
-    for (const auto& connection : graph_context_.graph().connections()) {
+    for (const auto& connection : source_graph.connections()) {
         if (connection.destination.kind
             == orlgraph::EndpointKind::NodePort)
         {
             if (!add_segment_connection(
-                    graph_context_.graph(), segment.graph,
+                    source_graph, segment.graph,
                     connection, node_set, error))
             {
                 return false;
@@ -1083,7 +1198,7 @@ bool GraphSceneRuntime::build_orl_segment(
             && node_set.find(connection.source.owner) != node_set.end())
         {
             const auto* output =
-                graph_context_.graph().output(connection.destination.owner);
+                source_graph.output(connection.destination.owner);
             if (output == nullptr) {
                 if (error != nullptr) {
                     *error = "Graph segment references an unknown output";
@@ -1189,11 +1304,25 @@ bool GraphSceneRuntime::ensure_execution_plan(
     }
 
     execution_plan_ready_ = false;
-    graph_context_.clear_computed_joints_device();
+    const bool has_solver_graph =
+        graph_context_.has_stage_graphs()
+        && [&] {
+            const auto& solver_graph =
+                graph_context_.stage_graph(orlgraph::GraphStage::Solver);
+            return !solver_graph.nodes().empty()
+                || !solver_graph.inputs().empty()
+                || !solver_graph.outputs().empty();
+        }();
+    if (!stage_.has_value()
+        || *stage_ != orlgraph::GraphStage::Deformer
+        || !has_solver_graph) {
+        graph_context_.clear_computed_joints_device();
+    }
     execution_plan_.clear();
     orl_segments_.clear();
 
     const bool contains_orl = has_orl_nodes();
+    const auto& source_graph = active_graph();
     std::vector<orlgraph::StableId> segment_nodes;
     bool segment_has_orl = false;
     const auto flush_segment = [&]() -> bool {
@@ -1216,7 +1345,7 @@ bool GraphSceneRuntime::ensure_execution_plan(
     };
 
     for (const auto& node_id : validation.schedule.order) {
-        const auto* instance = graph_context_.graph().node(node_id);
+        const auto* instance = source_graph.node(node_id);
         const auto* definition = instance == nullptr
             ? nullptr : graph_context_.registry().find(instance->definition);
         if (instance == nullptr || definition == nullptr) {

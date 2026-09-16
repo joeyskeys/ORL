@@ -44,6 +44,14 @@ public:
                                                        void *const *buffers,
                                                        const int64_t *integers,
                                                        const double *floats);
+    // Context-aware variant used when the ORL source references the implicit
+    // solver_context global.
+    std::optional<int64_t> InvokeInt64WithRuntimeArgsAndContext(
+        const std::string &name,
+        void *const *buffers,
+        const int64_t *integers,
+        const double *floats,
+        void *solver_context);
     OrlJitTarget Target() const;
 
     const std::vector<std::string> &Errors() const;

@@ -46,8 +46,8 @@ export int solver_full_body_ik [[ string stage = "solver" ]]
                         int effectors[],
                         matrix targets[],
                         int effector_count,
-                        int joint_count,
                         int iterations) {
+    int joint_count = solver_context.joint_count;
     if (effector_count < 1 || joint_count < 1) {
         return 0;
     }

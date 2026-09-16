@@ -97,6 +97,11 @@ public:
         summary_.exported = definition.exported;
         collect_metadata();
         for (const auto& parameter : definition.parameters) {
+            if (parameter.name == "solver_context") {
+                add_error("ORL_ANALYSIS_RESERVED_NAME",
+                    "The name 'solver_context' is reserved for the implicit "
+                    "SolverContext global");
+            }
             FunctionParameterSummary value;
             value.name = parameter.name;
             value.type_name = parameter.type_name;
@@ -220,6 +225,11 @@ private:
         } else if (const auto* expression = dynamic_cast<const ExpressionStatement*>(&statement)) {
             visit_expression(*expression->expression);
         } else if (const auto* declaration = dynamic_cast<const DeclarationStatement*>(&statement)) {
+            if (declaration->variable_name == "solver_context") {
+                add_error("ORL_ANALYSIS_RESERVED_NAME",
+                    "The name 'solver_context' is reserved for the implicit "
+                    "SolverContext global");
+            }
             validate_type(declaration->type_name, "declaration type");
             if (declaration->initializer != nullptr) {
                 visit_expression(*declaration->initializer);
@@ -274,6 +284,10 @@ private:
             visit_expression(*binary->left);
             visit_expression(*binary->right);
         } else if (const auto* assignment = dynamic_cast<const AssignmentExpression*>(&expression)) {
+            if (assignment->target_name == "solver_context") {
+                add_error("ORL_ANALYSIS_CONTEXT_WRITE",
+                    "The implicit solver_context global is read-only");
+            }
             access(assignment->target_name, ParameterAccess::Write);
             visit_expression(*assignment->value);
         } else if (const auto* call = dynamic_cast<const CallExpression*>(&expression)) {
@@ -314,6 +328,10 @@ private:
         } else if (const auto* assignment = dynamic_cast<const MemberAssignmentExpression*>(&expression)) {
             if (assignment->target != nullptr) {
                 if (const auto* base = base_identifier(assignment->target->base.get())) {
+                    if (base->name == "solver_context") {
+                        add_error("ORL_ANALYSIS_CONTEXT_WRITE",
+                            "The implicit solver_context global is read-only");
+                    }
                     access(base->name, ParameterAccess::Write);
                 }
             }

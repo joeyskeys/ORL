@@ -31,6 +31,8 @@ public:
     void ensure_stage_graphs();
     bool has_stage_graphs() const { return staged_graphs_; }
     std::size_t graph_revision() const { return graph_revision_; }
+    std::size_t graph_edit_revision() const { return graph_edit_revision_; }
+    std::size_t evaluation_revision() const { return evaluation_revision_; }
     std::size_t scene_input_revision() const {
         return scene_inputs_.revision();
     }
@@ -39,7 +41,17 @@ public:
     const orlgraph::GraphModule& graph() const { return graph_; }
     orlgraph::GraphModule& stage_graph(orlgraph::GraphStage stage);
     const orlgraph::GraphModule& stage_graph(orlgraph::GraphStage stage) const;
-    void touch_graph() { ++graph_revision_; }
+    // GraphModule is intentionally a lightweight value object and does not
+    // maintain an edit counter. Call this after mutating either stage so
+    // runtimes can invalidate their compiled plans.
+    void touch_graph() {
+        ++graph_revision_;
+        ++graph_edit_revision_;
+        ++evaluation_revision_;
+    }
+    // Request evaluation without changing the graph. This is used when
+    // kernels are re-enabled after authoring edits were made while disabled.
+    void request_evaluation() { ++evaluation_revision_; }
     orlgraph::NodeRegistry& registry() { return registry_; }
     const orlgraph::NodeRegistry& registry() const { return registry_; }
 
@@ -100,6 +112,8 @@ private:
     std::map<orlgraph::StableId, orlgraph::StableId> input_mappings_;
     std::set<std::string> pending_operations_;
     std::size_t graph_revision_ = 0;
+    std::size_t graph_edit_revision_ = 0;
+    std::size_t evaluation_revision_ = 0;
     bool staged_graphs_ = false;
 };
 

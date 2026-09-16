@@ -31,6 +31,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace orlcomp {
@@ -72,6 +73,7 @@ struct LlvmIrCodegen::Impl {
         llvm::Type *type = nullptr;
         bool is_buffer = false;
         bool is_fixed_array = false;
+        bool is_implicit_context = false;
     };
 
     struct LoopContext {
@@ -93,13 +95,30 @@ struct LlvmIrCodegen::Impl {
         loops_.clear();
         struct_types_.clear();
         struct_field_indices_.clear();
+        function_names_.clear();
         current_function_ = nullptr;
         current_function_return_type_ = nullptr;
         current_function_definition_ = nullptr;
+        solver_context_argument_ = nullptr;
         generating_parallel_body_ = false;
+        uses_solver_context_ = program.uses_solver_context;
 
         if (target_ == OrlCodegenTarget::Host && !ApplyNativeDataLayout()) {
             return false;
+        }
+
+        if (uses_solver_context_) {
+            auto *context_type = llvm::StructType::create(
+                *context_, "SolverContext");
+            context_type->setBody({
+                builder_.getInt64Ty(),
+                builder_.getInt64Ty(),
+            }, false);
+            struct_types_.emplace("SolverContext", context_type);
+            struct_field_indices_["SolverContext"] = {
+                {"joint_count", 0},
+                {"controller_count", 1},
+            };
         }
 
         for (const auto &item : program.items) {
@@ -130,6 +149,7 @@ struct LlvmIrCodegen::Impl {
                 }
                 continue;
             }
+            function_names_.insert(function->name);
             PredeclareFunction(*function);
         }
 
@@ -354,7 +374,8 @@ struct LlvmIrCodegen::Impl {
         }
 
         std::vector<llvm::Type *> parameter_types;
-        parameter_types.reserve(function_definition.parameters.size());
+        parameter_types.reserve(function_definition.parameters.size()
+            + (uses_solver_context_ ? 1 : 0));
         for (const auto &parameter : function_definition.parameters) {
             llvm::Type *parameter_type = MapTypeName(parameter.type_name);
             if (parameter_type == nullptr) {
@@ -362,6 +383,9 @@ struct LlvmIrCodegen::Impl {
                 return;
             }
             parameter_types.push_back(parameter.is_buffer ? builder_.getPtrTy() : parameter_type);
+        }
+        if (uses_solver_context_) {
+            parameter_types.push_back(builder_.getPtrTy());
         }
 
         auto *function_type = llvm::FunctionType::get(return_type, parameter_types, false);
@@ -385,19 +409,39 @@ struct LlvmIrCodegen::Impl {
         current_function_definition_ = &function_definition;
         EnterScope();
 
-        std::size_t parameter_index = 0;
-        for (auto &argument : function->args()) {
-            const auto &parameter_ast = function_definition.parameters[parameter_index++];
-            argument.setName(parameter_ast.name);
+        auto argument = function->arg_begin();
+        for (const auto &parameter_ast : function_definition.parameters) {
+            if (parameter_ast.name == "solver_context") {
+                AddError(
+                    "The name 'solver_context' is reserved for the implicit "
+                    "SolverContext global");
+            }
+            argument->setName(parameter_ast.name);
             if (parameter_ast.is_buffer) {
                 llvm::Type *element_type = MapTypeName(parameter_ast.type_name);
                 AddVariable(parameter_ast.name,
-                            VariableInfo{&argument, element_type, true, false});
+                            VariableInfo{&*argument, element_type, true, false});
+                ++argument;
                 continue;
             }
-            llvm::AllocaInst *slot = CreateEntryAlloca(parameter_ast.name, argument.getType());
-            builder_.CreateStore(&argument, slot);
-            AddVariable(parameter_ast.name, VariableInfo{slot, argument.getType()});
+            llvm::AllocaInst *slot = CreateEntryAlloca(
+                parameter_ast.name, argument->getType());
+            builder_.CreateStore(&*argument, slot);
+            AddVariable(parameter_ast.name,
+                VariableInfo{slot, argument->getType()});
+            ++argument;
+        }
+        if (uses_solver_context_) {
+            solver_context_argument_ = &*argument;
+            solver_context_argument_->setName("__orl_solver_context");
+            AddVariable("solver_context",
+                VariableInfo{
+                    solver_context_argument_,
+                    MapTypeName("SolverContext"),
+                    true,
+                    false,
+                    true,
+                });
         }
 
         GenerateBlock(*function_definition.body);
@@ -413,6 +457,7 @@ struct LlvmIrCodegen::Impl {
         current_function_ = nullptr;
         current_function_return_type_ = nullptr;
         current_function_definition_ = nullptr;
+        solver_context_argument_ = nullptr;
 
         if (llvm::verifyFunction(*function, &llvm::errs())) {
             AddError("LLVM verifier failed for function: " + function_definition.name);
@@ -436,6 +481,9 @@ struct LlvmIrCodegen::Impl {
             builder_.getPtrTy(), // const int64_t* integers
             builder_.getPtrTy(), // const double* floats
         };
+        if (uses_solver_context_) {
+            parameter_types.push_back(builder_.getPtrTy());
+        }
         const std::string wrapper_name = "__orl_host_entry_" + definition.name;
         if (module_->getFunction(wrapper_name) != nullptr) {
             return;
@@ -463,6 +511,8 @@ struct LlvmIrCodegen::Impl {
         llvm::Value *buffers = &*argument++;
         llvm::Value *integers = &*argument++;
         llvm::Value *floats = &*argument++;
+        llvm::Value *solver_context = uses_solver_context_
+            ? &*argument++ : nullptr;
 
         llvm::BasicBlock *entry = llvm::BasicBlock::Create(*context_, "entry", wrapper);
         llvm::IRBuilder<> wrapper_builder(entry);
@@ -486,6 +536,9 @@ struct LlvmIrCodegen::Impl {
                     builder_.getDoubleTy(), floats, wrapper_builder.getInt64(float_index++));
                 call_arguments.push_back(wrapper_builder.CreateLoad(builder_.getDoubleTy(), slot));
             }
+        }
+        if (uses_solver_context_) {
+            call_arguments.push_back(solver_context);
         }
 
         llvm::Value *result = wrapper_builder.CreateCall(target, call_arguments, "orl.exec.result");
@@ -547,6 +600,12 @@ struct LlvmIrCodegen::Impl {
     }
 
     bool GenerateDeclaration(const DeclarationStatement &declaration) {
+        if (declaration.variable_name == "solver_context") {
+            AddError(
+                "The name 'solver_context' is reserved for the implicit "
+                "SolverContext global");
+            return false;
+        }
         llvm::Type *element_type = MapTypeName(declaration.type_name);
         if (element_type == nullptr) {
             AddError("Unsupported declaration type: " + declaration.type_name);
@@ -1006,6 +1065,12 @@ struct LlvmIrCodegen::Impl {
             AddError("Undefined array: " + base_identifier->name);
             return nullptr;
         }
+        if (array_variable->is_implicit_context) {
+            AddError(
+                "The implicit solver_context global may only be read through "
+                "its fields");
+            return nullptr;
+        }
         if (array_variable->is_buffer) {
             llvm::Value *index_value = GenerateExpression(*index.index);
             index_value = CastValue(index_value, builder_.getInt64Ty(), "buffer index");
@@ -1148,6 +1213,10 @@ struct LlvmIrCodegen::Impl {
         if (variable == nullptr) {
             AddError("Undefined variable: " + identifier.name);
             return nullptr;
+        }
+        if (variable->is_implicit_context) {
+            return CreatePackedLoad(
+                variable->type, variable->slot, "solver_context");
         }
         if (variable->is_buffer) {
             return variable->slot;
@@ -1422,6 +1491,10 @@ struct LlvmIrCodegen::Impl {
             AddError("Assignment to undefined variable: " + assignment.target_name);
             return nullptr;
         }
+        if (variable->is_implicit_context) {
+            AddError("The implicit solver_context global is read-only");
+            return nullptr;
+        }
 
         llvm::Value *value = GenerateExpression(*assignment.value);
         value = CastValue(value, variable->type, "assignment");
@@ -1687,6 +1760,16 @@ struct LlvmIrCodegen::Impl {
             return GenerateQuaternionRotate(arguments[0], arguments[1]);
         }
 
+        if (uses_solver_context_
+            && function_names_.contains(callee_identifier->name))
+        {
+            if (solver_context_argument_ == nullptr) {
+                AddError("SolverContext is unavailable outside an ORL function");
+                return nullptr;
+            }
+            arguments.push_back(solver_context_argument_);
+        }
+
         llvm::Function *callee = GetOrCreateExtern(callee_identifier->name, arguments);
         if (callee == nullptr) {
             AddError("Failed to resolve function: " + callee_identifier->name);
@@ -1732,9 +1815,12 @@ struct LlvmIrCodegen::Impl {
     std::vector<LoopContext> loops_;
     std::unordered_map<std::string, llvm::StructType *> struct_types_;
     std::unordered_map<std::string, std::unordered_map<std::string, unsigned int>> struct_field_indices_;
+    std::unordered_set<std::string> function_names_;
     llvm::Function *current_function_ = nullptr;
     llvm::Type *current_function_return_type_ = nullptr;
     const FunctionDefinitionStatement *current_function_definition_ = nullptr;
+    llvm::Value *solver_context_argument_ = nullptr;
+    bool uses_solver_context_ = false;
     bool generating_parallel_body_ = false;
     std::vector<std::string> errors_;
 };

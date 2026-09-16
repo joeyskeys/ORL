@@ -10,4 +10,5 @@ target_link_libraries(orl_exec_tests
     PRIVATE
         Catch2::Catch2WithMain
         orlexec
+        orlrig
 )

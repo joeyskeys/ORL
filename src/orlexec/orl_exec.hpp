@@ -131,6 +131,10 @@ public:
         std::size_t bytes);
     bool bind_int(std::string_view parameter, std::int64_t value);
     bool bind_float(std::string_view parameter, double value);
+    // Updates the implicit solver_context global when the compiled program
+    // uses it. This is a no-op for ordinary programs.
+    bool set_solver_context(
+        std::int64_t joint_count, std::int64_t controller_count);
     void clear_bindings();
 
     bool valid() const;

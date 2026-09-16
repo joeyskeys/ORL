@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <catch2/catch_approx.hpp>
@@ -9,6 +10,7 @@
 #include "component_manager.hpp"
 #include "control_map.hpp"
 #include "graph_scene_runtime.hpp"
+#include "ops/create_joint_op.hpp"
 #include "ops/toggle_controller_attachment_op.hpp"
 #include "orlrig/graph_resources.hpp"
 #include "runtime_config.hpp"
@@ -16,6 +18,10 @@
 
 namespace
 {
+
+static_assert(requires(ORL::CreateJointOp& operation) {
+    operation.enter();
+});
 
 orlgraph::GraphModule make_controller_to_joint_graph()
 {
@@ -96,12 +102,6 @@ orlgraph::GraphModule make_two_bone_solver_graph()
 {
     orlgraph::GraphModule graph;
     graph.module_id = "scene.two_bone_solver";
-    graph.add_input(orlgraph::InterfacePort{
-        orlgraph::StableId{"joint_count"}, "joint_count",
-        orlgraph::PortDirection::Input, orlgraph::LogicalType::int64(),
-        orlgraph::Domain::constant(), orlgraph::Shape::scalar(), true,
-        std::nullopt, false, std::string{orlrig::kSceneJointCountBinding},
-        {}, {}});
     graph.add_output(orlgraph::InterfacePort{
         orlgraph::StableId{"status"}, "status",
         orlgraph::PortDirection::Output, orlgraph::LogicalType::int64(),
@@ -149,12 +149,6 @@ orlgraph::GraphModule make_two_bone_solver_graph()
     connect("root", "index", "root");
     connect("mid", "index", "mid");
     connect("end", "index", "end");
-    graph.add_connection(orlgraph::Connection{
-        orlgraph::Endpoint::graph_input(
-            orlgraph::StableId{"joint_count"}),
-        orlgraph::Endpoint::node_port(
-            orlgraph::StableId{"solver"},
-            orlgraph::StableId{"joint_count"})});
     graph.add_connection(orlgraph::Connection{
         orlgraph::Endpoint::node_port(
             orlgraph::StableId{"solver"},
@@ -339,6 +333,48 @@ TEST_CASE("control map selects the first matching operation overload",
     event.key = vkkk::Key::B;
     controls.dispatch_event(event);
     REQUIRE(selected == "constraint");
+}
+
+TEST_CASE("control map scopes viewport edits",
+    "[controls][evaluation]")
+{
+    ORL::ControlMap controls;
+    int evaluations = 0;
+    int scope_enters = 0;
+    int scope_exits = 0;
+    struct EditOperation {
+        int* evaluations = nullptr;
+
+        void eval(const ORL::InputEvent&) {
+            ++*evaluations;
+        }
+    } operation{&evaluations};
+
+    controls.set_operation_scope_handler(
+        [&scope_enters, &scope_exits](std::string_view, bool entering) {
+            if (entering) {
+                ++scope_enters;
+            } else {
+                ++scope_exits;
+            }
+        });
+    controls.bind_edit_op("edit", operation);
+    controls.map(ORL::InputSpec{
+        ORL::InputSpec::Type::Key,
+        static_cast<int>(vkkk::Key::A),
+        static_cast<int>(vkkk::InputAction::Press),
+        0,
+    }, "edit");
+
+    ORL::InputEvent event;
+    event.kind = ORL::InputEvent::Kind::Key;
+    event.action = vkkk::InputAction::Press;
+    event.key = vkkk::Key::A;
+    controls.dispatch_event(event);
+
+    REQUIRE(evaluations == 1);
+    REQUIRE(scope_enters == 1);
+    REQUIRE(scope_exits == 1);
 }
 
 TEST_CASE("controller attachments preserve target-local transforms",
@@ -542,6 +578,20 @@ TEST_CASE("control map preserves contextual attachment and curve controls",
     REQUIRE(tab != controls.bindings().end());
     REQUIRE(std::find(tab->ops.begin(), tab->ops.end(),
         "toggle_orl_evaluation") != tab->ops.end());
+
+    const auto j = find_key(vkkk::Key::J, 0);
+    REQUIRE(j != controls.bindings().end());
+    REQUIRE(std::find(j->ops.begin(), j->ops.end(),
+        "create_joint") != j->ops.end());
+    for (const auto& binding : controls.bindings()) {
+        if (binding.input.type == ORL::InputSpec::Type::MouseButton
+            && binding.input.code
+                == static_cast<int>(vkkk::MouseButton::Left))
+        {
+            REQUIRE(std::find(binding.ops.begin(), binding.ops.end(),
+                "create_joint") == binding.ops.end());
+        }
+    }
 }
 
 TEST_CASE("graph runtime executes ORL constraints and commits joint output",
@@ -624,6 +674,51 @@ TEST_CASE("graph runtime executes ORL solver mutations",
     ORL::GraphSceneRuntime runtime(context, selection, {}, {});
     vkkk::Context backend(false);
     runtime.request_bind();
+    runtime.on_update(backend);
+
+    REQUIRE(components.joint(root_id)->rotation[3]
+        != Catch::Approx(1.0));
+    ORL::runtime_config.device = previous_device;
+}
+
+TEST_CASE("solver feature path evaluates the staged solver graph",
+    "[scene-graph][runtime][stages][solver]")
+{
+    const auto previous_device = ORL::runtime_config.device;
+    ORL::runtime_config.device = ORL::ComputeDevice::Cpu;
+
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    auto root = orlviewer::make_identity_joint();
+    auto mid = orlviewer::make_identity_joint();
+    mid.parent = 0;
+    mid.translation[0] = 1.0;
+    auto end = orlviewer::make_identity_joint();
+    end.parent = 1;
+    end.translation[0] = 1.0;
+    const auto root_id = components.create_joint("root", root);
+    components.create_joint("mid", mid);
+    components.create_joint("end", end);
+    components.create_locator(
+        "target", orlrig::make_locator(glm::vec3{0.0f, 1.5f, 0.0f}));
+    components.create_locator(
+        "pole", orlrig::make_locator(glm::vec3{0.0f, 0.0f, 1.0f}));
+
+    ORL::SceneGraphContext context(scene, components);
+    orlgraph::NodeRegistry registry;
+    std::string registry_error;
+    REQUIRE(orlrig::register_rig_node_definitions(
+        registry, &registry_error));
+    orlgraph::GraphModule deformer;
+    deformer.module_id = "scene.empty_deformer";
+    context.set_stage_graphs(
+        make_two_bone_solver_graph(), std::move(deformer),
+        std::move(registry));
+
+    ORL::Selection selection(components, scene);
+    ORL::GraphSceneRuntime runtime(
+        context, selection, {}, {}, orlgraph::GraphStage::Solver);
+    vkkk::Context backend(false);
     runtime.on_update(backend);
 
     REQUIRE(components.joint(root_id)->rotation[3]

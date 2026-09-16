@@ -24,10 +24,18 @@ CreateJointOp::CreateJointOp(ComponentManager& components, vkkk::Camera& camera,
 {
 }
 
+void CreateJointOp::on_confirm() {
+    if (!active_ || window == nullptr) {
+        return;
+    }
+    const auto pointer = window->pointer();
+    place(pointer.x, pointer.y);
+}
+
 void CreateJointOp::on_eval(const InputEvent& event) {
     if (event.kind == InputEvent::Kind::Key && event.action == vkkk::InputAction::Press) {
         if (event.key == vkkk::Key::J && !active_) {
-            enter();
+            begin_session();
             return;
         }
         if (active_ && (event.key == vkkk::Key::Enter || event.key == vkkk::Key::NumpadEnter)) {
@@ -43,7 +51,7 @@ void CreateJointOp::on_eval(const InputEvent& event) {
     }
 }
 
-void CreateJointOp::enter() {
+void CreateJointOp::begin_session() {
     active_ = true;
     last_in_chain = {};
     std::cout << "Joint create: click to place, Enter to finish\n";

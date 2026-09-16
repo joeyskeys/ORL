@@ -192,6 +192,7 @@ void AutoWeightFeature::on_update(vkkk::Context& context,
 }
 
 bool AutoWeightFeature::run(vkkk::Context& context) {
+    OrlEvaluationPause pause;
     WeightData* weight = components.weight(weight_id);
     if (weight == nullptr) {
         std::cerr << "Auto weight: missing weight component\n";

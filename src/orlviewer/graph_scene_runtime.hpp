@@ -21,19 +21,21 @@ class Context;
 namespace ORL
 {
 
-// Executes the active scene graph through backend-selected ORL segments and
-// registered runtime adapters, then publishes the resulting scene state.
+// Executes a graph stage through backend-selected ORL segments and registered
+// runtime adapters, then publishes the resulting scene state.
 class GraphSceneRuntime final {
 public:
     GraphSceneRuntime(SceneGraphContext& graph_context,
         const Selection& selection, ComponentId deformer_id,
-        ComponentId weight_id);
+    ComponentId weight_id,
+    std::optional<orlgraph::GraphStage> stage = std::nullopt);
 
     bool set_type(std::string_view name);
     void set_mesh(std::string name);
     void request_bind();
     void unbind();
     void on_update(vkkk::Context& context);
+    bool has_active_graph_content() const;
 
 private:
     struct OrlSegment {
@@ -125,11 +127,14 @@ private:
         const orlgraph::StableId& node,
         const orlgraph::StableId& port) const;
     void register_runtime_adapters();
+    orlgraph::GraphModule& active_graph();
+    const orlgraph::GraphModule& active_graph() const;
 
     SceneGraphContext& graph_context_;
     const Selection& selection_;
     ComponentId deformer_id;
     ComponentId weight_id;
+    std::optional<orlgraph::GraphStage> stage_;
     std::string type_name{"lbs"};
     orlrig::LbsRunner runner_;
     std::map<std::string, RuntimeAdapter> runtime_adapters_;
@@ -139,6 +144,8 @@ private:
     std::size_t planned_scene_revision_ = 0;
     std::size_t planned_graph_fingerprint_ = 0;
     exec::Backend planned_backend_ = exec::Backend::Cpu;
+    std::size_t observed_graph_edit_revision_ = 0;
+    std::size_t observed_evaluation_revision_ = 0;
     bool execution_plan_ready_ = false;
     bool graph_active_ = false;
     bool logged_rest = false;

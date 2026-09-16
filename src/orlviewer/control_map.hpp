@@ -66,6 +66,8 @@ class ControlMap {
 public:
     using OpHandler = std::function<void(const InputEvent&)>;
     using OpPredicate = std::function<bool(const InputEvent&)>;
+    using OperationScopeHandler =
+        std::function<void(std::string_view operation, bool entering)>;
 
     ControlMap() = default;
     ControlMap(const ControlMap&) = delete;
@@ -81,6 +83,12 @@ public:
     void bind_op(std::string op, OpHandler handler);
     void bind_op_variant(std::string op, OpPredicate predicate,
         OpHandler handler);
+    void bind_edit_op_variant(std::string op, OpPredicate predicate,
+        OpHandler handler);
+
+    // Register a callback around operations that mutate viewport authoring
+    // data. Modal operations keep the scope open until they confirm/cancel.
+    void set_operation_scope_handler(OperationScopeHandler handler);
 
     // Bind any viewport operation that exposes eval(const InputEvent&),
     // including VpOperation<Derived> CRTP types. Modal ops also expose
@@ -91,6 +99,34 @@ public:
         unbind_op(op);
         BoundOp bound;
         bound.name = std::move(op);
+        bound.predicate = [](const InputEvent&) { return true; };
+        bound.eval = [&operation](const InputEvent& event) {
+            operation.eval(event);
+        };
+        if constexpr (requires { operation.mode(); }) {
+            bound.mode = operation.mode();
+        }
+        if constexpr (requires { operation.enter(); }) {
+            bound.enter = [&operation] { operation.enter(); };
+        }
+        if constexpr (requires { operation.confirm(); }) {
+            bound.confirm = [&operation] { operation.confirm(); };
+        }
+        if constexpr (requires { operation.cancel(); }) {
+            bound.cancel = [&operation] { operation.cancel(); };
+        }
+        if constexpr (requires { operation.active(); }) {
+            bound.active = [&operation] { return operation.active(); };
+        }
+        ops.push_back(std::move(bound));
+    }
+
+    template <typename Op>
+    void bind_edit_op(std::string op, Op& operation) {
+        unbind_op(op);
+        BoundOp bound;
+        bound.name = std::move(op);
+        bound.suspends_evaluation = true;
         bound.predicate = [](const InputEvent&) { return true; };
         bound.eval = [&operation](const InputEvent& event) {
             operation.eval(event);
@@ -141,6 +177,7 @@ private:
     struct BoundOp {
         std::string name;
         OpMode mode = OpMode::Immediate;
+        bool suspends_evaluation = false;
         OpPredicate predicate;
         std::function<void(const InputEvent&)> eval;
         std::function<void()> enter;
@@ -151,6 +188,8 @@ private:
 
     void dispatch(const InputEvent& event);
     void invoke_modal(BoundOp& op, const InputEvent& event);
+    void begin_operation_scope(BoundOp& op);
+    void end_operation_scope(BoundOp& op);
     BoundOp* find_op(std::string_view name,
         const InputEvent* event = nullptr);
     bool matches(const InputSpec& spec, const InputEvent& event) const;
@@ -181,7 +220,10 @@ private:
     vkkk::WindowBackend* backend_ = nullptr;
     std::vector<ControlBinding> bindings_;
     std::vector<BoundOp> ops;
+    OperationScopeHandler operation_scope_handler_;
     std::string modal;
+    bool modal_scope_active_ = false;
+    std::string modal_scope_operation_;
     unsigned buttons_down_ = 0;
     bool cursor_valid_ = false;
     double cursor_x_ = 0.0;

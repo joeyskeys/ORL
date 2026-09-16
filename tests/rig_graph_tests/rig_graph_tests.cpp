@@ -137,6 +137,9 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
                     : GraphStageMask::Deformer));
             REQUIRE(definition->outputs.size() == 1);
             REQUIRE(definition->outputs.front().name == "status");
+            if (name.rfind("orlrig.solver.", 0) == 0) {
+                REQUIRE(definition->parameter("joint_count") == nullptr);
+            }
         }
     }
 

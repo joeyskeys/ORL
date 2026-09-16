@@ -106,6 +106,8 @@ public:
         std::uint64_t device_ptr, std::size_t bytes);
     bool bind_int(std::string_view parameter, std::int64_t value);
     bool bind_float(std::string_view parameter, double value);
+    bool set_solver_context(
+        std::int64_t joint_count, std::int64_t controller_count);
     bool bind_graph_inputs(const orlgraph::GraphModule& module,
         const GraphInputResolver& resolver);
     void clear_bindings();

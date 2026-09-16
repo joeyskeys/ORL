@@ -2,16 +2,19 @@
 
 #include "component_manager.hpp"
 #include "../../orlexec/orlrig/runners.hpp"
+#include "../graph_scene_runtime.hpp"
+#include "../selection.hpp"
 #include "vp/feature.hpp"
 
 namespace ORL
 {
 
-// Evaluates stdlib solvers against packed joints, then writes rotations back
-// so LBS sees the posed chain. Runs on CPU; two-bone IK is sequential.
+// Evaluates the staged solver graph before deformation. The legacy component
+// constraint runner remains as a compatibility fallback for older scenes.
 class SolverFeature final : public vkkk::vp::ViewportFeature<vkkk::vp::ViewportPhase::Scene> {
 public:
-    explicit SolverFeature(ComponentManager& components);
+    SolverFeature(SceneGraphContext& graph_context,
+        ComponentManager& components, const Selection& selection);
 
     void on_update(vkkk::Context&, const vkkk::Context::Frame&);
 
@@ -20,6 +23,7 @@ private:
 
     ComponentManager& components;
     orlrig::SolverRunner runner;
+    GraphSceneRuntime graph_runtime;
 };
 
 } // namespace ORL

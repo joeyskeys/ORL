@@ -106,22 +106,6 @@
       }
     },
     {
-      "op": "create_joint",
-      "input": {
-        "type": "mouse_button",
-        "button": "left",
-        "action": "press"
-      }
-    },
-    {
-      "op": "create_joint",
-      "input": {
-        "type": "key",
-        "key": "enter",
-        "action": "press"
-      }
-    },
-    {
       "op": "create_ik",
       "input": {
         "type": "key",

@@ -10,6 +10,10 @@
 namespace orlcomp
 {
 
+inline constexpr std::string_view kSolverContextParameterName =
+    "__orl_solver_context";
+inline constexpr std::string_view kSolverContextTypeName = "SolverContext";
+
 enum class OrlRuntimeParameterKind {
     Buffer,
     Int64,
@@ -27,6 +31,7 @@ struct OrlRuntimeFunctionSignature {
     std::string name;
     std::string return_type;
     std::vector<OrlRuntimeParameter> parameters;
+    bool uses_solver_context = false;
 };
 
 inline OrlRuntimeParameterKind RuntimeParameterKindFor(const Parameter& parameter) {
@@ -54,12 +59,20 @@ inline std::optional<OrlRuntimeFunctionSignature> DescribeRuntimeFunction(
         OrlRuntimeFunctionSignature signature;
         signature.name = function->name;
         signature.return_type = function->return_type;
+        signature.uses_solver_context = program.uses_solver_context;
         signature.parameters.reserve(function->parameters.size());
         for (const Parameter& parameter : function->parameters) {
             signature.parameters.push_back({
                 parameter.name,
                 parameter.type_name,
                 RuntimeParameterKindFor(parameter),
+            });
+        }
+        if (signature.uses_solver_context) {
+            signature.parameters.push_back({
+                std::string{kSolverContextParameterName},
+                std::string{kSolverContextTypeName},
+                OrlRuntimeParameterKind::Buffer,
             });
         }
         return signature;

@@ -4,26 +4,24 @@
 #include <filesystem>
 #include <iostream>
 #include <utility>
+#include <vector>
 
+#include <glm/mat4x4.hpp>
 #include <glm/vec4.hpp>
 
 #include "component_manager.hpp"
 #include "concepts/camera.h"
 #include "concepts/line.h"
 #include "selection.hpp"
-#include "utils/sizeable.hpp"
 #include "vk_ins/shader_module_pack.hpp"
 #include "vp/feature.hpp"
 
 namespace ORL
 {
 
-struct LocatorModelUBO : public vkkk::Sizeable<LocatorModelUBO> {
+struct LocatorDrawData {
     glm::mat4 model{1.0f};
-};
-
-struct LocatorColorUBO : public vkkk::Sizeable<LocatorColorUBO> {
-    glm::vec4 value{0.95f, 0.78f, 0.28f, 1.0f};
+    glm::vec4 color{0.95f, 0.78f, 0.28f, 1.0f};
 };
 
 class LocatorFeature final
@@ -41,6 +39,12 @@ public:
 
     void on_attach(vkkk::Context& context, vk::Extent2D) {
         ready = create_pipeline(context) && create_cross(context);
+        if (ready) {
+            ready = context.resize_pipeline_ssbo(
+                         kPipeline, kLocatorsBlock, 1)
+                && context.alloc_pipeline_ssbo(
+                    kPipeline, kLocatorsBlock);
+        }
         if (!ready) {
             std::cerr << "LocatorFeature: locator pipeline is unavailable\n";
         }
@@ -52,6 +56,8 @@ public:
         if (!ready) {
             return;
         }
+
+        std::vector<LocatorDrawData> locators;
         components.for_each([&](const Component& meta) {
             if (meta.kind != ComponentKind::Locator) {
                 return;
@@ -60,26 +66,36 @@ public:
             if (locator == nullptr) {
                 return;
             }
-            LocatorModelUBO model{};
-            model.model = locator->xform;
-            LocatorColorUBO color{};
-            color.value = is_selected(meta.id)
+            LocatorDrawData draw_data{};
+            draw_data.model = locator->xform;
+            draw_data.color = is_selected(meta.id)
                 ? glm::vec4{0.2f, 0.55f, 1.0f, 1.0f}
                 : glm::vec4{0.95f, 0.78f, 0.28f, 1.0f};
-            context.sync_ubo(kPipeline, vkkk::buf::CameraUBO,
-                &camera.ubo_data, image_index);
-            context.sync_ubo(kPipeline, kModelBlock, &model, image_index);
-            context.sync_ubo(kPipeline, kColorBlock, &color, image_index);
-            if (context.bind(cmd, kPipeline, image_index)) {
-                context.draw_lines(cmd, kCross);
-            }
+            locators.push_back(draw_data);
         });
+        if (locators.empty()
+            || !context.resize_pipeline_ssbo(
+                kPipeline, kLocatorsBlock, locators.size()))
+        {
+            return;
+        }
+
+        context.sync_ubo(kPipeline, vkkk::buf::CameraUBO,
+            &camera.ubo_data, image_index);
+        context.sync_ssbo(
+            kPipeline, kLocatorsBlock, locators.data(), image_index,
+            static_cast<uint32_t>(
+                locators.size() * sizeof(LocatorDrawData)));
+        if (context.bind(cmd, kPipeline, image_index)) {
+            context.draw_lines(
+                cmd, kCross, 0,
+                static_cast<uint32_t>(locators.size()));
+        }
     }
 
 private:
     static constexpr const char* kPipeline = "orl_locators";
-    static constexpr const char* kModelBlock = "ModelUBO";
-    static constexpr const char* kColorBlock = "ColorUBO";
+    static constexpr const char* kLocatorsBlock = "Locators";
     static constexpr const char* kCross = "orl_locator_cross";
 
     bool is_selected(ComponentId id) const {
@@ -100,7 +116,7 @@ private:
         vkkk::ShaderModule vert_module;
         vkkk::ShaderModule frag_module;
         if (!vert_module.load(
-                shader_dir / "controller.vert",
+                shader_dir / "locator.vert",
                 vk::ShaderStageFlagBits::eVertex)
             || !frag_module.load(
                 shader_dir / "line.frag",

@@ -182,6 +182,48 @@ TEST_CASE("orlexec evaluates named CPU buffer bindings after growth", "[orl][exe
     REQUIRE(value == 18);
 }
 
+TEST_CASE("orlexec binds implicit solver context without a graph socket",
+    "[orl][exec][solver_context][cpu]")
+{
+    const auto program = OrlProgram::Compile(R"(
+        int read_context() {
+            return solver_context.joint_count
+                + solver_context.controller_count;
+        }
+    )", {.entry_function = "read_context"});
+    REQUIRE(program.valid());
+    REQUIRE(program.parameters().size() == 1);
+    REQUIRE(program.parameters().front().name == "__orl_solver_context");
+    REQUIRE(program.parameters().front().orl_type == "SolverContext");
+    REQUIRE(program.parameters().front().kind == ParameterKind::Buffer);
+
+    auto execution = OrlExecution::Create(program, Backend::Cpu);
+    REQUIRE(execution.valid());
+    REQUIRE(execution.set_solver_context(3, 4));
+    const auto first_result = execution.evaluate();
+    REQUIRE(first_result.has_value());
+    REQUIRE(*first_result == 7);
+
+    REQUIRE(execution.set_solver_context(9, 2));
+    const auto result = execution.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 11);
+
+    auto gpu = OrlExecution::Create(program, Backend::Cuda);
+    if (!gpu.valid()) {
+        if (gpu.errors().empty()) {
+            WARN("CUDA execution runtime unavailable in this environment");
+        } else {
+            WARN(gpu.errors().back());
+        }
+        return;
+    }
+    REQUIRE(gpu.set_solver_context(5, 6));
+    const auto gpu_result = gpu.evaluate(1);
+    REQUIRE(gpu_result.has_value());
+    REQUIRE(*gpu_result == 11);
+}
+
 TEST_CASE("orlexec reports invalid named bindings", "[orl][exec][cpu][error]") {
     OrlProgram program = RequireProgram();
     auto execution = OrlExecution::Create(program, Backend::Cpu);

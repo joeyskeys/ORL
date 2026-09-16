@@ -45,7 +45,8 @@ quat solver_hd_id_from_to(vector from, vector to) {
     return quat_normalize(q);
 }
 
-int solver_hd_id_has_chain(Joint joints[], int root, int end, int joint_count) {
+int solver_hd_id_has_chain(Joint joints[], int root, int end) {
+    int joint_count = solver_context.joint_count;
     int node = end;
     int steps = 0;
     int found = 0;
@@ -68,15 +69,15 @@ export int solver_hd_id [[ string stage = "solver" ]]
                  int root,
                  int end,
                  matrix target[],
-                 int joint_count,
                  int iterations) {
+    int joint_count = solver_context.joint_count;
     if (root < 0 || root >= joint_count || end < 0 || end >= joint_count) {
         return 0;
     }
     if (iterations < 1) {
         iterations = 1;
     }
-    if (solver_hd_id_has_chain(joints, root, end, joint_count) == 0) {
+    if (solver_hd_id_has_chain(joints, root, end) == 0) {
         return 0;
     }
     if (root == end) {

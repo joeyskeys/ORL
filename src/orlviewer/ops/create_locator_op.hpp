@@ -2,74 +2,124 @@
 
 #include <iostream>
 #include <string>
+#include <vector>
 
-#include "asset_mgr/scene.h"
+#include "camera_navigator.hpp"
 #include "component_manager.hpp"
+#include "gui/window_backend.hpp"
 #include "selection.hpp"
 #include "vp_operation.hpp"
 
 namespace ORL
 {
 
-// Immediate locator creation. L creates a locator at the focused transform,
-// or at the origin when no transform is selected.
+// Modal locator placement: L creates a locator under the cursor, mouse motion
+// moves it on the current view plane, left-click confirms it, and right-click
+// or Escape cancels and removes it.
 class CreateLocatorOp : public VpOperation<CreateLocatorOp> {
 public:
-    CreateLocatorOp(ComponentManager& components, vkkk::Scene& scene,
-        Selection& selection)
+    static constexpr OpMode kMode = OpMode::Modal;
+
+    CreateLocatorOp(ComponentManager& components, CameraNavigator& navigator,
+        vkkk::WindowBackend* window, Selection& selection)
         : components(components)
-        , scene(scene)
+        , navigator(navigator)
+        , window(window)
         , selection(selection)
     {
     }
 
-    void on_eval(const InputEvent& event) {
-        if (event.kind == InputEvent::Kind::Key
-            && event.action == vkkk::InputAction::Press
-            && event.key == vkkk::Key::L)
-        {
-            create();
-        }
-    }
+    bool is_active() const { return active_; }
 
-private:
-    void create() {
-        orlrig::Locator locator;
-        const auto* focus = selection.focus();
-        if (focus != nullptr && focus->kind == SelectionRef::Kind::SceneObject) {
-            if (const auto* object = scene.find_object(focus->object_name);
-                object != nullptr && !object->mesh_name.empty())
-            {
-                locator.xform = object->model;
-            }
-        }
-        else if (focus != nullptr && focus->kind == SelectionRef::Kind::Joint) {
-            const auto index = components.joint_index(focus->component);
-            if (index >= 0) {
-                locator.xform = orlviewer::joint_world_matrix(
-                    components.packed_joints(), index);
-            }
-        }
-        else if (focus != nullptr && focus->kind == SelectionRef::Kind::Controller) {
-            locator.xform = components.controller_world_xform(
-                focus->component);
-        }
-        else if (focus != nullptr && focus->kind == SelectionRef::Kind::Locator) {
-            if (const auto* selected = components.locator(focus->component);
-                selected != nullptr)
-            {
-                locator.xform = selected->xform;
-            }
+    void on_enter() {
+        if (active_ || window == nullptr) {
+            return;
         }
 
-        const auto id = components.create_locator(unique_name(), locator);
+        previous_selection = selection.refs();
+        const auto pointer = window->pointer();
+        glm::vec3 world{};
+        if (!hit(pointer.x, pointer.y, world)) {
+            previous_selection.clear();
+            return;
+        }
+
+        const auto id = components.create_locator(
+            unique_name(), orlrig::make_locator(world));
         if (!id) {
+            previous_selection.clear();
             std::cerr << "CreateLocatorOp: failed to create locator\n";
             return;
         }
-        selection.set(SelectionRef::locator(id));
-        if (const auto* created = components.find(id)) {
-            std::cout << "Created '" << created->name << "'\n";
+        created_ = id;
+        selection.replace(SelectionRef::locator(created_));
+        active_ = true;
+        std::cout << "Locator create: click to place, right-click or Escape to cancel\n";
+    }
+
+    void on_confirm() {
+        if (!active_) {
+            return;
+        }
+
+        // The Qt polling backend can deliver a button edge before its
+        // per-frame cursor-move event. Sample the backend again so the
+        // confirmed position is exactly under the click.
+        const auto pointer = window != nullptr ? window->pointer()
+                                               : vkkk::InputPointer{};
+        update(pointer.x, pointer.y);
+        active_ = false;
+        created_ = {};
+        previous_selection.clear();
+        std::cout << "Locator create: placed\n";
+    }
+
+    void on_cancel() {
+        if (!active_) {
+            return;
+        }
+
+        const ComponentId created = created_;
+        active_ = false;
+        created_ = {};
+        if (created) {
+            components.destroy(created);
+        }
+        selection.clear();
+        for (const auto& ref : previous_selection) {
+            selection.add(ref);
+        }
+        previous_selection.clear();
+        std::cout << "Locator create: cancelled\n";
+    }
+
+    void on_eval(const InputEvent& event) {
+        if (!active_ || event.kind != InputEvent::Kind::MouseMove) {
+            return;
+        }
+        update(event.x, event.y);
+    }
+
+private:
+    bool hit(double cursor_x, double cursor_y, glm::vec3& world) const {
+        if (window == nullptr) {
+            return false;
+        }
+        const auto size = window->window_size();
+        return navigator.view_plane_hit(
+            cursor_x, cursor_y,
+            static_cast<int>(size.width), static_cast<int>(size.height),
+            navigator.target, world);
+    }
+
+    void update(double cursor_x, double cursor_y) {
+        if (!active_ || !created_) {
+            return;
+        }
+        glm::vec3 world{};
+        if (hit(cursor_x, cursor_y, world)) {
+            components.set_locator_world_xform(
+                created_, orlrig::make_locator(world).xform);
         }
     }
 
@@ -83,8 +133,12 @@ private:
     }
 
     ComponentManager& components;
-    vkkk::Scene& scene;
+    CameraNavigator& navigator;
+    vkkk::WindowBackend* window = nullptr;
     Selection& selection;
+    bool active_ = false;
+    ComponentId created_;
+    std::vector<SelectionRef> previous_selection;
 };
 
 } // namespace ORL

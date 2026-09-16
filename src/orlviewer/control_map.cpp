@@ -325,6 +325,13 @@ void ControlMap::detach() {
     }
 #endif
     backend_ = nullptr;
+    if (modal_scope_active_) {
+        if (operation_scope_handler_) {
+            operation_scope_handler_(modal_scope_operation_, false);
+        }
+        modal_scope_active_ = false;
+        modal_scope_operation_.clear();
+    }
     modal.clear();
     buttons_down_ = 0;
     cursor_valid_ = false;
@@ -346,8 +353,35 @@ void ControlMap::bind_op_variant(std::string op,
     ops.push_back(std::move(bound));
 }
 
+void ControlMap::bind_edit_op_variant(std::string op,
+    OpPredicate predicate, OpHandler handler)
+{
+    BoundOp bound;
+    bound.name = std::move(op);
+    bound.suspends_evaluation = true;
+    bound.predicate = std::move(predicate);
+    bound.eval = std::move(handler);
+    ops.push_back(std::move(bound));
+}
+
+void ControlMap::set_operation_scope_handler(
+    OperationScopeHandler handler)
+{
+    if (modal_scope_active_ && operation_scope_handler_) {
+        operation_scope_handler_(modal_scope_operation_, false);
+        modal_scope_active_ = false;
+        modal_scope_operation_.clear();
+    }
+    operation_scope_handler_ = std::move(handler);
+}
+
 void ControlMap::unbind_op(std::string_view op) {
     if (modal == op) {
+        if (modal_scope_active_ && operation_scope_handler_) {
+            operation_scope_handler_(modal_scope_operation_, false);
+        }
+        modal_scope_active_ = false;
+        modal_scope_operation_.clear();
         modal.clear();
     }
     ops.erase(std::remove_if(ops.begin(), ops.end(),
@@ -628,11 +662,17 @@ void ControlMap::dispatch_event(const InputEvent& event) {
 void ControlMap::dispatch(const InputEvent& event) {
     if (auto* current = find_op(modal, &event)) {
         if (current->active && !current->active()) {
+            if (modal_scope_active_) {
+                end_operation_scope(*current);
+            }
             modal.clear();
         }
         else {
             invoke_modal(*current, event);
             if (current->active && !current->active()) {
+                if (modal_scope_active_) {
+                    end_operation_scope(*current);
+                }
                 modal.clear();
             }
             return;
@@ -649,16 +689,24 @@ void ControlMap::dispatch(const InputEvent& event) {
                 continue;
             }
             if (op->mode == OpMode::Modal) {
+                begin_operation_scope(*op);
                 if (op->enter) {
                     op->enter();
                 }
                 if (op->active && op->active()) {
                     modal = op->name;
+                    modal_scope_active_ = op->suspends_evaluation;
+                    modal_scope_operation_ = op->name;
+                }
+                else {
+                    end_operation_scope(*op);
                 }
                 continue;
             }
             if (op->eval) {
+                begin_operation_scope(*op);
                 op->eval(event);
+                end_operation_scope(*op);
             }
         }
     }
@@ -672,11 +720,19 @@ void ControlMap::invoke_modal(BoundOp& op, const InputEvent& event) {
             if (op.confirm) {
                 op.confirm();
             }
+            if (!op.active || !op.active()) {
+                end_operation_scope(op);
+                modal.clear();
+            }
             return;
         }
         if (event.button == vkkk::MouseButton::Right) {
             if (op.cancel) {
                 op.cancel();
+            }
+            if (!op.active || !op.active()) {
+                end_operation_scope(op);
+                modal.clear();
             }
             return;
         }
@@ -687,10 +743,34 @@ void ControlMap::invoke_modal(BoundOp& op, const InputEvent& event) {
         if (op.cancel) {
             op.cancel();
         }
+        if (!op.active || !op.active()) {
+            end_operation_scope(op);
+            modal.clear();
+        }
         return;
     }
     if (op.eval) {
         op.eval(event);
+    }
+    if (!op.active || !op.active()) {
+        end_operation_scope(op);
+        modal.clear();
+    }
+}
+
+void ControlMap::begin_operation_scope(BoundOp& op) {
+    if (op.suspends_evaluation && operation_scope_handler_) {
+        operation_scope_handler_(op.name, true);
+    }
+}
+
+void ControlMap::end_operation_scope(BoundOp& op) {
+    if (op.suspends_evaluation && operation_scope_handler_) {
+        operation_scope_handler_(op.name, false);
+    }
+    if (modal_scope_active_ && modal_scope_operation_ == op.name) {
+        modal_scope_active_ = false;
+        modal_scope_operation_.clear();
     }
 }
 

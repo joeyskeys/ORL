@@ -49,6 +49,9 @@ std::size_t element_stride_for(std::string_view type_name) {
     if (type_name == orlrig::kWeightOrlType) {
         return orlrig::kWeightStride;
     }
+    if (type_name == orlrig::kSolverContextOrlType) {
+        return orlrig::kSolverContextStride;
+    }
     return 0;
 }
 
@@ -337,6 +340,7 @@ struct OrlExecution::Impl {
     std::unordered_map<std::string, std::int64_t> integers;
     std::unordered_map<std::string, double> floats;
     std::unordered_map<OrlBuffer*, DeviceBuffer> device_buffers;
+    std::optional<OrlBuffer> solver_context;
     std::unique_ptr<orlcomp::OrlJitEngine> jit;
     std::unique_ptr<orlcomp::OrlGpuEngine> gpu;
     std::vector<std::string> errors;
@@ -395,6 +399,25 @@ struct OrlExecution::Impl {
                 continue;
             }
             if (parameter.kind == ParameterKind::Buffer) {
+                if (parameter.name == orlcomp::kSolverContextParameterName) {
+                    if (!solver_context.has_value()) {
+                        errors.emplace_back(
+                            "Implicit SolverContext storage is unavailable");
+                        continue;
+                    }
+                    if (solver_context->orl_type() != parameter.orl_type
+                        || solver_context->element_stride()
+                            != parameter.element_stride)
+                    {
+                        errors.emplace_back(
+                            "Implicit SolverContext buffer ABI is incompatible");
+                        continue;
+                    }
+                    ordered_buffers.push_back(
+                        backend == Backend::Cpu
+                            ? solver_context->data() : nullptr);
+                    continue;
+                }
                 const auto device = device_bindings.find(parameter.name);
                 if (device != device_bindings.end()) {
                     if (backend != Backend::Cuda) {
@@ -552,6 +575,25 @@ OrlExecution OrlExecution::Create(const OrlProgram& program, Backend backend) {
         return OrlExecution(std::move(impl));
     }
     impl->program = program.impl_;
+    const auto context_parameter = std::find_if(
+        impl->program->parameters.begin(),
+        impl->program->parameters.end(),
+        [](const ParameterDesc& parameter) {
+            return parameter.name == orlcomp::kSolverContextParameterName;
+        });
+    if (context_parameter != impl->program->parameters.end()) {
+        impl->solver_context.emplace(
+            orlrig::kSolverContextOrlType,
+            orlrig::kSolverContextStride);
+        orlrig::SolverContext context{};
+        if (!impl->solver_context->resize(1)
+            || !impl->solver_context->write(0, context))
+        {
+            impl->errors.emplace_back(
+                "Failed to initialize implicit SolverContext storage");
+            return OrlExecution(std::move(impl));
+        }
+    }
     impl->initialize();
     return OrlExecution(std::move(impl));
 }
@@ -649,6 +691,27 @@ bool OrlExecution::bind_float(std::string_view parameter, double value) {
     return true;
 }
 
+bool OrlExecution::set_solver_context(
+    std::int64_t joint_count, std::int64_t controller_count)
+{
+    impl_->errors.clear();
+    if (!impl_->initialized) {
+        impl_->errors.emplace_back("ORL execution was not initialized");
+        return false;
+    }
+    if (!impl_->solver_context.has_value()) {
+        return true;
+    }
+    const orlrig::SolverContext context{
+        joint_count, controller_count};
+    if (!impl_->solver_context->write(0, context)) {
+        impl_->errors.emplace_back(
+            "Failed to update implicit SolverContext storage");
+        return false;
+    }
+    return true;
+}
+
 void OrlExecution::clear_bindings() {
     impl_->release_device_bindings();
     impl_->buffers.clear();
@@ -681,8 +744,12 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
 
     if (impl_->backend == Backend::Cpu) {
         const std::string wrapper = "__orl_host_entry_" + entry;
-        const auto result = impl_->jit->InvokeInt64WithRuntimeArgs(
-            wrapper, host_buffers.data(), integers.data(), floats.data());
+        const auto result = impl_->solver_context.has_value()
+            ? impl_->jit->InvokeInt64WithRuntimeArgsAndContext(
+                wrapper, host_buffers.data(), integers.data(), floats.data(),
+                impl_->solver_context->data())
+            : impl_->jit->InvokeInt64WithRuntimeArgs(
+                wrapper, host_buffers.data(), integers.data(), floats.data());
         timing.kernel_ms = elapsed_ms(t0);
         timing.total_ms = timing.kernel_ms;
         if (!result.has_value()) {
@@ -699,11 +766,23 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
     for (const auto& parameter : impl_->program->parameters) {
         if (parameter.kind == ParameterKind::Buffer) {
             orlcomp::OrlGpuBuffer handle = 0;
-            const auto device = impl_->device_bindings.find(parameter.name);
-            if (device != impl_->device_bindings.end()) {
-                handle = device->second.handle;
-            } else if (!impl_->ensure_device_buffer(*impl_->buffers.at(parameter.name), &handle)) {
-                return std::nullopt;
+            if (parameter.name == orlcomp::kSolverContextParameterName) {
+                if (!impl_->solver_context.has_value()
+                    || !impl_->ensure_device_buffer(
+                        *impl_->solver_context, &handle))
+                {
+                    return std::nullopt;
+                }
+            } else {
+                const auto device =
+                    impl_->device_bindings.find(parameter.name);
+                if (device != impl_->device_bindings.end()) {
+                    handle = device->second.handle;
+                } else if (!impl_->ensure_device_buffer(
+                        *impl_->buffers.at(parameter.name), &handle))
+                {
+                    return std::nullopt;
+                }
             }
             orlcomp::OrlGpuKernelArgument argument;
             argument.is_buffer = true;

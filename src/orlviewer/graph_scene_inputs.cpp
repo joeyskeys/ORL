@@ -396,11 +396,19 @@ bool SceneInputCatalog::bind_graph_inputs(exec::OrlGraphExecution& execution,
     const orlgraph::GraphModule& module)
 {
     refresh();
-    return execution.bind_graph_inputs(module,
+    if (!execution.bind_graph_inputs(module,
         [this](const orlgraph::InterfacePort& port,
             exec::GraphInputBinding& binding, std::string& error) {
             return resolve(port, binding, &error);
-        });
+        }))
+    {
+        return false;
+    }
+    return execution.set_solver_context(
+        static_cast<std::int64_t>(
+            components_.size(ComponentKind::Joint)),
+        static_cast<std::int64_t>(
+            components_.size(ComponentKind::Controller)));
 }
 
 bool SceneInputCatalog::commit_joints(

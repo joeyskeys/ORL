@@ -1,5 +1,6 @@
 #include "scene_graph_context.hpp"
 
+#include <cstdint>
 #include <utility>
 
 namespace ORL
@@ -24,6 +25,8 @@ void SceneGraphContext::set_graph(orlgraph::GraphModule module,
     pending_operations_.clear();
     staged_graphs_ = false;
     ++graph_revision_;
+    ++graph_edit_revision_;
+    ++evaluation_revision_;
 }
 
 void SceneGraphContext::set_stage_graphs(
@@ -39,6 +42,8 @@ void SceneGraphContext::set_stage_graphs(
     pending_operations_.clear();
     staged_graphs_ = true;
     ++graph_revision_;
+    ++graph_edit_revision_;
+    ++evaluation_revision_;
 }
 
 void SceneGraphContext::ensure_stage_graphs()
@@ -53,6 +58,8 @@ void SceneGraphContext::ensure_stage_graphs()
     solver_graph_.logical_abi_version = graph_.logical_abi_version;
     staged_graphs_ = true;
     ++graph_revision_;
+    ++graph_edit_revision_;
+    ++evaluation_revision_;
 }
 
 orlgraph::GraphModule& SceneGraphContext::stage_graph(
@@ -169,11 +176,19 @@ bool SceneGraphContext::bind_graph_inputs(
     exec::OrlGraphExecution& execution,
     const orlgraph::GraphModule& module)
 {
-    return execution.bind_graph_inputs(module,
+    if (!execution.bind_graph_inputs(module,
         [this](const orlgraph::InterfacePort& graph_input,
             exec::GraphInputBinding& binding, std::string& error) {
             return resolve_graph_input(graph_input, binding, &error);
-        });
+        }))
+    {
+        return false;
+    }
+    return execution.set_solver_context(
+        static_cast<std::int64_t>(
+            components_.size(ComponentKind::Joint)),
+        static_cast<std::int64_t>(
+            components_.size(ComponentKind::Controller)));
 }
 
 bool SceneGraphContext::commit_scene_writes(

@@ -118,6 +118,7 @@ private:
     const orlgraph::GraphModule& active_graph() const { return *graph_; }
     orlgraph::NodeRegistry& active_registry() { return *registry_; }
     const orlgraph::NodeRegistry& active_registry() const { return *registry_; }
+    void notify_graph_changed();
     void rebuild_view();
     bool save_graph_file(bool save_as);
     void create_node(const orlgraph::StableId& definition_id, const QPointF& scene_position);

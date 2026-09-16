@@ -23,6 +23,30 @@ TEST_CASE("parser accepts basic function body", "[orl][parser]") {
     REQUIRE(dynamic_cast<const FunctionDefinitionStatement *>(parser.Ast()->items[0].get()) != nullptr);
 }
 
+TEST_CASE("parser tracks implicit solver context usage",
+    "[orl][parser][solver_context]")
+{
+    Parser parser(R"(
+        int solve() {
+            return solver_context.joint_count
+                + solver_context.controller_count;
+        }
+    )");
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Ast() != nullptr);
+    REQUIRE(parser.Ast()->uses_solver_context);
+}
+
+TEST_CASE("parser reserves the solver context type and symbol",
+    "[orl][parser][solver_context][error]")
+{
+    Parser struct_parser("struct SolverContext { int value; };\n");
+    REQUIRE_FALSE(struct_parser.Parse());
+
+    Parser function_parser("int solver_context() { return 0; }\n");
+    REQUIRE_FALSE(function_parser.Parse());
+}
+
 TEST_CASE("parser reports syntax error on missing semicolon", "[orl][parser]") {
     const std::string src =
         "int main() {\n"

@@ -81,8 +81,8 @@ export int solver_spline_ik [[ string stage = "solver" ]]
                      int chain[],
                      point spline[],
                      int chain_count,
-                     int point_count,
-                     int joint_count) {
+                     int point_count) {
+    int joint_count = solver_context.joint_count;
     if (chain_count < 2 || point_count < 2) {
         return 0;
     }

@@ -7,7 +7,8 @@
 
 use joint;
 
-matrix solver_fk_world_matrix(Joint joints[], int index, int joint_count) {
+matrix solver_fk_world_matrix(Joint joints[], int index) {
+    int joint_count = solver_context.joint_count;
     if (index < 0 || index >= joint_count) {
         return mat_identity();
     }
@@ -26,10 +27,11 @@ matrix solver_fk_world_matrix(Joint joints[], int index, int joint_count) {
 }
 
 export int solver_fk [[ string stage = "solver" ]]
-    (Joint joints[], matrix world[], int joint_count) {
+    (Joint joints[], matrix world[]) {
+    int joint_count = solver_context.joint_count;
     int index = 0;
     while (index < joint_count) {
-        world[index] = solver_fk_world_matrix(joints, index, joint_count);
+        world[index] = solver_fk_world_matrix(joints, index);
         index = index + 1;
     }
     return joint_count;

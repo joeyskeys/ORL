@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace orlrig
 {
@@ -20,6 +21,18 @@ inline constexpr std::size_t kLocatorStride = kMatrixStride;
 // viewer-only attachments.
 inline constexpr const char* kControllerOrlType = kMatrixOrlType;
 inline constexpr std::size_t kControllerXformStride = kMatrixStride;
+inline constexpr const char* kSolverContextOrlType = "SolverContext";
+
+struct SolverContext {
+    std::int64_t joint_count = 0;
+    std::int64_t controller_count = 0;
+};
+
+inline constexpr std::size_t kSolverContextStride = sizeof(SolverContext);
+
+static_assert(offsetof(SolverContext, joint_count) == 0);
+static_assert(offsetof(SolverContext, controller_count) == sizeof(std::int64_t));
+static_assert(sizeof(SolverContext) == sizeof(std::int64_t) * 2);
 inline constexpr std::size_t kDefaultWeightCount = 5;
 
 } // namespace orlrig

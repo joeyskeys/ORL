@@ -234,6 +234,20 @@ bool OrlGraphExecution::bind_float(std::string_view parameter, double value) {
     return true;
 }
 
+bool OrlGraphExecution::set_solver_context(
+    std::int64_t joint_count, std::int64_t controller_count)
+{
+    if (!execution_.has_value()) {
+        errors_.emplace_back("ORL graph execution is invalid");
+        return false;
+    }
+    if (!execution_->set_solver_context(joint_count, controller_count)) {
+        errors_ = execution_->errors();
+        return false;
+    }
+    return true;
+}
+
 bool OrlGraphExecution::bind_graph_inputs(const orlgraph::GraphModule& module,
     const GraphInputResolver& resolver)
 {

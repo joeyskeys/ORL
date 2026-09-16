@@ -362,8 +362,8 @@ TEST_CASE("llvm codegen lowers remaining auto-weight algorithms", "[orl][codegen
 TEST_CASE("llvm codegen lowers stdlib FK solver", "[orl][codegen][stdlib][solver]") {
     const std::string src =
         "use solver/fk;\n"
-        "int solve(Joint joints[], matrix world[], int joint_count) {\n"
-        "    return solver_fk(joints, world, joint_count);\n"
+        "int solve(Joint joints[], matrix world[]) {\n"
+        "    return solver_fk(joints, world);\n"
         "}\n";
 
     Parser parser(src);
@@ -384,14 +384,14 @@ TEST_CASE("llvm codegen lowers advanced IK solvers", "[orl][codegen][stdlib][sol
         "use solver/hd_id;\n"
         "use solver/spline_ik;\n"
         "use solver/full_body_ik;\n"
-        "int solve_hd(Joint joints[], Joint history[], int root, int end, matrix target[], int jcount, int iterations) {\n"
-        "    return solver_hd_id(joints, history, root, end, target, jcount, iterations);\n"
+        "int solve_hd(Joint joints[], Joint history[], int root, int end, matrix target[], int iterations) {\n"
+        "    return solver_hd_id(joints, history, root, end, target, iterations);\n"
         "}\n"
-        "int solve_spline(Joint joints[], int chain[], point spline[], int chain_count, int point_count, int jcount) {\n"
-        "    return solver_spline_ik(joints, chain, spline, chain_count, point_count, jcount);\n"
+        "int solve_spline(Joint joints[], int chain[], point spline[], int chain_count, int point_count) {\n"
+        "    return solver_spline_ik(joints, chain, spline, chain_count, point_count);\n"
         "}\n"
-        "int solve_body(Joint joints[], int effectors[], matrix targets[], int effector_count, int jcount, int iterations) {\n"
-        "    return solver_full_body_ik(joints, effectors, targets, effector_count, jcount, iterations);\n"
+        "int solve_body(Joint joints[], int effectors[], matrix targets[], int effector_count, int iterations) {\n"
+        "    return solver_full_body_ik(joints, effectors, targets, effector_count, iterations);\n"
         "}\n";
 
     Parser parser(src);
@@ -406,6 +406,27 @@ TEST_CASE("llvm codegen lowers advanced IK solvers", "[orl][codegen][stdlib][sol
     REQUIRE(ir.find("define i64 @solver_hd_id") != std::string::npos);
     REQUIRE(ir.find("define i64 @solver_spline_ik") != std::string::npos);
     REQUIRE(ir.find("define i64 @solver_full_body_ik") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen lowers implicit solver context",
+    "[orl][codegen][solver_context]")
+{
+    Parser parser(R"(
+        int read_context() {
+            return solver_context.joint_count
+                + solver_context.controller_count;
+        }
+    )");
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_solver_context_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("define i64 @read_context(ptr") != std::string::npos);
+    REQUIRE(ir.find("__orl_host_entry_read_context") != std::string::npos);
+    REQUIRE(ir.find("SolverContext") != std::string::npos);
 }
 
 TEST_CASE("llvm codegen lowers transform constraints", "[orl][codegen][stdlib][constraint]") {

@@ -36,6 +36,62 @@ TEST_CASE("semantic analysis imports a typed ORL function", "[orl][analysis]") {
     REQUIRE(definition->outputs.size() == 1);
 }
 
+TEST_CASE("semantic analysis permits read-only solver context",
+    "[orl][analysis][solver_context]")
+{
+    Parser parser(R"(
+        export int solve() {
+            return solver_context.joint_count;
+        }
+    )");
+    REQUIRE(parser.Parse());
+
+    SemanticAnalyzer analyzer;
+    const auto analysis = analyzer.analyze(*parser.Ast());
+    REQUIRE(analysis.ok());
+}
+
+TEST_CASE("semantic analysis rejects solver context writes",
+    "[orl][analysis][solver_context][error]")
+{
+    Parser parser(R"(
+        int invalid() {
+            solver_context.joint_count = 1;
+            return 0;
+        }
+    )");
+    REQUIRE(parser.Parse());
+
+    SemanticAnalyzer analyzer;
+    const auto analysis = analyzer.analyze(*parser.Ast());
+    REQUIRE_FALSE(analysis.ok());
+    REQUIRE(std::any_of(analysis.diagnostics.begin(),
+        analysis.diagnostics.end(),
+        [](const AnalysisDiagnostic& diagnostic) {
+            return diagnostic.code == "ORL_ANALYSIS_CONTEXT_WRITE";
+        }));
+}
+
+TEST_CASE("semantic analysis rejects solver context shadowing",
+    "[orl][analysis][solver_context][error]")
+{
+    Parser parser(R"(
+        int invalid(int solver_context) {
+            return solver_context;
+        }
+    )");
+    REQUIRE(parser.Parse());
+
+    SemanticAnalyzer analyzer;
+    const auto analysis = analyzer.analyze(*parser.Ast());
+    REQUIRE_FALSE(analysis.ok());
+    REQUIRE(std::any_of(analysis.diagnostics.begin(),
+        analysis.diagnostics.end(),
+        [](const AnalysisDiagnostic& diagnostic) {
+            return diagnostic.code == "ORL_ANALYSIS_RESERVED_NAME";
+        }));
+}
+
 TEST_CASE("external ORL source registers node definitions at runtime",
     "[orl][analysis][runtime]")
 {
