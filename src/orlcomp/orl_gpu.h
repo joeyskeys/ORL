@@ -53,6 +53,7 @@ inline OrlGpuBufferBinding BindGpuBuffer(OrlGpuBuffer buffer) {
 struct OrlGpuKernelArgument {
     bool is_buffer = false;
     OrlGpuBuffer buffer = 0;
+    std::size_t buffer_offset = 0;
     OrlGpuKernelParameterType scalar_type = OrlGpuKernelParameterType::Unsupported;
     std::vector<std::uint8_t> scalar_bytes;
 };

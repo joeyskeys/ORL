@@ -281,4 +281,35 @@ TEST_CASE("orlexec executes CUDA buffers when CUDA is available", "[orl][exec][c
     REQUIRE(value == 12);
 }
 
+TEST_CASE("orlexec evaluates a packed buffer subrange on CUDA",
+    "[orl][exec][cuda][packed]")
+{
+    const auto program = OrlProgram::Compile(
+        "int read(int values[]) { return values[0]; }\n",
+        {.entry_function = "read"});
+    REQUIRE(program.valid());
+
+    auto execution = OrlExecution::Create(program, Backend::Cuda);
+    if (!execution.valid()) {
+        const std::string reason = execution.errors().empty()
+            ? "CUDA execution runtime unavailable in this environment"
+            : execution.errors().back();
+        WARN(reason);
+        return;
+    }
+
+    std::array<std::int64_t, 2> storage{13, 29};
+    REQUIRE(execution.bind_packed_buffer(
+        "values",
+        PackedBufferView{
+            storage.data(),
+            sizeof(storage),
+            sizeof(std::int64_t),
+            sizeof(std::int64_t),
+            1}));
+    const auto result = execution.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 29);
+}
+
 #endif

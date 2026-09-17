@@ -31,7 +31,10 @@
 #include <vector>
 
 #include "../graph_scene_inputs.hpp"
+#include "../project_serialization.hpp"
+#include "../runtime_config.hpp"
 #include "../scene_graph_context.hpp"
+#include "../selection.hpp"
 #include "node_graph/node_ops.hpp"
 #include "orlgraph/graph_serialization.hpp"
 
@@ -140,6 +143,71 @@ void NodeGraphEditor::set_scene_graph_context(SceneGraphContext* context)
     rebuild_view();
 }
 
+void NodeGraphEditor::set_project_context(ComponentManager* components,
+    ComponentId weight_id, ComponentId deformer_id)
+{
+    project_components = components;
+    project_weight_id = weight_id;
+    project_deformer_id = deformer_id;
+}
+
+bool NodeGraphEditor::load_project_file()
+{
+    if (scene_graph_context_ == nullptr || project_components == nullptr) {
+        QMessageBox::warning(this, QStringLiteral("Open Project"),
+            QStringLiteral("The node graph is not attached to a project."));
+        return false;
+    }
+
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Open ORL Project"),
+        graph_file_path_.value_or(QString()),
+        QStringLiteral("ORL Project (*.json);;All Files (*)"));
+    if (path.isEmpty()) {
+        return false;
+    }
+
+    const bool was_enabled = runtime_config.evaluate_orl;
+    runtime_config.evaluate_orl = false;
+    scene_graph_context_->scene_inputs().set_cuda_evaluation(false);
+    scene_graph_context_->clear_computed_joints_device();
+    if (project_selection != nullptr) {
+        project_selection->clear();
+    }
+    const ProjectIoResult loaded = load_project_json(
+        path.toStdString(), *scene_graph_context_, *project_components,
+        project_weight_id, project_deformer_id);
+    if (!loaded.ok) {
+        runtime_config.evaluate_orl = was_enabled;
+        QString message = QStringLiteral("Unable to open ORL project.");
+        if (!loaded.errors.empty()) {
+            message += QStringLiteral("\n")
+                + QString::fromStdString(loaded.errors.front());
+        }
+        QMessageBox::warning(this, QStringLiteral("Open ORL Project"),
+            message);
+        return false;
+    }
+
+    graph_ = &scene_graph_context_->stage_graph(stage_);
+    registry_ = &scene_graph_context_->registry();
+    scene_input_catalog_ = &scene_graph_context_->scene_inputs();
+    scene_graph_context_->refresh_scene_inputs();
+    attached_graph_revision_ = scene_graph_context_->graph_revision();
+    graph_file_path_ = path;
+    rebuild_view();
+
+    runtime_config.evaluate_orl = loaded.evaluate_orl;
+    if (project_selection != nullptr) {
+        project_selection->set_controller_input_mode(
+            runtime_config.evaluate_orl);
+    }
+    if (runtime_config.evaluate_orl) {
+        scene_graph_context_->request_evaluation();
+    }
+    return true;
+}
+
 void NodeGraphEditor::set_stage(orlgraph::GraphStage stage)
 {
     if (stage_ == stage && graph_ != nullptr) {
@@ -180,6 +248,10 @@ void NodeGraphEditor::notify_graph_changed()
 {
     if (scene_graph_context_ != nullptr) {
         scene_graph_context_->touch_graph();
+        // A graph can be temporarily invalid while it is being authored.
+        // Keep runtime evaluation paused until the user explicitly enables
+        // it again, which is also the point where the graph is JIT compiled.
+        runtime_config.evaluate_orl = false;
     }
 }
 
@@ -381,13 +453,13 @@ bool NodeGraphEditor::save_graph_file(bool save_as)
         path = *graph_file_path_;
     } else {
         const QString suggested_path = graph_file_path_.value_or(
-            QStringLiteral("graph_stages.json"));
+            QStringLiteral("project.json"));
         path = QFileDialog::getSaveFileName(
             this,
-            save_as ? QStringLiteral("Save Staged Node Graph As")
-                    : QStringLiteral("Save Staged Node Graph"),
+            save_as ? QStringLiteral("Save ORL Project As")
+                    : QStringLiteral("Save ORL Project"),
             suggested_path,
-            QStringLiteral("ORL Staged Graph (*.json);;All Files (*)"));
+            QStringLiteral("ORL Project (*.json);;All Files (*)"));
         if (path.isEmpty()) {
             return false;
         }
@@ -397,26 +469,36 @@ bool NodeGraphEditor::save_graph_file(bool save_as)
         path += QStringLiteral(".json");
     }
 
-    std::vector<orlgraph::Diagnostic> diagnostics;
-    if (scene_graph_context_ != nullptr) {
-        scene_graph_context_->ensure_stage_graphs();
-    }
-    const auto& solver = scene_graph_context_ != nullptr
-        ? scene_graph_context_->stage_graph(orlgraph::GraphStage::Solver)
-        : solver_graph_storage_;
-    const auto& deformer = scene_graph_context_ != nullptr
-        ? scene_graph_context_->stage_graph(orlgraph::GraphStage::Deformer)
-        : deformer_graph_storage_;
-    if (!orlgraph::save_graph_stages_json(
-            path.toStdString(), solver, deformer, &diagnostics))
-    {
-        QString message = QStringLiteral("Unable to save staged node graph.");
-        if (!diagnostics.empty()) {
-            message += QStringLiteral("\n")
-                + QString::fromStdString(diagnostics.front().message);
+    ProjectIoResult saved;
+    if (scene_graph_context_ != nullptr && project_components != nullptr) {
+        saved = save_project_json(path.toStdString(), *scene_graph_context_,
+            *project_components, project_weight_id, project_deformer_id,
+            runtime_config.evaluate_orl);
+    } else {
+        std::vector<orlgraph::Diagnostic> diagnostics;
+        if (scene_graph_context_ != nullptr) {
+            scene_graph_context_->ensure_stage_graphs();
         }
-        QMessageBox::warning(
-            this, QStringLiteral("Save Staged Node Graph"), message);
+        const auto& solver = scene_graph_context_ != nullptr
+            ? scene_graph_context_->stage_graph(orlgraph::GraphStage::Solver)
+            : solver_graph_storage_;
+        const auto& deformer = scene_graph_context_ != nullptr
+            ? scene_graph_context_->stage_graph(orlgraph::GraphStage::Deformer)
+            : deformer_graph_storage_;
+        saved.ok = orlgraph::save_graph_stages_json(
+            path.toStdString(), solver, deformer, &diagnostics);
+        if (!saved.ok && !diagnostics.empty()) {
+            saved.errors.push_back(diagnostics.front().message);
+        }
+    }
+    if (!saved.ok) {
+        QString message = QStringLiteral("Unable to save ORL project.");
+        if (!saved.errors.empty()) {
+            message += QStringLiteral("\n")
+                + QString::fromStdString(saved.errors.front());
+        }
+        QMessageBox::warning(this, QStringLiteral("Save ORL Project"),
+            message);
         return false;
     }
 

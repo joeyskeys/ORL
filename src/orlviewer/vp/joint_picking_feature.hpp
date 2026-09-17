@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -14,6 +15,7 @@
 #include "concepts/camera.h"
 #include "concepts/point.h"
 #include "gui/input.hpp"
+#include "../scene_graph_context.hpp"
 #include "vk_ins/shader_module_pack.hpp"
 #include "vp/feature.hpp"
 #include "vp/joint_feature.hpp"
@@ -25,9 +27,11 @@ namespace ORL
 // into a vkkk A-buffer so overlapping hits can be resolved on readback.
 class JointPickingFeature final : public vkkk::vp::ViewportFeature<vkkk::vp::ViewportPhase::Picking> {
 public:
-    JointPickingFeature(const ComponentManager& components, const vkkk::Camera& camera,
+    JointPickingFeature(SceneGraphContext& graph_context,
+        const ComponentManager& components, const vkkk::Camera& camera,
         std::filesystem::path shader_dir, uint32_t nodes_per_pixel = 4)
-        : components(components)
+        : graph_context(graph_context)
+        , components(components)
         , camera(camera)
         , shader_dir(std::move(shader_dir))
         , nodes_per_pixel(nodes_per_pixel)
@@ -94,19 +98,49 @@ public:
         pass.present = false;
         context.begin_pass(cmd, image_index, pass);
 
-        const auto joints = components.packed_joints();
-        if (!joints.empty()
-            && context.resize_pipeline_ssbo(kPipeline, kJointsBlock, joints.size()))
+        bool gpu_joints = false;
+        std::uint32_t joint_count = 0;
+        const auto device_joints = graph_context.computed_joints_device();
+        if (device_joints.has_value()
+            && graph_context.computed_joints_device_count() != 0)
         {
+            joint_count = static_cast<std::uint32_t>(
+                graph_context.computed_joints_device_count());
+            const auto bytes = static_cast<vk::DeviceSize>(joint_count)
+                * orlviewer::kJointStride;
+            gpu_joints = device_joints->bytes >= bytes
+                && context.resize_pipeline_ssbo(
+                    kPipeline, kJointsBlock, joint_count)
+                && context.write_pipeline_ssbo_from_cuda(
+                    kPipeline, kJointsBlock, image_index,
+                    device_joints->device_ptr, bytes);
+        }
+
+        std::vector<orlviewer::Joint> joints;
+        bool have_joints = gpu_joints;
+        if (!gpu_joints) {
+            joints = components.packed_joints();
+            have_joints = !joints.empty()
+                && context.resize_pipeline_ssbo(
+                    kPipeline, kJointsBlock, joints.size());
+            if (have_joints) {
+                joint_count = static_cast<std::uint32_t>(joints.size());
+            }
+        }
+
+        if (have_joints) {
             PointSizeUBO size = point_size;
             size.value.x = std::clamp(size.value.x, context.point_size_range[0],
                 context.point_size_range[1]);
             context.sync_ubo(kPipeline, vkkk::buf::CameraUBO, &camera.ubo_data, image_index);
             context.sync_ubo(kPipeline, kPointSizeBlock, &size, image_index);
-            context.sync_ssbo(kPipeline, kJointsBlock, joints.data(), image_index,
-                static_cast<uint32_t>(joints.size() * orlviewer::kJointStride));
+            if (!gpu_joints) {
+                context.sync_ssbo(kPipeline, kJointsBlock, joints.data(),
+                    image_index, static_cast<uint32_t>(
+                        joints.size() * orlviewer::kJointStride));
+            }
             if (context.bind(cmd, kPipeline, image_index)) {
-                context.draw_points(cmd, kDummyPoints, 0, static_cast<uint32_t>(joints.size()));
+                context.draw_points(cmd, kDummyPoints, 0, joint_count);
             }
         }
 
@@ -187,6 +221,7 @@ private:
             && context.bind_pipeline_abuffer(kPipeline, kABufferName, 3, 4);
     }
 
+    SceneGraphContext& graph_context;
     const ComponentManager& components;
     const vkkk::Camera& camera;
     std::filesystem::path shader_dir;

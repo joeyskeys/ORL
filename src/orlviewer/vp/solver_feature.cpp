@@ -36,7 +36,8 @@ void write_rotation(orlviewer::Joint& destination,
 
 SolverFeature::SolverFeature(SceneGraphContext& graph_context,
     ComponentManager& components, const Selection& selection)
-    : components(components)
+    : graph_context(graph_context)
+    , components(components)
     , runner(backend_from_config())
     , graph_runtime(
         graph_context, selection, {}, {},
@@ -49,6 +50,8 @@ void SolverFeature::on_update(
     vkkk::Context& context, const vkkk::Context::Frame&)
 {
     if (!runtime_config.evaluate_orl) {
+        graph_context.scene_inputs().set_cuda_evaluation(false);
+        graph_context.clear_computed_joints_device();
         return;
     }
     // A populated solver-stage graph is authoritative. Keep the component
@@ -58,6 +61,8 @@ void SolverFeature::on_update(
         graph_runtime.on_update(context);
         return;
     }
+    graph_context.clear_computed_joints_device();
+    graph_context.scene_inputs().set_cuda_evaluation(false);
     std::string input_error;
     if (!components.apply_controller_inputs(&input_error)) {
         std::cerr << "Solver: controller input application failed: "

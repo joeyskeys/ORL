@@ -21,6 +21,7 @@ public:
 private:
     bool evaluate_two_bone(ConstraintData& constraint);
 
+    SceneGraphContext& graph_context;
     ComponentManager& components;
     orlrig::SolverRunner runner;
     GraphSceneRuntime graph_runtime;

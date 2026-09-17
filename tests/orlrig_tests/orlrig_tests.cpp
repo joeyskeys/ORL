@@ -2,6 +2,7 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -441,6 +442,42 @@ TEST_CASE("orlrig runs auto-weight and two-bone solver on CPU",
     status = shared_solver.evaluate_two_bone(
         shared_joints, chain->root, chain->mid, chain->end, target, pole);
     REQUIRE(status);
+}
+
+TEST_CASE("two-bone solver keeps a near-collinear pole bend stable",
+    "[orlrig][cpu][rigging][ik]")
+{
+    std::vector<orlrig::Joint> joints(3);
+    joints[0] = orlrig::make_identity_joint();
+    joints[1] = orlrig::make_identity_joint();
+    joints[1].parent = 0;
+    joints[1].translation[0] = 1.0;
+    joints[2] = orlrig::make_identity_joint();
+    joints[2].parent = 1;
+    joints[2].translation[0] = 1.0;
+
+    orlrig::SolverRunner solver(ORL::exec::Backend::Cpu);
+    float previous_mid_z = 0.0f;
+    bool have_previous = false;
+    for (const float target_x : {2.0e-6f, -2.0e-6f, 2.0e-6f, -2.0e-6f}) {
+        const auto target = orlrig::make_locator(
+            glm::vec3{target_x, 1.5f, 0.0f});
+        // Keep the pole on the reach axis. Its projection is intentionally
+        // too small to define a reliable bend plane.
+        const auto pole = orlrig::make_locator(
+            glm::vec3{target_x * 2.0f, 3.0f, 0.0f});
+        const auto status = solver.evaluate_two_bone(
+            joints, 0, 1, 2, target, pole);
+        REQUIRE(status);
+
+        const float mid_z =
+            glm::vec3{orlrig::joint_world_matrix(joints, 1)[3]}.z;
+        if (have_previous) {
+            REQUIRE(std::abs(mid_z - previous_mid_z) < 1.0e-5f);
+        }
+        previous_mid_z = mid_z;
+        have_previous = true;
+    }
 }
 
 TEST_CASE("orlrig auto-weight closest distance", "[orlrig][cpu][auto_weight]") {

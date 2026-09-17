@@ -560,9 +560,17 @@ struct OrlGpuEngine::Impl {
                     bound_argument_values_.clear();
                     return false;
                 }
+                if (argument.buffer_offset > buffer->second.bytes) {
+                    errors_.push_back(
+                        "CUDA kernel buffer argument offset exceeds allocation");
+                    bound_argument_values_.clear();
+                    return false;
+                }
 
                 std::vector<std::uint8_t> bytes(sizeof(CUdeviceptr));
-                std::memcpy(bytes.data(), &buffer->second.address, sizeof(CUdeviceptr));
+                const CUdeviceptr address =
+                    buffer->second.address + argument.buffer_offset;
+                std::memcpy(bytes.data(), &address, sizeof(CUdeviceptr));
                 bound_argument_values_.push_back(std::move(bytes));
             } else {
                 bound_argument_values_.push_back(argument.scalar_bytes);

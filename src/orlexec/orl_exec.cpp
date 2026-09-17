@@ -114,6 +114,8 @@ struct KernelTiming {
     double kernel_ms = 0;
     double download_ms = 0;
     double total_ms = 0;
+    std::size_t upload_calls = 0;
+    std::size_t upload_bytes = 0;
 };
 
 struct ExecStats {
@@ -133,6 +135,8 @@ void print_kernel(const std::string& entry, Backend backend, std::uint32_t eleme
             << " kernel=" << fmt_ms(timing.kernel_ms) << "ms";
         if (backend == Backend::Cuda) {
             std::cout << " upload=" << fmt_ms(timing.upload_ms) << "ms"
+                << " (" << timing.upload_calls << " calls "
+                << timing.upload_bytes << " bytes)"
                 << " download=" << fmt_ms(timing.download_ms) << "ms";
         }
         std::cout << " total=" << fmt_ms(timing.total_ms) << "ms\n";
@@ -144,6 +148,8 @@ void print_kernel(const std::string& entry, Backend backend, std::uint32_t eleme
     if (backend == Backend::Cuda) {
         std::cout << " (kernel " << fmt_ms(timing.kernel_ms)
             << " upload " << fmt_ms(timing.upload_ms)
+            << " [" << timing.upload_calls << " calls "
+            << timing.upload_bytes << " bytes]"
             << " download " << fmt_ms(timing.download_ms) << ")";
     }
     std::cout << " avg=" << fmt_ms(avg) << "ms min=" << fmt_ms(stats.min_ms)
@@ -325,6 +331,18 @@ struct OrlExecution::Impl {
         orlcomp::OrlGpuBuffer handle = 0;
         std::size_t capacity_bytes = 0;
         std::uint64_t uploaded_version = 0;
+        const void* source_data = nullptr;
+    };
+
+    struct PackedBinding {
+        std::size_t offset = 0;
+        std::size_t bytes = 0;
+    };
+
+    struct PackedStorage {
+        void* data = nullptr;
+        std::size_t bytes = 0;
+        std::uint64_t version = 0;
     };
 
     struct ExternalDeviceBuffer {
@@ -337,9 +355,12 @@ struct OrlExecution::Impl {
     Backend backend = Backend::Cpu;
     std::unordered_map<std::string, OrlBuffer*> buffers;
     std::unordered_map<std::string, ExternalDeviceBuffer> device_bindings;
+    std::unordered_map<std::string, PackedBinding> packed_bindings;
     std::unordered_map<std::string, std::int64_t> integers;
     std::unordered_map<std::string, double> floats;
     std::unordered_map<OrlBuffer*, DeviceBuffer> device_buffers;
+    std::optional<PackedStorage> packed_storage;
+    DeviceBuffer packed_device;
     std::optional<OrlBuffer> solver_context;
     std::unique_ptr<orlcomp::OrlJitEngine> jit;
     std::unique_ptr<orlcomp::OrlGpuEngine> gpu;
@@ -356,7 +377,17 @@ struct OrlExecution::Impl {
                     gpu->FreeBuffer(buffer.handle);
                 }
             }
+            if (packed_device.handle != 0) {
+                gpu->FreeBuffer(packed_device.handle);
+            }
         }
+    }
+
+    void release_packed_device() {
+        if (gpu != nullptr && packed_device.handle != 0) {
+            gpu->FreeBuffer(packed_device.handle);
+        }
+        packed_device = {};
     }
 
     void release_device_binding(const std::string& name) {
@@ -428,6 +459,23 @@ struct OrlExecution::Impl {
                     ordered_buffers.push_back(nullptr);
                     continue;
                 }
+                const auto packed = packed_bindings.find(parameter.name);
+                if (packed != packed_bindings.end()) {
+                    if (backend != Backend::Cuda
+                        || !packed_storage.has_value()
+                        || packed_storage->data == nullptr
+                        || packed->second.offset > packed_storage->bytes
+                        || packed->second.bytes
+                            > packed_storage->bytes - packed->second.offset)
+                    {
+                        errors.emplace_back(
+                            "Packed buffer binding for '" + parameter.name
+                            + "' is invalid for this backend");
+                        continue;
+                    }
+                    ordered_buffers.push_back(nullptr);
+                    continue;
+                }
                 const auto bound = buffers.find(parameter.name);
                 if (bound == buffers.end() || bound->second == nullptr) {
                     errors.emplace_back("Missing buffer binding for parameter '" + parameter.name + "'");
@@ -461,7 +509,10 @@ struct OrlExecution::Impl {
         return errors.empty();
     }
 
-    bool ensure_device_buffer(OrlBuffer& buffer, orlcomp::OrlGpuBuffer* handle) {
+    bool ensure_device_buffer(OrlBuffer& buffer,
+        orlcomp::OrlGpuBuffer* handle,
+        std::size_t* upload_calls,
+        std::size_t* upload_bytes) {
         const std::size_t capacity_bytes = buffer.capacity() * buffer.element_stride();
         if (capacity_bytes == 0) {
             errors.emplace_back("CUDA buffer binding requires non-zero capacity");
@@ -490,9 +541,65 @@ struct OrlExecution::Impl {
                 append_errors(errors, gpu->Errors());
                 return false;
             }
+            if (upload_calls != nullptr) {
+                ++*upload_calls;
+            }
+            if (upload_bytes != nullptr) {
+                *upload_bytes += buffer.byte_size();
+            }
             device.uploaded_version = buffer.version();
         }
         *handle = device.handle;
+        return true;
+    }
+
+    bool ensure_packed_device_buffer(
+        orlcomp::OrlGpuBuffer* handle,
+        std::size_t* upload_calls,
+        std::size_t* upload_bytes)
+    {
+        if (!packed_storage.has_value()
+            || packed_storage->data == nullptr
+            || packed_storage->bytes == 0)
+        {
+            errors.emplace_back("Packed CUDA buffer storage is unavailable");
+            return false;
+        }
+
+        if (packed_device.handle == 0
+            || packed_device.capacity_bytes != packed_storage->bytes
+            || packed_device.source_data != packed_storage->data)
+        {
+            release_packed_device();
+            const auto allocated = gpu->AllocateBuffer(packed_storage->bytes);
+            if (!allocated.has_value()) {
+                append_errors(errors, gpu->Errors());
+                return false;
+            }
+            packed_device.handle = *allocated;
+            packed_device.capacity_bytes = packed_storage->bytes;
+            packed_device.uploaded_version = 0;
+            packed_device.source_data = packed_storage->data;
+        }
+
+        if (packed_device.uploaded_version != packed_storage->version) {
+            if (!gpu->UploadBuffer(
+                    packed_device.handle,
+                    packed_storage->data,
+                    packed_storage->bytes))
+            {
+                append_errors(errors, gpu->Errors());
+                return false;
+            }
+            if (upload_calls != nullptr) {
+                ++*upload_calls;
+            }
+            if (upload_bytes != nullptr) {
+                *upload_bytes += packed_storage->bytes;
+            }
+            packed_device.uploaded_version = packed_storage->version;
+        }
+        *handle = packed_device.handle;
         return true;
     }
 
@@ -609,8 +716,64 @@ bool OrlExecution::bind_buffer(std::string_view parameter, OrlBuffer& buffer) {
         impl_->errors.emplace_back("Parameter '" + std::string(parameter) + "' is not a buffer");
         return false;
     }
-    impl_->buffers[std::string(parameter)] = &buffer;
-    impl_->release_device_binding(std::string(parameter));
+    const std::string name(parameter);
+    impl_->buffers[name] = &buffer;
+    impl_->packed_bindings.erase(name);
+    impl_->release_device_binding(name);
+    return true;
+}
+
+bool OrlExecution::bind_packed_buffer(
+    std::string_view parameter, const PackedBufferView& view)
+{
+    impl_->errors.clear();
+    if (!impl_->initialized) {
+        impl_->errors.emplace_back("ORL execution was not initialized");
+        return false;
+    }
+    if (impl_->backend != Backend::Cuda || impl_->gpu == nullptr) {
+        impl_->errors.emplace_back(
+            "bind_packed_buffer requires the CUDA backend");
+        return false;
+    }
+    const auto* desc = impl_->parameter(parameter);
+    if (desc == nullptr || desc->kind != ParameterKind::Buffer) {
+        impl_->errors.emplace_back(
+            "Parameter '" + std::string(parameter)
+            + "' is not a buffer");
+        return false;
+    }
+    if (view.data == nullptr || view.storage_bytes == 0
+        || view.bytes == 0
+        || view.offset > view.storage_bytes
+        || view.bytes > view.storage_bytes - view.offset)
+    {
+        impl_->errors.emplace_back(
+            "Packed buffer binding for '" + std::string(parameter)
+            + "' has an invalid range");
+        return false;
+    }
+
+    const std::string name(parameter);
+    if (impl_->packed_storage.has_value()
+        && (impl_->packed_storage->data != view.data
+            || impl_->packed_storage->bytes != view.storage_bytes))
+    {
+        impl_->errors.emplace_back(
+            "All packed buffer bindings must share one storage allocation");
+        return false;
+    }
+    if (!impl_->packed_storage.has_value()) {
+        impl_->packed_storage = Impl::PackedStorage{
+            view.data, view.storage_bytes, view.version};
+    } else {
+        impl_->packed_storage->version = view.version;
+    }
+
+    impl_->buffers.erase(name);
+    impl_->release_device_binding(name);
+    impl_->packed_bindings[name] = Impl::PackedBinding{
+        view.offset, view.bytes};
     return true;
 }
 
@@ -639,6 +802,7 @@ bool OrlExecution::bind_device_buffer(std::string_view parameter, std::uint64_t 
 
     const std::string name(parameter);
     impl_->buffers.erase(name);
+    impl_->packed_bindings.erase(name);
     auto& bound = impl_->device_bindings[name];
     if (bound.handle != 0 && bound.device_ptr == device_ptr && bound.bytes == bytes) {
         return true;
@@ -699,6 +863,23 @@ bool OrlExecution::set_solver_context(
         impl_->errors.emplace_back("ORL execution was not initialized");
         return false;
     }
+    if (impl_->packed_storage.has_value()) {
+        if (impl_->packed_storage->data == nullptr
+            || impl_->packed_storage->bytes < sizeof(orlrig::SolverContext))
+        {
+            impl_->errors.emplace_back(
+                "Packed SolverContext storage is too small");
+            return false;
+        }
+        const orlrig::SolverContext context{
+            joint_count, controller_count};
+        std::memcpy(
+            impl_->packed_storage->data,
+            &context,
+            sizeof(context));
+        ++impl_->packed_storage->version;
+        return true;
+    }
     if (!impl_->solver_context.has_value()) {
         return true;
     }
@@ -715,6 +896,8 @@ bool OrlExecution::set_solver_context(
 void OrlExecution::clear_bindings() {
     impl_->release_device_bindings();
     impl_->buffers.clear();
+    impl_->packed_bindings.clear();
+    impl_->packed_storage.reset();
     impl_->integers.clear();
     impl_->floats.clear();
 }
@@ -761,15 +944,27 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
     }
 
     const auto t_upload = Clock::now();
+    std::size_t upload_calls = 0;
+    std::size_t upload_bytes = 0;
     std::vector<orlcomp::OrlGpuKernelArgument> arguments;
     arguments.reserve(impl_->program->parameters.size());
     for (const auto& parameter : impl_->program->parameters) {
         if (parameter.kind == ParameterKind::Buffer) {
             orlcomp::OrlGpuBuffer handle = 0;
+            std::size_t buffer_offset = 0;
             if (parameter.name == orlcomp::kSolverContextParameterName) {
-                if (!impl_->solver_context.has_value()
-                    || !impl_->ensure_device_buffer(
-                        *impl_->solver_context, &handle))
+                const bool packed_context =
+                    impl_->packed_storage.has_value();
+                const bool ready = packed_context
+                    ? impl_->ensure_packed_device_buffer(
+                        &handle, &upload_calls, &upload_bytes)
+                    : impl_->solver_context.has_value()
+                        && impl_->ensure_device_buffer(
+                            *impl_->solver_context,
+                            &handle,
+                            &upload_calls,
+                            &upload_bytes);
+                if (!ready)
                 {
                     return std::nullopt;
                 }
@@ -778,8 +973,28 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
                     impl_->device_bindings.find(parameter.name);
                 if (device != impl_->device_bindings.end()) {
                     handle = device->second.handle;
-                } else if (!impl_->ensure_device_buffer(
-                        *impl_->buffers.at(parameter.name), &handle))
+                } else {
+                    const auto packed =
+                        impl_->packed_bindings.find(parameter.name);
+                    if (packed != impl_->packed_bindings.end()) {
+                        if (!impl_->ensure_packed_device_buffer(
+                                &handle,
+                                &upload_calls,
+                                &upload_bytes))
+                        {
+                            return std::nullopt;
+                        }
+                        buffer_offset = packed->second.offset;
+                    } else if (!impl_->ensure_device_buffer(
+                            *impl_->buffers.at(parameter.name),
+                            &handle,
+                            &upload_calls,
+                            &upload_bytes))
+                    {
+                        return std::nullopt;
+                    }
+                }
+                if (handle == 0)
                 {
                     return std::nullopt;
                 }
@@ -787,6 +1002,7 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
             orlcomp::OrlGpuKernelArgument argument;
             argument.is_buffer = true;
             argument.buffer = handle;
+            argument.buffer_offset = buffer_offset;
             argument.scalar_type = orlcomp::OrlGpuKernelParameterType::Buffer;
             arguments.push_back(std::move(argument));
         } else if (parameter.kind == ParameterKind::Int64) {
@@ -812,6 +1028,8 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
         append_errors(impl_->errors, impl_->gpu->Errors());
         return std::nullopt;
     }
+    timing.upload_calls = upload_calls;
+    timing.upload_bytes = upload_bytes;
     timing.upload_ms = elapsed_ms(t_upload);
 
     const auto t_kernel = Clock::now();
@@ -890,6 +1108,41 @@ std::optional<DeviceBufferView> OrlExecution::device_buffer_view(
         external != impl_->device_bindings.end())
     {
         return DeviceBufferView{external->second.device_ptr, external->second.bytes};
+    }
+
+    if (const auto packed = impl_->packed_bindings.find(name);
+        packed != impl_->packed_bindings.end())
+    {
+        if (impl_->packed_device.handle == 0) {
+            impl_->errors.clear();
+            impl_->errors.emplace_back(
+                "Packed device buffer for parameter '" + name
+                + "' has not been allocated");
+            return std::nullopt;
+        }
+        const auto view =
+            impl_->gpu->DeviceBufferView(impl_->packed_device.handle);
+        if (!view.has_value()) {
+            append_errors(impl_->errors, impl_->gpu->Errors());
+            return std::nullopt;
+        }
+        return DeviceBufferView{
+            view->device_ptr + packed->second.offset,
+            packed->second.bytes};
+    }
+
+    if (name == orlcomp::kSolverContextParameterName
+        && impl_->packed_storage.has_value()
+        && impl_->packed_device.handle != 0)
+    {
+        const auto view =
+            impl_->gpu->DeviceBufferView(impl_->packed_device.handle);
+        if (!view.has_value()) {
+            append_errors(impl_->errors, impl_->gpu->Errors());
+            return std::nullopt;
+        }
+        return DeviceBufferView{
+            view->device_ptr, sizeof(orlrig::SolverContext)};
     }
 
     const auto host = impl_->buffers.find(name);

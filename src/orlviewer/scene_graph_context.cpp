@@ -176,6 +176,11 @@ bool SceneGraphContext::bind_graph_inputs(
     exec::OrlGraphExecution& execution,
     const orlgraph::GraphModule& module)
 {
+    scene_inputs_.set_cuda_evaluation(
+        execution.backend() == exec::Backend::Cuda);
+    if (!scene_inputs_.ensure_cuda_inputs()) {
+        return false;
+    }
     if (!execution.bind_graph_inputs(module,
         [this](const orlgraph::InterfacePort& graph_input,
             exec::GraphInputBinding& binding, std::string& error) {

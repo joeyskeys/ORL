@@ -55,6 +55,11 @@ public:
 
     bool make_interface_port(const orlgraph::StableId& id,
         orlgraph::InterfacePort* port, std::string* error = nullptr) const;
+    // Enables the CUDA evaluation representation. The next refresh packs
+    // scene arrays into one host arena; disabling it restores normal scene
+    // buffer bindings for rig editing and CPU evaluation.
+    bool set_cuda_evaluation(bool enabled);
+    bool ensure_cuda_inputs();
     bool resolve(const orlgraph::InterfacePort& port,
         exec::GraphInputBinding& binding, std::string* error = nullptr);
     bool resolve_binding(std::string_view binding,
@@ -65,6 +70,12 @@ public:
         std::optional<exec::DeviceBufferView> view,
         std::size_t element_count);
     void clear_computed_joints_device();
+    std::optional<exec::DeviceBufferView> computed_joints_device() const {
+        return computed_joints_device_;
+    }
+    std::size_t computed_joints_device_count() const {
+        return computed_joints_device_count_;
+    }
     exec::OrlBuffer& computed_joints_buffer() {
         return joints_;
     }
@@ -121,7 +132,22 @@ private:
     bool pack_controllers();
     bool pack_locator(ComponentId id, const std::string& binding);
     bool pack_controller(ComponentId id, const std::string& binding);
+    bool prepare_packed_inputs();
+    exec::PackedBufferView packed_view(
+        std::size_t offset, std::size_t bytes);
     bool set_error(std::string* error, std::string message) const;
+
+    struct PackedSolverInputs {
+        std::vector<std::byte> storage;
+        std::vector<ComponentId> joint_ids;
+        std::vector<ComponentId> locator_ids;
+        std::vector<ComponentId> controller_ids;
+        std::size_t joints_offset = 0;
+        std::size_t locators_offset = 0;
+        std::size_t controllers_offset = 0;
+        std::uint64_t version = 1;
+        bool ready = false;
+    };
 
     vkkk::Scene& scene_;
     ComponentManager& components_;
@@ -139,6 +165,8 @@ private:
     std::vector<ComponentId> packed_joint_ids_;
     std::vector<ComponentId> locator_ids_;
     std::vector<ComponentId> controller_ids_;
+    PackedSolverInputs packed_solver_inputs;
+    bool cuda_evaluation = false;
     std::size_t revision_ = 0;
 };
 

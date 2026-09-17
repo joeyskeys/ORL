@@ -50,12 +50,14 @@ point solver_world_to_local(Joint joints[], int parent, point world) {
 }
 
 vector solver_any_perpendicular(vector axis) {
-    vector up(0.0, 1.0, 0.0);
-    vector side = cross(axis, up);
-    if (length(side) < 0.000001) {
-        vector right(1.0, 0.0, 0.0);
-        side = cross(axis, right);
+    // Use a wide, deterministic reference-vector split. Choosing the
+    // fallback only at an almost-zero cross product makes the selected
+    // bend plane very sensitive to small floating-point changes.
+    vector reference(0.0, 1.0, 0.0);
+    if (solver_abs(axis.y) > 0.9) {
+        reference = vector(1.0, 0.0, 0.0);
     }
+    vector side = cross(axis, reference);
     return normalize(side);
 }
 
@@ -153,8 +155,19 @@ export int solver_ik_two_bone [[ string stage = "solver" ]]
 
     vector pole_dir = pole_pos - root_pos;
     vector side = pole_dir - axis * dot(pole_dir, axis);
-    if (length(side) < 0.000001) {
-        side = solver_any_perpendicular(axis);
+    // A pole on (or very close to) the reach axis does not define a bend
+    // plane. Reusing the current elbow direction avoids switching between
+    // arbitrary perpendicular branches from one frame to the next.
+    if (length(side) < 0.0001) {
+        point current_mid = solver_joint_origin(joints, mid);
+        vector current_dir = current_mid - root_pos;
+        vector current_side =
+            current_dir - axis * dot(current_dir, axis);
+        if (length(current_side) >= 0.0001) {
+            side = current_side;
+        } else {
+            side = solver_any_perpendicular(axis);
+        }
     }
     side = normalize(side);
 

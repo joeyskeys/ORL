@@ -10,6 +10,8 @@ add_executable(orl_viewer
     comps/deformer.hpp
     scene_graph_context.cpp
     scene_graph_context.hpp
+    project_serialization.cpp
+    project_serialization.hpp
     graph_scene_runtime.cpp
     graph_scene_runtime.hpp
     graph_scene_inputs.cpp

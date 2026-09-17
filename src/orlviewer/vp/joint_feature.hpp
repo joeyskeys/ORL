@@ -2,15 +2,18 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "built_in_shader/common.h"
 #include "component_manager.hpp"
 #include "concepts/camera.h"
 #include "concepts/line.h"
 #include "concepts/point.h"
+#include "../scene_graph_context.hpp"
 #include "utils/sizeable.hpp"
 #include "vk_ins/shader_module_pack.hpp"
 #include "vp/feature.hpp"
@@ -36,9 +39,11 @@ struct LineColorUBO : public vkkk::Sizeable<LineColorUBO> {
 
 class JointFeature final : public vkkk::vp::ViewportFeature<vkkk::vp::ViewportPhase::Scene> {
 public:
-    JointFeature(const ComponentManager& components, const vkkk::Camera& camera,
+    JointFeature(SceneGraphContext& graph_context,
+        const ComponentManager& components, const vkkk::Camera& camera,
         std::filesystem::path shader_dir)
-        : components(components)
+        : graph_context(graph_context)
+        , components(components)
         , camera(camera)
         , shader_dir(std::move(shader_dir))
     {
@@ -61,13 +66,42 @@ public:
     }
 
     void on_record(vkkk::Context& context, vk::raii::CommandBuffer& cmd, uint32_t image_index) {
-        const auto joints = components.packed_joints();
-        if (joints.empty()) {
-            return;
+        bool gpu_joints = false;
+        std::uint32_t joint_count = 0;
+        const auto device_joints = graph_context.computed_joints_device();
+        if (device_joints.has_value()
+            && graph_context.computed_joints_device_count() != 0)
+        {
+            joint_count = static_cast<std::uint32_t>(
+                graph_context.computed_joints_device_count());
+            const auto bytes = static_cast<vk::DeviceSize>(joint_count)
+                * orlviewer::kJointStride;
+            gpu_joints = device_joints->bytes >= bytes
+                && context.resize_pipeline_ssbo(
+                    kPointPipeline, kJointsBlock, joint_count)
+                && context.resize_pipeline_ssbo(
+                    kLinePipeline, kJointsBlock, joint_count)
+                && context.write_pipeline_ssbo_from_cuda(
+                    kPointPipeline, kJointsBlock, image_index,
+                    device_joints->device_ptr, bytes)
+                && context.write_pipeline_ssbo_from_cuda(
+                    kLinePipeline, kJointsBlock, image_index,
+                    device_joints->device_ptr, bytes);
         }
 
-        record_lines(context, cmd, image_index, joints);
-        record_points(context, cmd, image_index, joints);
+        std::vector<orlviewer::Joint> joints;
+        if (!gpu_joints) {
+            joints = components.packed_joints();
+            if (joints.empty()) {
+                return;
+            }
+            joint_count = static_cast<std::uint32_t>(joints.size());
+        }
+
+        record_lines(context, cmd, image_index, joints,
+            gpu_joints, joint_count);
+        record_points(context, cmd, image_index, joints,
+            gpu_joints, joint_count);
     }
 
 private:
@@ -176,14 +210,23 @@ private:
         return context.load_lines(kDummyLines, lines);
     }
 
-    void record_lines(vkkk::Context& context, vk::raii::CommandBuffer& cmd, uint32_t image_index,
-        const std::vector<orlviewer::Joint>& joints)
+    void record_lines(vkkk::Context& context, vk::raii::CommandBuffer& cmd,
+        uint32_t image_index, const std::vector<orlviewer::Joint>& joints,
+        bool gpu_joints, std::uint32_t joint_count)
     {
         if (!lines_ready) {
             return;
         }
-        if (!context.resize_pipeline_ssbo(kLinePipeline, kJointsBlock, joints.size())) {
+        if (!gpu_joints
+            && !context.resize_pipeline_ssbo(
+                kLinePipeline, kJointsBlock, joints.size())) {
             return;
+        }
+
+        if (!gpu_joints) {
+            context.sync_ssbo(kLinePipeline, kJointsBlock, joints.data(),
+                image_index, static_cast<uint32_t>(
+                    joints.size() * orlviewer::kJointStride));
         }
 
         LineWidthUBO width = line_width;
@@ -197,24 +240,31 @@ private:
         context.sync_ubo(kLinePipeline, vkkk::buf::CameraUBO, &camera.ubo_data, image_index);
         context.sync_ubo(kLinePipeline, kLineWidthBlock, &width, image_index);
         context.sync_ubo(kLinePipeline, kLineColorBlock, &line_color, image_index);
-        context.sync_ssbo(kLinePipeline, kJointsBlock, joints.data(), image_index,
-            static_cast<uint32_t>(joints.size() * orlviewer::kJointStride));
         if (context.bind(cmd, kLinePipeline, image_index)) {
             if (line_width_dynamic) {
                 cmd.setLineWidth(width.value.x);
             }
-            context.draw_lines(cmd, kDummyLines, 0, static_cast<uint32_t>(joints.size()));
+            context.draw_lines(cmd, kDummyLines, 0, joint_count);
         }
     }
 
-    void record_points(vkkk::Context& context, vk::raii::CommandBuffer& cmd, uint32_t image_index,
-        const std::vector<orlviewer::Joint>& joints)
+    void record_points(vkkk::Context& context, vk::raii::CommandBuffer& cmd,
+        uint32_t image_index, const std::vector<orlviewer::Joint>& joints,
+        bool gpu_joints, std::uint32_t joint_count)
     {
         if (!points_ready) {
             return;
         }
-        if (!context.resize_pipeline_ssbo(kPointPipeline, kJointsBlock, joints.size())) {
+        if (!gpu_joints
+            && !context.resize_pipeline_ssbo(
+                kPointPipeline, kJointsBlock, joints.size())) {
             return;
+        }
+
+        if (!gpu_joints) {
+            context.sync_ssbo(kPointPipeline, kJointsBlock, joints.data(),
+                image_index, static_cast<uint32_t>(
+                    joints.size() * orlviewer::kJointStride));
         }
 
         PointSizeUBO size = point_size;
@@ -223,14 +273,13 @@ private:
         context.sync_ubo(kPointPipeline, vkkk::buf::CameraUBO, &camera.ubo_data, image_index);
         context.sync_ubo(kPointPipeline, kPointSizeBlock, &size, image_index);
         context.sync_ubo(kPointPipeline, kPointColorBlock, &point_color, image_index);
-        context.sync_ssbo(kPointPipeline, kJointsBlock, joints.data(), image_index,
-            static_cast<uint32_t>(joints.size() * orlviewer::kJointStride));
         if (context.bind(cmd, kPointPipeline, image_index)) {
             context.draw_points(cmd, kDummyPoints, 0,
-                static_cast<uint32_t>(joints.size()));
+                joint_count);
         }
     }
 
+    SceneGraphContext& graph_context;
     const ComponentManager& components;
     const vkkk::Camera& camera;
     std::filesystem::path shader_dir;

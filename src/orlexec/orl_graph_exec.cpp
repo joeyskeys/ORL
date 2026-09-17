@@ -296,9 +296,12 @@ bool OrlGraphExecution::bind_graph_inputs(const orlgraph::GraphModule& module,
 
         bool bound = false;
         if (parameter->kind == ParameterKind::Buffer) {
-            if (binding.buffer != nullptr && binding.device_ptr != 0) {
+            if ((binding.buffer != nullptr && binding.device_ptr != 0)
+                || (binding.packed.has_value()
+                    && (binding.buffer != nullptr || binding.device_ptr != 0)))
+            {
                 errors_.push_back("Graph input '" + id.value
-                    + "' supplied both host and device buffers");
+                    + "' supplied multiple buffer sources");
                 execution_->clear_bindings();
                 return false;
             }
@@ -331,6 +334,27 @@ bool OrlGraphExecution::bind_graph_inputs(const orlgraph::GraphModule& module,
                 }
                 bound = execution_->bind_device_buffer(parameter_name,
                     binding.device_ptr, binding.bytes);
+            } else if (binding.packed.has_value()) {
+                const auto& packed = *binding.packed;
+                const bool range_valid =
+                    packed.data != nullptr
+                    && packed.storage_bytes != 0
+                    && packed.bytes != 0
+                    && packed.offset <= packed.storage_bytes
+                    && packed.bytes
+                        <= packed.storage_bytes - packed.offset
+                    && parameter->element_stride != 0
+                    && (binding.element_count == 0
+                        || binding.element_count
+                            <= packed.bytes / parameter->element_stride);
+                if (!range_valid) {
+                    errors_.push_back("Graph input '" + id.value
+                        + "' has an invalid packed buffer range");
+                    execution_->clear_bindings();
+                    return false;
+                }
+                bound = execution_->bind_packed_buffer(
+                    parameter_name, packed);
             } else {
                 errors_.push_back("Graph input '" + id.value
                     + "' has no host or device buffer");

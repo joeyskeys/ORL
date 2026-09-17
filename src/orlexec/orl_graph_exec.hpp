@@ -20,6 +20,7 @@ namespace ORL::exec
 struct GraphInputBinding {
     ParameterKind kind = ParameterKind::Unsupported;
     OrlBuffer* buffer = nullptr;
+    std::optional<PackedBufferView> packed;
     std::uint64_t device_ptr = 0;
     std::size_t bytes = 0;
     std::size_t element_count = 0;

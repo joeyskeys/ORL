@@ -14,6 +14,7 @@
 #include <QVector>
 #include <QWidget>
 
+#include "../component_manager.hpp"
 #include "orlgraph/orlgraph.hpp"
 
 class QMouseEvent;
@@ -28,6 +29,7 @@ namespace ORL
 
 class SceneInputCatalog;
 class SceneGraphContext;
+class Selection;
 
 // Draft Blender-style node canvas. When attached to a SceneGraphContext it
 // edits that context's active graph directly.
@@ -40,6 +42,10 @@ public:
     void set_graph(orlgraph::GraphModule& module,
         orlgraph::NodeRegistry& registry);
     void set_scene_graph_context(SceneGraphContext* context);
+    void set_project_context(ComponentManager* components,
+        ComponentId weight_id, ComponentId deformer_id);
+    void set_selection(Selection* selection) { project_selection = selection; }
+    bool load_project_file();
     void set_stage(orlgraph::GraphStage stage);
     orlgraph::GraphStage stage() const { return stage_; }
     void set_scene_input_catalog(const SceneInputCatalog* catalog);
@@ -156,6 +162,10 @@ private:
     orlgraph::GraphModule* graph_ = &solver_graph_storage_;
     orlgraph::NodeRegistry* registry_ = &registry_storage_;
     SceneGraphContext* scene_graph_context_ = nullptr;
+    ComponentManager* project_components = nullptr;
+    Selection* project_selection = nullptr;
+    ComponentId project_weight_id;
+    ComponentId project_deformer_id;
     orlgraph::GraphStage stage_ = orlgraph::GraphStage::Solver;
     std::size_t attached_graph_revision_ = 0;
     std::optional<QString> graph_file_path_;

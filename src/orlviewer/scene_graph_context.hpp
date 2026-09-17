@@ -67,6 +67,12 @@ public:
         std::optional<exec::DeviceBufferView> view,
         std::size_t element_count);
     void clear_computed_joints_device();
+    std::optional<exec::DeviceBufferView> computed_joints_device() const {
+        return scene_inputs_.computed_joints_device();
+    }
+    std::size_t computed_joints_device_count() const {
+        return scene_inputs_.computed_joints_device_count();
+    }
 
     // Map a graph interface input to a descriptor supplied by the current
     // scene. The mapping is intentionally explicit because graph bindings

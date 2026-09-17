@@ -22,6 +22,9 @@
 #include "orlrig/graph_resources.hpp"
 #if ORL_USE_QT6
 #include "gui/qt_backend.hpp"
+#include <QKeySequence>
+#include <QString>
+#include <QShortcut>
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
 #else
@@ -176,6 +179,8 @@ int main() {
 #if ORL_USE_QT6
     auto* node_graph_editor = new ORL::NodeGraphEditor();
     node_graph_editor->set_scene_graph_context(&scene_graph);
+    node_graph_editor->set_project_context(
+        &components, weight_id, deformer_id);
     if (window_backend.add_dock_panel(node_graph_editor, "Node Graph") < 0) {
         delete node_graph_editor;
         node_graph_editor = nullptr;
@@ -183,6 +188,19 @@ int main() {
 #endif
     ORL::Selection selection(components, scene);
 #if ORL_USE_QT6
+    if (node_graph_editor != nullptr) {
+        node_graph_editor->set_selection(&selection);
+    }
+    auto* open_project_shortcut = new QShortcut(
+        QKeySequence(QStringLiteral("Ctrl+O")),
+        window_backend.main_window());
+    open_project_shortcut->setContext(Qt::ApplicationShortcut);
+    QObject::connect(open_project_shortcut, &QShortcut::activated,
+        [node_graph_editor] {
+            if (node_graph_editor != nullptr) {
+                node_graph_editor->load_project_file();
+            }
+        });
     auto* property_editor = new ORL::PropertyEditor(selection, components);
     if (window_backend.set_hud_panel(property_editor, "Properties") < 0) {
         delete property_editor;
@@ -196,11 +214,11 @@ int main() {
         ORL::SceneMeshFeature,
         ORL::JointFeature,
         ORL::ControllerFeature,
-        ORL::JointPickingFeature,
         ORL::MeshPickingFeature,
         ORL::MeshCsrFeature,
         ORL::AutoWeightFeature,
         ORL::SolverFeature,
+        ORL::JointPickingFeature,
         ORL::DeformerFeature,
         ORL::LocatorFeature,
         vkkk::vp::FrameAxisFeature,
@@ -226,7 +244,8 @@ int main() {
     const auto deformer_handle = viewport.add_feature<ORL::DeformerFeature>(
         scene_graph, deformer_id, weight_id, selection);
     viewport.add_feature<ORL::JointFeature>(
-        components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+        scene_graph, components, camera,
+        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     viewport.add_feature<ORL::LocatorFeature>(
         components, camera,
         std::filesystem::path{ORL_RESOURCE_DIR} / "shaders", selection);
@@ -253,7 +272,8 @@ int main() {
     ORL::SelectOp select_op(
         selection, components, scene, camera, &window_backend, create_joint);
     const auto joint_pick_handle = viewport.add_feature<ORL::JointPickingFeature>(
-        components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+        scene_graph, components, camera,
+        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     if (auto* gpu_pick = viewport.find_feature(joint_pick_handle)) {
         select_op.set_gpu_picking(*gpu_pick);
     }
@@ -304,6 +324,7 @@ int main() {
                         // Keep controller editing in animation mode while
                         // only the kernel pass is paused.
                         ORL::runtime_config.evaluate_orl = false;
+                        scene_graph.scene_inputs().set_cuda_evaluation(false);
                     }
                 }
                 return;
@@ -440,15 +461,21 @@ int main() {
         selection.set_controller_input_mode(ORL::runtime_config.evaluate_orl);
         if (ORL::runtime_config.evaluate_orl) {
             scene_graph.request_evaluation();
+        } else {
+            scene_graph.scene_inputs().set_cuda_evaluation(false);
         }
         std::cout << "ORL evaluation: "
                   << (ORL::runtime_config.evaluate_orl ? "enabled" : "disabled")
                   << '\n';
     });
     controls.bind_op("select", select_op);
-    controls.bind_edit_op("move", move_op);
-    controls.bind_edit_op("rotate", rotate_op);
-    controls.bind_edit_op("scale", scale_op);
+    // Transform edits are continuous pose/input edits. Keep the solver
+    // running while the modal drag updates controller or locator inputs.
+    // Structural edits remain bind_edit_op operations and still pause
+    // evaluation while their scene/graph state is being rebuilt.
+    controls.bind_op("move", move_op);
+    controls.bind_op("rotate", rotate_op);
+    controls.bind_op("scale", scale_op);
     controls.bind_op("camera_switch", camera_switch);
     const auto has_mesh_and_joint_selection =
         [&selection](const ORL::InputEvent&) {

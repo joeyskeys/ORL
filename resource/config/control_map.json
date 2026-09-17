@@ -40,12 +40,21 @@
       }
     },
     {
-      "op": "load_model",
+      "op": "open_project",
       "input": {
         "type": "key",
         "key": "O",
         "action": "press",
         "mods": ["ctrl"]
+      }
+    },
+    {
+      "op": "load_model",
+      "input": {
+        "type": "key",
+        "key": "O",
+        "action": "press",
+        "mods": ["ctrl", "shift"]
       }
     },
     {

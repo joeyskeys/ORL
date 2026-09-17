@@ -12,6 +12,7 @@
 #include "graph_scene_runtime.hpp"
 #include "ops/create_joint_op.hpp"
 #include "ops/toggle_controller_attachment_op.hpp"
+#include "orlrig/abi.hpp"
 #include "orlrig/graph_resources.hpp"
 #include "runtime_config.hpp"
 #include "scene_graph_context.hpp"
@@ -798,6 +799,63 @@ TEST_CASE("computed joints resolves the shared device buffer",
         descriptor->port, binding, &error));
     REQUIRE(binding.buffer != nullptr);
     REQUIRE(binding.device_ptr == 0);
+}
+
+TEST_CASE("CUDA scene inputs share one packed arena",
+    "[scene-graph][inputs][cuda][packed]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    components.create_joint("root");
+    components.create_joint("end");
+    components.create_locator("target");
+    components.create_locator("pole");
+    components.create_controller("z_ctrl");
+    components.create_controller("a_ctrl");
+
+    ORL::SceneGraphContext context(scene, components);
+    context.refresh_scene_inputs();
+    REQUIRE(context.scene_inputs().set_cuda_evaluation(true));
+    REQUIRE(context.scene_inputs().ensure_cuda_inputs());
+
+    std::string error;
+    ORL::exec::GraphInputBinding joints;
+    ORL::exec::GraphInputBinding locators;
+    ORL::exec::GraphInputBinding target;
+    ORL::exec::GraphInputBinding controllers;
+    REQUIRE(context.scene_inputs().resolve_binding(
+        orlrig::kSceneJointsBinding, joints, &error));
+    REQUIRE(context.scene_inputs().resolve_binding(
+        orlrig::kSceneLocatorsBinding, locators, &error));
+    REQUIRE(context.scene_inputs().resolve_binding(
+        orlrig::scene_locator_xform_binding("target"),
+        target, &error));
+    REQUIRE(context.scene_inputs().resolve_binding(
+        orlrig::kSceneControllersBinding, controllers, &error));
+
+    REQUIRE(joints.packed.has_value());
+    REQUIRE(locators.packed.has_value());
+    REQUIRE(target.packed.has_value());
+    REQUIRE(controllers.packed.has_value());
+    REQUIRE(joints.packed->data == locators.packed->data);
+    REQUIRE(joints.packed->data == target.packed->data);
+    REQUIRE(joints.packed->data == controllers.packed->data);
+    REQUIRE(joints.packed->storage_bytes
+        == sizeof(orlrig::SolverContext)
+            + 2 * orlrig::kJointStride
+            + 2 * orlrig::kLocatorStride
+            + 2 * orlrig::kMatrixStride);
+    REQUIRE(joints.packed->bytes == 2 * orlrig::kJointStride);
+    REQUIRE(locators.packed->bytes == 2 * orlrig::kLocatorStride);
+    REQUIRE(controllers.packed->bytes == 2 * orlrig::kMatrixStride);
+    REQUIRE(target.packed->bytes == orlrig::kLocatorStride);
+    REQUIRE(target.packed->offset == locators.packed->offset);
+
+    REQUIRE(context.scene_inputs().set_cuda_evaluation(false));
+    REQUIRE(context.scene_inputs().resolve_binding(
+        orlrig::kSceneJointsBinding, joints, &error));
+    REQUIRE_FALSE(joints.packed.has_value());
+    REQUIRE(joints.buffer != nullptr);
 }
 
 TEST_CASE("stable scene handles survive packed index changes",

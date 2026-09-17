@@ -335,7 +335,13 @@ void GraphSceneRuntime::unbind() {
 }
 
 void GraphSceneRuntime::on_update(vkkk::Context& context) {
+    const bool solver_stage = stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver;
     if (!runtime_config.evaluate_orl) {
+        graph_context_.scene_inputs().set_cuda_evaluation(false);
+        if (solver_stage) {
+            graph_context_.clear_computed_joints_device();
+        }
         return;
     }
 
@@ -355,8 +361,6 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
         graph_active_ = true;
     }
 
-    const bool solver_stage = stage_.has_value()
-        && *stage_ == orlgraph::GraphStage::Solver;
     if (solver_stage) {
         // The solver owns the producer allocation for the implicit
         // computed-joints handoff. Clear the previous frame before deciding
@@ -1443,13 +1447,28 @@ bool GraphSceneRuntime::execute_orl_segment(
         return false;
     }
 
-    const auto result = execution.evaluate_result();
-    if (!result.ok) {
-        for (const auto& error : result.errors) {
-            std::cerr << "Deformer: ORL graph evaluation: "
-                      << error << '\n';
+    const bool solver_device_evaluation =
+        stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver
+        && execution.backend() == exec::Backend::Cuda;
+    std::optional<exec::GraphEvaluationResult> result;
+    if (solver_device_evaluation) {
+        if (!execution.evaluate_device()) {
+            for (const auto& error : execution.errors()) {
+                std::cerr << "Solver: ORL graph evaluation: "
+                          << error << '\n';
+            }
+            return false;
         }
-        return false;
+    } else {
+        result = execution.evaluate_result();
+        if (!result->ok) {
+            for (const auto& error : result->errors) {
+                std::cerr << "Deformer: ORL graph evaluation: "
+                          << error << '\n';
+            }
+            return false;
+        }
     }
 
     // A solver graph uses the scene joints input as its in-place working
@@ -1477,8 +1496,15 @@ bool GraphSceneRuntime::execute_orl_segment(
         break;
     }
 
+    if (solver_device_evaluation) {
+        // The solver result remains in CUDA/Vulkan-shared storage. Reading it
+        // back here would defeat the device-only path and is unnecessary for
+        // the deformer or GPU joint rendering.
+        return true;
+    }
+
     std::string error;
-    if (!graph_context_.commit_scene_writes(result, true, &error)) {
+    if (!graph_context_.commit_scene_writes(*result, true, &error)) {
         std::cerr << "Deformer: graph scene writeback failed: "
                   << error << '\n';
         return false;

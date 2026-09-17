@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <utility>
 
 #include <glm/vec4.hpp>
@@ -29,6 +30,17 @@ int vertex_float_offset(const vkkk::Mesh& mesh) {
     return -1;
 }
 
+std::size_t align_up(std::size_t value, std::size_t alignment) {
+    const auto remainder = value % alignment;
+    if (remainder == 0) {
+        return value;
+    }
+    const auto padding = alignment - remainder;
+    return value > std::numeric_limits<std::size_t>::max() - padding
+        ? std::numeric_limits<std::size_t>::max()
+        : value + padding;
+}
+
 } // namespace
 
 SceneInputCatalog::SceneInputCatalog(vkkk::Scene& scene,
@@ -45,12 +57,15 @@ SceneInputCatalog::SceneInputCatalog(vkkk::Scene& scene,
 void SceneInputCatalog::refresh() {
     descriptors_.clear();
     sources_.clear();
-    mesh_positions_.clear();
-    locator_xforms_.clear();
-    controller_xforms_.clear();
+    // Keep per-binding buffers alive across refreshes. CUDA execution caches
+    // device allocations by OrlBuffer address; destroying these buffers here
+    // can make a new locator binding reuse another locator's device storage.
     pack_joints();
     pack_locators();
     pack_controllers();
+    if (cuda_evaluation) {
+        prepare_packed_inputs();
+    }
     add_descriptors();
 }
 
@@ -179,10 +194,32 @@ bool SceneInputCatalog::make_interface_port(const orlgraph::StableId& id,
     return true;
 }
 
+bool SceneInputCatalog::set_cuda_evaluation(bool enabled)
+{
+    if (cuda_evaluation == enabled) {
+        return true;
+    }
+    cuda_evaluation = enabled;
+    packed_solver_inputs.ready = false;
+    return true;
+}
+
+bool SceneInputCatalog::ensure_cuda_inputs()
+{
+    if (!cuda_evaluation || packed_solver_inputs.ready) {
+        return true;
+    }
+    refresh();
+    return packed_solver_inputs.ready;
+}
+
 bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
     exec::GraphInputBinding& binding, std::string* error)
 {
     binding = {};
+    if (cuda_evaluation && !ensure_cuda_inputs()) {
+        return set_error(error, "Unable to prepare packed CUDA scene inputs");
+    }
     const std::string key = port.binding.empty() ? port.id.value : port.binding;
     const auto descriptor = std::find_if(descriptors_.begin(), descriptors_.end(),
         [&key](const SceneInputDescriptor& candidate) {
@@ -211,6 +248,18 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
     if (source == sources_.end()) {
         return set_error(error, "No scene input is registered for binding '" + key + "'");
     }
+
+    const auto bind_packed = [&](std::size_t offset,
+        std::size_t bytes, std::size_t element_count)
+    {
+        if (!packed_solver_inputs.ready) {
+            return false;
+        }
+        binding.kind = exec::ParameterKind::Buffer;
+        binding.element_count = element_count;
+        binding.packed = packed_view(offset, bytes);
+        return true;
+    };
 
     switch (source->second.kind) {
     case SourceKind::MeshPositions: {
@@ -243,6 +292,14 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
         if (!pack_joints()) {
             return set_error(error, "Unable to pack scene joints");
         }
+        if (cuda_evaluation
+            && bind_packed(
+                packed_solver_inputs.joints_offset,
+                packed_solver_inputs.joint_ids.size() * orlrig::kJointStride,
+                packed_solver_inputs.joint_ids.size()))
+        {
+            return true;
+        }
         binding.kind = exec::ParameterKind::Buffer;
         binding.buffer = &joints_;
         binding.element_count = joints_.count();
@@ -258,6 +315,14 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
         if (joints_.count() == 0 && !pack_joints()) {
             return set_error(error, "Unable to pack computed scene joints");
         }
+        if (cuda_evaluation
+            && bind_packed(
+                packed_solver_inputs.joints_offset,
+                packed_solver_inputs.joint_ids.size() * orlrig::kJointStride,
+                packed_solver_inputs.joint_ids.size()))
+        {
+            return true;
+        }
         binding.kind = exec::ParameterKind::Buffer;
         binding.buffer = &joints_;
         binding.element_count = joints_.count();
@@ -270,6 +335,14 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
     case SourceKind::Locators:
         if (!pack_locators()) {
             return set_error(error, "Unable to pack scene locators");
+        }
+        if (cuda_evaluation
+            && bind_packed(
+                packed_solver_inputs.locators_offset,
+                packed_solver_inputs.locator_ids.size() * orlrig::kLocatorStride,
+                packed_solver_inputs.locator_ids.size()))
+        {
+            return true;
         }
         binding.kind = exec::ParameterKind::Buffer;
         binding.buffer = &locators_;
@@ -286,6 +359,25 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
         if (!pack_locator(source->second.component, key)) {
             return set_error(error, "Unable to pack locator transform for '" + key + "'");
         }
+        if (cuda_evaluation) {
+            const auto found_id = std::find(
+                packed_solver_inputs.locator_ids.begin(),
+                packed_solver_inputs.locator_ids.end(),
+                source->second.component);
+            if (found_id != packed_solver_inputs.locator_ids.end()
+                && bind_packed(
+                    packed_solver_inputs.locators_offset
+                        + static_cast<std::size_t>(
+                            std::distance(
+                                packed_solver_inputs.locator_ids.begin(),
+                                found_id))
+                            * orlrig::kLocatorStride,
+                    orlrig::kLocatorStride,
+                    1))
+            {
+                return true;
+            }
+        }
         if (const auto found = locator_xforms_.find(key);
             found != locator_xforms_.end())
         {
@@ -298,6 +390,15 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
     case SourceKind::Controllers:
         if (!pack_controllers()) {
             return set_error(error, "Unable to pack scene controllers");
+        }
+        if (cuda_evaluation
+            && bind_packed(
+                packed_solver_inputs.controllers_offset,
+                packed_solver_inputs.controller_ids.size()
+                    * orlrig::kMatrixStride,
+                packed_solver_inputs.controller_ids.size()))
+        {
+            return true;
         }
         binding.kind = exec::ParameterKind::Buffer;
         binding.buffer = &controllers_;
@@ -341,6 +442,25 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
     case SourceKind::ControllerXform: {
         if (!pack_controller(source->second.component, key)) {
             return set_error(error, "Unable to pack controller transform for '" + key + "'");
+        }
+        if (cuda_evaluation) {
+            const auto found_id = std::find(
+                packed_solver_inputs.controller_ids.begin(),
+                packed_solver_inputs.controller_ids.end(),
+                source->second.component);
+            if (found_id != packed_solver_inputs.controller_ids.end()
+                && bind_packed(
+                    packed_solver_inputs.controllers_offset
+                        + static_cast<std::size_t>(
+                            std::distance(
+                                packed_solver_inputs.controller_ids.begin(),
+                                found_id))
+                            * orlrig::kMatrixStride,
+                    orlrig::kMatrixStride,
+                    1))
+            {
+                return true;
+            }
         }
         const auto found = controller_xforms_.find(key);
         if (found == controller_xforms_.end()) {
@@ -694,6 +814,108 @@ bool SceneInputCatalog::pack_mesh_positions(const std::string& object_name,
         destination[vertex * 4 + 3] = 0.0;
     }
     return true;
+}
+
+bool SceneInputCatalog::prepare_packed_inputs()
+{
+    packed_solver_inputs.ready = false;
+    constexpr std::size_t alignment = 16;
+    const std::size_t joint_bytes = joints_.byte_size();
+    const std::size_t locator_bytes = locators_.byte_size();
+    const std::size_t controller_bytes = controllers_.byte_size();
+
+    std::size_t offset = sizeof(orlrig::SolverContext);
+    offset = align_up(offset, alignment);
+    if (offset == std::numeric_limits<std::size_t>::max()
+        || joint_bytes > std::numeric_limits<std::size_t>::max() - offset)
+    {
+        return false;
+    }
+    const std::size_t joints_offset = offset;
+    offset += joint_bytes;
+
+    offset = align_up(offset, alignment);
+    if (offset == std::numeric_limits<std::size_t>::max()
+        || locator_bytes > std::numeric_limits<std::size_t>::max() - offset)
+    {
+        return false;
+    }
+    const std::size_t locators_offset = offset;
+    offset += locator_bytes;
+
+    offset = align_up(offset, alignment);
+    if (offset == std::numeric_limits<std::size_t>::max()
+        || controller_bytes > std::numeric_limits<std::size_t>::max() - offset)
+    {
+        return false;
+    }
+    const std::size_t controllers_offset = offset;
+    offset += controller_bytes;
+
+    const bool layout_changed =
+        packed_solver_inputs.storage.size() != offset
+        || packed_solver_inputs.joints_offset != joints_offset
+        || packed_solver_inputs.locators_offset != locators_offset
+        || packed_solver_inputs.controllers_offset != controllers_offset
+        || packed_solver_inputs.joint_ids != joint_ids_
+        || packed_solver_inputs.locator_ids != locator_ids_
+        || packed_solver_inputs.controller_ids != controller_ids_;
+
+    if (layout_changed) {
+        packed_solver_inputs.storage.resize(offset);
+        packed_solver_inputs.joint_ids = joint_ids_;
+        packed_solver_inputs.locator_ids = locator_ids_;
+        packed_solver_inputs.controller_ids = controller_ids_;
+        packed_solver_inputs.joints_offset = joints_offset;
+        packed_solver_inputs.locators_offset = locators_offset;
+        packed_solver_inputs.controllers_offset = controllers_offset;
+    }
+
+    if (packed_solver_inputs.storage.size() < sizeof(orlrig::SolverContext)) {
+        return false;
+    }
+    const orlrig::SolverContext context{
+        static_cast<std::int64_t>(joint_ids_.size()),
+        static_cast<std::int64_t>(controller_ids_.size())};
+    std::memcpy(
+        packed_solver_inputs.storage.data(),
+        &context,
+        sizeof(context));
+
+    const auto copy_buffer = [](
+        const exec::OrlBuffer& source,
+        std::vector<std::byte>& destination,
+        std::size_t destination_offset)
+    {
+        if (source.byte_size() == 0) {
+            return;
+        }
+        std::memcpy(
+            destination.data() + destination_offset,
+            source.data(),
+            source.byte_size());
+    };
+    copy_buffer(joints_, packed_solver_inputs.storage, joints_offset);
+    copy_buffer(locators_, packed_solver_inputs.storage, locators_offset);
+    copy_buffer(
+        controllers_,
+        packed_solver_inputs.storage,
+        controllers_offset);
+
+    ++packed_solver_inputs.version;
+    packed_solver_inputs.ready = true;
+    return true;
+}
+
+exec::PackedBufferView SceneInputCatalog::packed_view(
+    std::size_t offset, std::size_t bytes)
+{
+    return exec::PackedBufferView{
+        packed_solver_inputs.storage.data(),
+        packed_solver_inputs.storage.size(),
+        offset,
+        bytes,
+        packed_solver_inputs.version};
 }
 
 bool SceneInputCatalog::pack_joints() {

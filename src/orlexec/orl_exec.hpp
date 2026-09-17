@@ -35,6 +35,17 @@ struct DeviceBufferView {
     std::size_t bytes = 0;
 };
 
+// A view into one mutable host allocation shared by multiple buffer
+// parameters. The execution uploads the complete storage allocation once and
+// passes each parameter's byte range as a device pointer offset.
+struct PackedBufferView {
+    void* data = nullptr;
+    std::size_t storage_bytes = 0;
+    std::size_t offset = 0;
+    std::size_t bytes = 0;
+    std::uint64_t version = 0;
+};
+
 // Owning, growable host storage for one ORL buffer parameter. Applications
 // control capacity and element count; ORL only receives data() and count.
 class OrlBuffer {
@@ -125,6 +136,8 @@ public:
     OrlExecution& operator=(OrlExecution&&) noexcept;
 
     bool bind_buffer(std::string_view parameter, OrlBuffer& buffer);
+    bool bind_packed_buffer(std::string_view parameter,
+        const PackedBufferView& view);
     // Bind an existing CUDA device pointer (CUdeviceptr) for a buffer parameter.
     // CUDA backend only; the pointer is not allocated or freed by ORL.
     bool bind_device_buffer(std::string_view parameter, std::uint64_t device_ptr,
