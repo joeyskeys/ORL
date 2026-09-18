@@ -1,12 +1,17 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <glm/mat4x4.hpp>
+
 #include "component_store.hpp"
+#include "evaluation.hpp"
+#include "hierarchy.hpp"
 #include "locator.hpp"
 #include "mesh.hpp"
 #include "../orl_exec.hpp"
@@ -110,6 +115,16 @@ public:
         std::int64_t end,
         const Controller& target,
         const Controller& pole);
+    RunnerStatus set_hierarchy_plan(const HierarchyPlan& plan);
+    const std::optional<HierarchyPlan>& hierarchy_plan() const {
+        return compiled_hierarchy_plan;
+    }
+    RunnerStatus evaluate_two_bone(ComponentStore& components,
+        ComponentId root,
+        ComponentId mid,
+        ComponentId end,
+        const Locator& target,
+        const Locator& pole);
 
 private:
     RunnerStatus ensure_program();
@@ -120,6 +135,21 @@ private:
     ORL::exec::OrlBuffer packed_joints;
     ORL::exec::OrlBuffer target_xform;
     ORL::exec::OrlBuffer pole_xform;
+    ORL::exec::OrlBuffer hierarchy_data;
+    HierarchyContext hierarchy_context;
+    std::optional<HierarchyPlan> compiled_hierarchy_plan;
 };
+
+using SolverRegionCallback = std::function<RunnerStatus(const SolverRegion&)>;
+
+RunnerStatus dispatch_cpu_levels(
+    const EvaluationPlan& plan,
+    const DynamicDispatchPlan& dispatch,
+    const SolverRegionCallback& callback);
+
+RunnerStatus compute_world_matrices_parallel(
+    const HierarchyPlan& hierarchy,
+    const ComponentStore& components,
+    std::vector<glm::mat4>* world_matrices);
 
 } // namespace orlrig

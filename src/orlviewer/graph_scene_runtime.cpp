@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -345,6 +346,15 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
         return;
     }
 
+    if (solver_stage) {
+        std::string hierarchy_error;
+        if (!graph_context_.ensure_hierarchy_plan(&hierarchy_error)) {
+            std::cerr << "Solver: " << hierarchy_error << '\n';
+            graph_context_.clear_computed_joints_device();
+            return;
+        }
+    }
+
     const bool graph_invalidated =
         observed_graph_edit_revision_
             != graph_context_.graph_edit_revision()
@@ -362,10 +372,9 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
     }
 
     if (solver_stage) {
-        // The solver owns the producer allocation for the implicit
-        // computed-joints handoff. Clear the previous frame before deciding
-        // whether this frame produces a new device view.
-        graph_context_.clear_computed_joints_device();
+        // Keep the previous computed-joints device view alive when a partial
+        // frame has no dirty solver region. A solver execution replaces this
+        // view when it actually dispatches.
         const auto& graph = active_graph();
         if (graph.nodes().empty()
             && graph.inputs().empty()
@@ -636,6 +645,37 @@ bool GraphSceneRuntime::setup(vkkk::Context& context) {
 bool GraphSceneRuntime::dispatch_graph(vkkk::Context& context, bool capture)
 {
     graph_context_.refresh_scene_inputs();
+    const bool solver_stage = stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver;
+    if (solver_stage) {
+        std::string evaluation_error;
+        if (!graph_context_.ensure_evaluation_plan(
+                orlgraph::GraphStage::Solver, &evaluation_error))
+        {
+            std::cerr << "Solver: evaluation plan: "
+                      << evaluation_error << '\n';
+            return false;
+        }
+        evaluation_plan_ = graph_context_.evaluation_plan();
+        active_change_set_ = graph_context_.take_change_set();
+        orlrig::DirtyInputs dirty;
+        dirty.full_evaluation = active_change_set_.full_evaluation
+            || active_change_set_.plan_invalidated;
+        dirty.joints = active_change_set_.joints;
+        dirty.controllers = active_change_set_.controllers;
+        dirty.locators = active_change_set_.locators;
+        if (evaluation_plan_ == nullptr) {
+            active_dispatch_ = {};
+        } else if (runner_.backend() == exec::Backend::Cuda) {
+            active_dispatch_ = orlrig::build_cuda_dispatch_plan(
+                *evaluation_plan_, dirty);
+        } else {
+            active_dispatch_ = orlrig::build_dynamic_dispatch_plan(
+                *evaluation_plan_, dirty);
+        }
+        active_dispatch_data_ =
+            orlrig::pack_dynamic_dispatch_plan(active_dispatch_);
+    }
     const auto validation = stage_.has_value()
         ? graph_context_.validate(*stage_)
         : graph_context_.validate();
@@ -1338,6 +1378,16 @@ bool GraphSceneRuntime::ensure_execution_plan(
         if (!build_orl_segment(segment_nodes, segment_index, error)) {
             return false;
         }
+        if (stage_.has_value()
+            && *stage_ == orlgraph::GraphStage::Solver
+            && evaluation_plan_ != nullptr)
+        {
+            for (const auto& node_id : segment_nodes) {
+                if (evaluation_plan_->region(node_id) != nullptr) {
+                    orl_segments_.back().region_nodes.push_back(node_id);
+                }
+            }
+        }
         execution_plan_.push_back(ExecutionStep{
             ExecutionStep::Kind::OrlSegment,
             segment_index,
@@ -1425,6 +1475,33 @@ bool GraphSceneRuntime::ensure_execution_plan(
     return true;
 }
 
+bool GraphSceneRuntime::segment_is_clean(std::size_t segment_index) const
+{
+    if (stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver
+        && evaluation_plan_ != nullptr
+        && segment_index < orl_segments_.size()
+        && !orl_segments_[segment_index].region_nodes.empty())
+    {
+        for (const auto& node_id : orl_segments_[segment_index].region_nodes) {
+            const auto* region = evaluation_plan_->region(node_id);
+            if (region == nullptr) {
+                return false;
+            }
+            const auto region_index = static_cast<std::size_t>(
+                std::distance(evaluation_plan_->regions.data(), region));
+            if (std::find(active_dispatch_.region_indices.begin(),
+                    active_dispatch_.region_indices.end(), region_index)
+                != active_dispatch_.region_indices.end())
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
 bool GraphSceneRuntime::execute_orl_segment(
     vkkk::Context& context, std::size_t segment_index)
 {
@@ -1435,6 +1512,9 @@ bool GraphSceneRuntime::execute_orl_segment(
         std::cerr << "Deformer: ORL graph segment is unavailable\n";
         return false;
     }
+    if (segment_is_clean(segment_index)) {
+        return true;
+    }
 
     auto& segment = orl_segments_[segment_index];
     auto& execution = *segment.execution;
@@ -1444,6 +1524,22 @@ bool GraphSceneRuntime::execute_orl_segment(
             std::cerr << "Deformer: graph input binding: "
                       << error << '\n';
         }
+        return false;
+    }
+    std::string hierarchy_error;
+    if (!graph_context_.ensure_hierarchy_plan(&hierarchy_error)
+        || !execution.set_hierarchy_context(
+            graph_context_.hierarchy_context())
+        || !execution.bind_hierarchy_data(
+            graph_context_.hierarchy_data()))
+    {
+        std::cerr << "Deformer: hierarchy binding: "
+                  << (hierarchy_error.empty()
+                      ? (execution.errors().empty()
+                          ? "unknown hierarchy binding error"
+                          : execution.errors().front())
+                      : hierarchy_error)
+                  << '\n';
         return false;
     }
 

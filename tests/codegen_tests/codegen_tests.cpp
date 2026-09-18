@@ -429,6 +429,32 @@ TEST_CASE("llvm codegen lowers implicit solver context",
     REQUIRE(ir.find("SolverContext") != std::string::npos);
 }
 
+TEST_CASE("llvm codegen lowers implicit hierarchy context and data",
+    "[orl][codegen][hierarchy]")
+{
+    Parser parser(R"(
+        use hierarchy;
+        int read_hierarchy() {
+            return hierarchy_preorder_id(0)
+                + hierarchy_context.joint_count
+                + hierarchy_data[0];
+        }
+    )");
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen("orl_hierarchy_context_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("define i64 @read_hierarchy(ptr") != std::string::npos);
+    REQUIRE(ir.find("__orl_hierarchy_context") != std::string::npos);
+    REQUIRE(ir.find("__orl_hierarchy_data") != std::string::npos);
+    REQUIRE(ir.find("__orl_host_entry_read_hierarchy") != std::string::npos);
+    REQUIRE(ir.find("HierarchyContext") != std::string::npos);
+}
+
 TEST_CASE("llvm codegen lowers transform constraints", "[orl][codegen][stdlib][constraint]") {
     const std::string src =
         "use constraint/aim;\n"

@@ -698,8 +698,8 @@ TEST_CASE("solver feature path evaluates the staged solver graph",
     end.parent = 1;
     end.translation[0] = 1.0;
     const auto root_id = components.create_joint("root", root);
-    components.create_joint("mid", mid);
-    components.create_joint("end", end);
+    const auto mid_id = components.create_joint("mid", mid);
+    const auto end_id = components.create_joint("end", end);
     components.create_locator(
         "target", orlrig::make_locator(glm::vec3{0.0f, 1.5f, 0.0f}));
     components.create_locator(
@@ -722,6 +722,13 @@ TEST_CASE("solver feature path evaluates the staged solver graph",
     vkkk::Context backend(false);
     runtime.on_update(backend);
 
+    REQUIRE(context.hierarchy_plan().has_value());
+    REQUIRE(context.hierarchy_plan()->joint_count == 3);
+    REQUIRE(context.hierarchy_plan()->is_direct_parent(root_id, mid_id));
+    REQUIRE(context.hierarchy_plan()->is_direct_parent(mid_id, end_id));
+    REQUIRE(context.evaluation_plan() != nullptr);
+    REQUIRE(context.evaluation_plan()->regions.size() == 1);
+    REQUIRE_FALSE(context.evaluation_plan()->regions.front().global);
     REQUIRE(components.joint(root_id)->rotation[3]
         != Catch::Approx(1.0));
     ORL::runtime_config.device = previous_device;
@@ -856,6 +863,74 @@ TEST_CASE("CUDA scene inputs share one packed arena",
         orlrig::kSceneJointsBinding, joints, &error));
     REQUIRE_FALSE(joints.packed.has_value());
     REQUIRE(joints.buffer != nullptr);
+}
+
+TEST_CASE("scene graph context packs the compiled hierarchy layout",
+    "[scene-graph][hierarchy][abi]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    const auto root = components.create_joint("root");
+    auto child_joint = orlviewer::make_identity_joint();
+    child_joint.parent = 0;
+    const auto child = components.create_joint("child", child_joint);
+    REQUIRE(root);
+    REQUIRE(child);
+
+    ORL::SceneGraphContext context(scene, components);
+    std::string error;
+    REQUIRE(context.ensure_hierarchy_plan(&error));
+    REQUIRE(context.hierarchy_context().joint_count == 2);
+    REQUIRE(context.hierarchy_data().count() > 0);
+    REQUIRE(context.hierarchy_context().data_count
+        == static_cast<std::int64_t>(context.hierarchy_data().count()));
+
+    const auto first_signature = context.hierarchy_plan()
+        ->topology_revision;
+    REQUIRE(context.ensure_hierarchy_plan(&error));
+    REQUIRE(context.hierarchy_plan()->topology_revision == first_signature);
+
+    auto replacement = orlviewer::make_identity_joint();
+    replacement.parent = -1;
+    REQUIRE(components.joint(child) != nullptr);
+    *components.joint(child) = replacement;
+    REQUIRE(context.ensure_hierarchy_plan(&error));
+    REQUIRE(context.hierarchy_plan()->topology_revision != first_signature);
+    REQUIRE(context.hierarchy_context().joint_count == 2);
+}
+
+TEST_CASE("scene graph change sets separate pose edits from topology edits",
+    "[scene-graph][partial][changes]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    const auto root = components.create_joint("root");
+    const auto locator = components.create_locator("target");
+    ORL::SceneGraphContext context(scene, components);
+    std::string error;
+    REQUIRE(context.ensure_hierarchy_plan(&error));
+    (void)context.take_change_set();
+
+    const auto before = context.take_change_set().generation;
+    REQUIRE(components.locator(locator) != nullptr);
+    components.locator(locator)->xform[3].x = 2.0f;
+    context.refresh_scene_inputs();
+    const auto pose_change = context.take_change_set();
+    REQUIRE(std::find(pose_change.locators.begin(),
+        pose_change.locators.end(), locator) != pose_change.locators.end());
+    REQUIRE_FALSE(pose_change.plan_invalidated);
+    REQUIRE(pose_change.generation > before);
+
+    auto child = orlviewer::make_identity_joint();
+    child.parent = 0;
+    REQUIRE(components.create_joint("child", child));
+    context.refresh_scene_inputs();
+    const auto topology_change = context.take_change_set();
+    REQUIRE(topology_change.plan_invalidated);
+    REQUIRE(topology_change.full_evaluation);
+    REQUIRE(topology_change.topology_revision
+        > pose_change.topology_revision);
+    REQUIRE(root);
 }
 
 TEST_CASE("stable scene handles survive packed index changes",

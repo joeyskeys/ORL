@@ -1,0 +1,70 @@
+// ORL standard hierarchy accessors.
+//
+// The reserved hierarchy_context and hierarchy_data globals are supplied by
+// the runtime when a program references them.  The data array is packed by
+// orlrig::pack_hierarchy_plan().
+
+int hierarchy_preorder_id(int index) {
+    return hierarchy_data[hierarchy_context.preorder_offset + index];
+}
+
+int hierarchy_depth(int index) {
+    return hierarchy_data[hierarchy_context.depth_offset + index];
+}
+
+int hierarchy_subtree_begin(int index) {
+    return hierarchy_data[hierarchy_context.subtree_begin_offset + index];
+}
+
+int hierarchy_subtree_end(int index) {
+    return hierarchy_data[hierarchy_context.subtree_end_offset + index];
+}
+
+int hierarchy_level_begin(int level) {
+    return hierarchy_data[hierarchy_context.level_offsets_offset + level];
+}
+
+int hierarchy_level_end(int level) {
+    return hierarchy_data[hierarchy_context.level_offsets_offset + level + 1];
+}
+
+int hierarchy_level_joint(int index) {
+    return hierarchy_data[hierarchy_context.level_joints_offset + index];
+}
+
+int hierarchy_parent_id(int index) {
+    if (hierarchy_context.ancestor_storage == 0) {
+        return hierarchy_data[hierarchy_context.parent_joints_offset + index];
+    }
+    int begin = hierarchy_data[hierarchy_context.ancestor_offsets_offset + index];
+    int end = hierarchy_data[hierarchy_context.ancestor_offsets_offset + index + 1];
+    if (end <= begin) {
+        return 0;
+    }
+    return hierarchy_data[hierarchy_context.ancestor_joints_offset + end - 1];
+}
+
+int hierarchy_ancestor_begin(int index) {
+    if (hierarchy_context.ancestor_storage == 0) {
+        return 0;
+    }
+    return hierarchy_data[hierarchy_context.ancestor_offsets_offset + index];
+}
+
+int hierarchy_ancestor_end(int index) {
+    if (hierarchy_context.ancestor_storage == 0) {
+        return 0;
+    }
+    return hierarchy_data[hierarchy_context.ancestor_offsets_offset + index + 1];
+}
+
+int hierarchy_ancestor_count(int index) {
+    return hierarchy_ancestor_end(index) - hierarchy_ancestor_begin(index);
+}
+
+int hierarchy_ancestor_id(int index) {
+    if (hierarchy_context.ancestor_storage == 0) {
+        return 0;
+    }
+    return hierarchy_data[hierarchy_context.ancestor_joints_offset + index];
+}

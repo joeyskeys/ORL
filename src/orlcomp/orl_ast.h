@@ -195,6 +195,7 @@ struct FunctionDefinitionStatement final : Statement {
 struct Program final : AstNode {
     std::vector<std::unique_ptr<Statement>> items;
     bool uses_solver_context = false;
+    bool uses_hierarchy_context = false;
 };
 
 } // namespace orlcomp

@@ -52,6 +52,21 @@ public:
         const int64_t *integers,
         const double *floats,
         void *solver_context);
+    std::optional<int64_t> InvokeInt64WithRuntimeArgsAndHierarchyContext(
+        const std::string &name,
+        void *const *buffers,
+        const int64_t *integers,
+        const double *floats,
+        void *hierarchy_context,
+        void *hierarchy_data);
+    std::optional<int64_t> InvokeInt64WithRuntimeArgsAndContexts(
+        const std::string &name,
+        void *const *buffers,
+        const int64_t *integers,
+        const double *floats,
+        void *solver_context,
+        void *hierarchy_context,
+        void *hierarchy_data);
     OrlJitTarget Target() const;
 
     const std::vector<std::string> &Errors() const;

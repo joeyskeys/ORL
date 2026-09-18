@@ -13,6 +13,13 @@ namespace orlcomp
 inline constexpr std::string_view kSolverContextParameterName =
     "__orl_solver_context";
 inline constexpr std::string_view kSolverContextTypeName = "SolverContext";
+inline constexpr std::string_view kHierarchyContextParameterName =
+    "__orl_hierarchy_context";
+inline constexpr std::string_view kHierarchyContextTypeName =
+    "HierarchyContext";
+inline constexpr std::string_view kHierarchyDataParameterName =
+    "__orl_hierarchy_data";
+inline constexpr std::string_view kHierarchyDataTypeName = "int";
 
 enum class OrlRuntimeParameterKind {
     Buffer,
@@ -32,6 +39,7 @@ struct OrlRuntimeFunctionSignature {
     std::string return_type;
     std::vector<OrlRuntimeParameter> parameters;
     bool uses_solver_context = false;
+    bool uses_hierarchy_context = false;
 };
 
 inline OrlRuntimeParameterKind RuntimeParameterKindFor(const Parameter& parameter) {
@@ -60,6 +68,7 @@ inline std::optional<OrlRuntimeFunctionSignature> DescribeRuntimeFunction(
         signature.name = function->name;
         signature.return_type = function->return_type;
         signature.uses_solver_context = program.uses_solver_context;
+        signature.uses_hierarchy_context = program.uses_hierarchy_context;
         signature.parameters.reserve(function->parameters.size());
         for (const Parameter& parameter : function->parameters) {
             signature.parameters.push_back({
@@ -72,6 +81,18 @@ inline std::optional<OrlRuntimeFunctionSignature> DescribeRuntimeFunction(
             signature.parameters.push_back({
                 std::string{kSolverContextParameterName},
                 std::string{kSolverContextTypeName},
+                OrlRuntimeParameterKind::Buffer,
+            });
+        }
+        if (signature.uses_hierarchy_context) {
+            signature.parameters.push_back({
+                std::string{kHierarchyContextParameterName},
+                std::string{kHierarchyContextTypeName},
+                OrlRuntimeParameterKind::Buffer,
+            });
+            signature.parameters.push_back({
+                std::string{kHierarchyDataParameterName},
+                std::string{kHierarchyDataTypeName},
                 OrlRuntimeParameterKind::Buffer,
             });
         }

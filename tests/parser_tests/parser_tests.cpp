@@ -37,6 +37,20 @@ TEST_CASE("parser tracks implicit solver context usage",
     REQUIRE(parser.Ast()->uses_solver_context);
 }
 
+TEST_CASE("parser tracks implicit hierarchy context usage",
+    "[orl][parser][hierarchy]")
+{
+    Parser parser(R"(
+        int inspect() {
+            return hierarchy_context.joint_count
+                + hierarchy_data[0];
+        }
+    )");
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Ast() != nullptr);
+    REQUIRE(parser.Ast()->uses_hierarchy_context);
+}
+
 TEST_CASE("parser reserves the solver context type and symbol",
     "[orl][parser][solver_context][error]")
 {

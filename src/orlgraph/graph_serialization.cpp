@@ -39,6 +39,16 @@ Json string_array(const std::vector<std::string>& values, Allocator& allocator) 
     return result;
 }
 
+Json stable_id_array(const std::vector<StableId>& values,
+    Allocator& allocator)
+{
+    Json result(rapidjson::kArrayType);
+    for (const auto& value : values) {
+        result.PushBack(string_value(value.value, allocator), allocator);
+    }
+    return result;
+}
+
 Json version_value(const Version& version, Allocator& allocator) {
     Json result(rapidjson::kObjectType);
     add(result, "major", Json(version.major), allocator);
@@ -214,6 +224,41 @@ Json effect_value(const ResourceEffect& effect, Allocator& allocator) {
     return result;
 }
 
+Json partial_footprint_value(
+    const PartialEvaluationFootprint& footprint,
+    Allocator& allocator)
+{
+    Json result(rapidjson::kObjectType);
+    add(result, "declared", Json(footprint.declared), allocator);
+    add(result, "global", Json(footprint.global), allocator);
+    add(result, "stateful", Json(footprint.stateful), allocator);
+    add(result, "supports_sparse_dispatch",
+        Json(footprint.supports_sparse_dispatch), allocator);
+    add(result, "propagation",
+        Json(static_cast<std::uint32_t>(footprint.propagation)), allocator);
+    add(result, "read_joint_ports",
+        string_array(footprint.read_joint_ports, allocator), allocator);
+    add(result, "write_joint_ports",
+        string_array(footprint.write_joint_ports, allocator), allocator);
+    add(result, "read_controller_ports",
+        string_array(footprint.read_controller_ports, allocator), allocator);
+    add(result, "read_locator_ports",
+        string_array(footprint.read_locator_ports, allocator), allocator);
+    add(result, "read_joints",
+        stable_id_array(footprint.read_joints, allocator), allocator);
+    add(result, "write_joints",
+        stable_id_array(footprint.write_joints, allocator), allocator);
+    add(result, "read_controllers",
+        stable_id_array(footprint.read_controllers, allocator), allocator);
+    add(result, "read_locators",
+        stable_id_array(footprint.read_locators, allocator), allocator);
+    add(result, "read_resources",
+        stable_id_array(footprint.read_resources, allocator), allocator);
+    add(result, "write_resources",
+        stable_id_array(footprint.write_resources, allocator), allocator);
+    return result;
+}
+
 Json definition_value(const NodeDefinition& definition, Allocator& allocator) {
     Json result(rapidjson::kObjectType);
     add(result, "id", string_value(definition.id.value, allocator), allocator);
@@ -265,6 +310,11 @@ Json definition_value(const NodeDefinition& definition, Allocator& allocator) {
     add(result, "operation", string_value(definition.operation, allocator), allocator);
     add(result, "pure", Json(definition.pure), allocator);
     add(result, "stateful", Json(definition.stateful), allocator);
+    if (definition.partial_footprint.has_value()) {
+        add(result, "partial_footprint",
+            partial_footprint_value(*definition.partial_footprint, allocator),
+            allocator);
+    }
     add(result, "provenance", provenance_value(definition.provenance, allocator), allocator);
     return result;
 }
@@ -567,6 +617,95 @@ bool read_string_array(const Json& object, const char* key,
             return false;
         }
         output->emplace_back(item.GetString());
+    }
+    return true;
+}
+
+bool read_stable_id_array(const Json& object, const char* key,
+    std::vector<StableId>* output, std::vector<Diagnostic>* diagnostics)
+{
+    std::vector<std::string> values;
+    if (!read_string_array(object, key, &values, diagnostics)) {
+        return false;
+    }
+    for (auto& value : values) {
+        output->push_back(StableId{std::move(value)});
+    }
+    return true;
+}
+
+bool parse_partial_footprint(const Json& value,
+    PartialEvaluationFootprint* output,
+    std::vector<Diagnostic>* diagnostics)
+{
+    if (!value.IsObject()) {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error,
+            "ORLGRAPH_INVALID_PARTIAL_FOOTPRINT",
+            "Partial footprint is not an object",
+            {}, {}, {},
+        });
+        return false;
+    }
+    read_bool(value, "declared", &output->declared, diagnostics);
+    read_bool(value, "global", &output->global, diagnostics);
+    read_bool(value, "stateful", &output->stateful, diagnostics);
+    read_bool(value, "supports_sparse_dispatch",
+        &output->supports_sparse_dispatch, diagnostics);
+    std::uint32_t propagation = 0;
+    read_u32(value, "propagation", &propagation, diagnostics);
+    if (propagation > static_cast<std::uint32_t>(
+            PartialPropagation::Full))
+    {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error,
+            "ORLGRAPH_INVALID_PARTIAL_PROPAGATION",
+            "Partial footprint propagation value is out of range",
+            {}, {}, {},
+        });
+        return false;
+    }
+    output->propagation =
+        static_cast<PartialPropagation>(propagation);
+    if (member(value, "read_joint_ports") != nullptr) {
+        read_string_array(value, "read_joint_ports",
+            &output->read_joint_ports, diagnostics);
+    }
+    if (member(value, "write_joint_ports") != nullptr) {
+        read_string_array(value, "write_joint_ports",
+            &output->write_joint_ports, diagnostics);
+    }
+    if (member(value, "read_controller_ports") != nullptr) {
+        read_string_array(value, "read_controller_ports",
+            &output->read_controller_ports, diagnostics);
+    }
+    if (member(value, "read_locator_ports") != nullptr) {
+        read_string_array(value, "read_locator_ports",
+            &output->read_locator_ports, diagnostics);
+    }
+    if (member(value, "read_joints") != nullptr) {
+        read_stable_id_array(value, "read_joints",
+            &output->read_joints, diagnostics);
+    }
+    if (member(value, "write_joints") != nullptr) {
+        read_stable_id_array(value, "write_joints",
+            &output->write_joints, diagnostics);
+    }
+    if (member(value, "read_controllers") != nullptr) {
+        read_stable_id_array(value, "read_controllers",
+            &output->read_controllers, diagnostics);
+    }
+    if (member(value, "read_locators") != nullptr) {
+        read_stable_id_array(value, "read_locators",
+            &output->read_locators, diagnostics);
+    }
+    if (member(value, "read_resources") != nullptr) {
+        read_stable_id_array(value, "read_resources",
+            &output->read_resources, diagnostics);
+    }
+    if (member(value, "write_resources") != nullptr) {
+        read_stable_id_array(value, "write_resources",
+            &output->write_resources, diagnostics);
     }
     return true;
 }
@@ -970,6 +1109,16 @@ bool parse_definition(const Json& value, NodeDefinition* output,
     read_string(value, "operation", &output->operation, diagnostics, false);
     read_bool(value, "pure", &output->pure, diagnostics, true);
     read_bool(value, "stateful", &output->stateful, diagnostics, false);
+    const Json* partial_footprint = member(value, "partial_footprint");
+    if (partial_footprint != nullptr) {
+        output->partial_footprint = PartialEvaluationFootprint{};
+        if (!parse_partial_footprint(
+                *partial_footprint, &*output->partial_footprint,
+                diagnostics))
+        {
+            output->partial_footprint.reset();
+        }
+    }
     const Json* provenance = member(value, "provenance");
     if (provenance != nullptr) {
         parse_provenance(*provenance, &output->provenance, diagnostics);

@@ -37,12 +37,16 @@ endif()
 
 add_library(orlrig
     orlrig/component_store.cpp
+    orlrig/evaluation.cpp
+    orlrig/evaluation.hpp
+    orlrig/hierarchy.cpp
     orlrig/runners.cpp
     orlrig/abi.hpp
     orlrig/controller.hpp
     orlrig/deformer.hpp
     orlrig/graph_resources.cpp
     orlrig/graph_resources.hpp
+    orlrig/hierarchy.hpp
     orlrig/ik.hpp
     orlrig/joint.hpp
     orlrig/locator.hpp
@@ -65,6 +69,10 @@ target_link_libraries(orlrig
     PUBLIC
         orlexec
 )
+
+if(TARGET TBB::tbb)
+    target_link_libraries(orlrig PRIVATE TBB::tbb)
+endif()
 
 if(TARGET GLM::GLM)
     target_link_libraries(orlrig PUBLIC GLM::GLM)

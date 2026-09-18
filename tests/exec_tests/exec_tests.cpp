@@ -224,6 +224,93 @@ TEST_CASE("orlexec binds implicit solver context without a graph socket",
     REQUIRE(*gpu_result == 11);
 }
 
+TEST_CASE("orlexec binds implicit hierarchy context and data",
+    "[orl][exec][hierarchy][cpu]")
+{
+    const auto program = OrlProgram::Compile(R"(
+        use hierarchy;
+        int read_hierarchy() {
+            return hierarchy_preorder_id(1)
+                + hierarchy_depth(1)
+                + hierarchy_context.joint_count;
+        }
+    )", {.entry_function = "read_hierarchy"});
+    REQUIRE(program.valid());
+    REQUIRE(program.parameters().size() == 2);
+    REQUIRE(program.parameters()[0].name == "__orl_hierarchy_context");
+    REQUIRE(program.parameters()[1].name == "__orl_hierarchy_data");
+    REQUIRE(program.parameters()[0].element_stride
+        == sizeof(orlrig::HierarchyContext));
+    REQUIRE(program.parameters()[1].element_stride
+        == orlrig::kHierarchyDataStride);
+
+    auto execution = OrlExecution::Create(program, Backend::Cpu);
+    REQUIRE(execution.valid());
+    orlrig::HierarchyContext context;
+    context.joint_count = 2;
+    context.preorder_offset = 0;
+    context.depth_offset = 2;
+    OrlBuffer data(orlrig::kHierarchyDataOrlType,
+        orlrig::kHierarchyDataStride);
+    REQUIRE(data.resize(4));
+    REQUIRE(data.write<std::int64_t>(0, 10));
+    REQUIRE(data.write<std::int64_t>(1, 20));
+    REQUIRE(data.write<std::int64_t>(2, 0));
+    REQUIRE(data.write<std::int64_t>(3, 1));
+
+    REQUIRE(execution.set_hierarchy_context(context));
+    REQUIRE(execution.bind_hierarchy_data(data));
+    const auto result = execution.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 23);
+
+    auto gpu = OrlExecution::Create(program, Backend::Cuda);
+    if (!gpu.valid()) {
+        WARN(gpu.errors().empty()
+            ? "CUDA execution runtime unavailable in this environment"
+            : gpu.errors().back());
+        return;
+    }
+    REQUIRE(gpu.set_hierarchy_context(context));
+    REQUIRE(gpu.bind_hierarchy_data(data));
+    const auto gpu_result = gpu.evaluate(1);
+    REQUIRE(gpu_result.has_value());
+    REQUIRE(*gpu_result == 23);
+}
+
+TEST_CASE("orlexec appends hierarchy ABI after solver context",
+    "[orl][exec][hierarchy][solver_context][cpu]")
+{
+    const auto program = OrlProgram::Compile(R"(
+        use hierarchy;
+        int read_both() {
+            return solver_context.joint_count
+                + hierarchy_context.joint_count
+                + hierarchy_data[0];
+        }
+    )", {.entry_function = "read_both"});
+    REQUIRE(program.valid());
+    REQUIRE(program.parameters().size() == 3);
+    REQUIRE(program.parameters()[0].name == "__orl_solver_context");
+    REQUIRE(program.parameters()[1].name == "__orl_hierarchy_context");
+    REQUIRE(program.parameters()[2].name == "__orl_hierarchy_data");
+
+    auto execution = OrlExecution::Create(program, Backend::Cpu);
+    REQUIRE(execution.valid());
+    orlrig::HierarchyContext context;
+    context.joint_count = 4;
+    OrlBuffer data(orlrig::kHierarchyDataOrlType,
+        orlrig::kHierarchyDataStride);
+    REQUIRE(data.resize(1));
+    REQUIRE(data.write<std::int64_t>(0, 5));
+    REQUIRE(execution.set_solver_context(3, 0));
+    REQUIRE(execution.set_hierarchy_context(context));
+    REQUIRE(execution.bind_hierarchy_data(data));
+    const auto result = execution.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 12);
+}
+
 TEST_CASE("orlexec reports invalid named bindings", "[orl][exec][cpu][error]") {
     OrlProgram program = RequireProgram();
     auto execution = OrlExecution::Create(program, Backend::Cpu);

@@ -930,10 +930,18 @@ bool SceneInputCatalog::pack_joints() {
     if (!joints_.resize(packed.size())) {
         return false;
     }
-    if (!packed.empty()) {
-        std::memcpy(joints_.data(), packed.data(),
-            packed.size() * orlrig::kJointStride);
+    if (packed.empty()) {
+        return true;
     }
+    const std::size_t bytes = packed.size() * orlrig::kJointStride;
+    if (joints_.count() == packed.size()
+        && std::memcmp(
+            static_cast<const exec::OrlBuffer&>(joints_).data(),
+            packed.data(), bytes) == 0)
+    {
+        return true;
+    }
+    std::memcpy(joints_.data(), packed.data(), bytes);
     return true;
 }
 
@@ -947,11 +955,23 @@ bool SceneInputCatalog::pack_locators() {
     if (!locators_.resize(packed.size())) {
         return false;
     }
-    auto* destination = static_cast<double*>(locators_.data());
+    std::vector<double> values(
+        packed.size() * (orlrig::kLocatorStride / sizeof(double)));
     for (std::size_t index = 0; index < packed.size(); ++index) {
         orlrig::pack_xform(packed[index],
-            destination + index * (orlrig::kLocatorStride / sizeof(double)));
+            values.data() + index
+                * (orlrig::kLocatorStride / sizeof(double)));
     }
+    const std::size_t bytes = values.size() * sizeof(double);
+    if (bytes == 0
+        || (locators_.count() == packed.size()
+            && std::memcmp(
+                static_cast<const exec::OrlBuffer&>(locators_).data(),
+                values.data(), bytes) == 0))
+    {
+        return true;
+    }
+    std::memcpy(locators_.data(), values.data(), bytes);
     return true;
 }
 
@@ -979,7 +999,7 @@ bool SceneInputCatalog::pack_controllers() {
     if (!controllers_.resize(controllers.size())) {
         return false;
     }
-    auto* destination = static_cast<double*>(controllers_.data());
+    std::vector<double> values(controllers.size() * 16);
     for (std::size_t index = 0; index < controllers.size(); ++index) {
         const auto* controller = components_.controller(controllers[index].second);
         if (controller == nullptr) {
@@ -988,8 +1008,18 @@ bool SceneInputCatalog::pack_controllers() {
         auto resolved = *controller;
         resolved.xform = components_.controller_world_xform(
             controllers[index].second);
-        orlrig::pack_xform(resolved, destination + index * 16);
+        orlrig::pack_xform(resolved, values.data() + index * 16);
     }
+    const std::size_t bytes = values.size() * sizeof(double);
+    if (bytes == 0
+        || (controllers_.count() == controllers.size()
+            && std::memcmp(
+                static_cast<const exec::OrlBuffer&>(controllers_).data(),
+                values.data(), bytes) == 0))
+    {
+        return true;
+    }
+    std::memcpy(controllers_.data(), values.data(), bytes);
     return true;
 }
 

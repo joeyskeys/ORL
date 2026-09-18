@@ -97,10 +97,13 @@ public:
         summary_.exported = definition.exported;
         collect_metadata();
         for (const auto& parameter : definition.parameters) {
-            if (parameter.name == "solver_context") {
+            if (parameter.name == "solver_context"
+                || parameter.name == "hierarchy_context"
+                || parameter.name == "hierarchy_data")
+            {
                 add_error("ORL_ANALYSIS_RESERVED_NAME",
-                    "The name 'solver_context' is reserved for the implicit "
-                    "SolverContext global");
+                    "The name '" + parameter.name
+                        + "' is reserved for an implicit runtime global");
             }
             FunctionParameterSummary value;
             value.name = parameter.name;
@@ -225,10 +228,13 @@ private:
         } else if (const auto* expression = dynamic_cast<const ExpressionStatement*>(&statement)) {
             visit_expression(*expression->expression);
         } else if (const auto* declaration = dynamic_cast<const DeclarationStatement*>(&statement)) {
-            if (declaration->variable_name == "solver_context") {
+            if (declaration->variable_name == "solver_context"
+                || declaration->variable_name == "hierarchy_context"
+                || declaration->variable_name == "hierarchy_data")
+            {
                 add_error("ORL_ANALYSIS_RESERVED_NAME",
-                    "The name 'solver_context' is reserved for the implicit "
-                    "SolverContext global");
+                    "The name '" + declaration->variable_name
+                        + "' is reserved for an implicit runtime global");
             }
             validate_type(declaration->type_name, "declaration type");
             if (declaration->initializer != nullptr) {
@@ -284,9 +290,12 @@ private:
             visit_expression(*binary->left);
             visit_expression(*binary->right);
         } else if (const auto* assignment = dynamic_cast<const AssignmentExpression*>(&expression)) {
-            if (assignment->target_name == "solver_context") {
+            if (assignment->target_name == "solver_context"
+                || assignment->target_name == "hierarchy_context"
+                || assignment->target_name == "hierarchy_data")
+            {
                 add_error("ORL_ANALYSIS_CONTEXT_WRITE",
-                    "The implicit solver_context global is read-only");
+                    "The implicit runtime context global is read-only");
             }
             access(assignment->target_name, ParameterAccess::Write);
             visit_expression(*assignment->value);
@@ -317,6 +326,10 @@ private:
             visit_expression(*index->index);
         } else if (const auto* assignment = dynamic_cast<const IndexAssignmentExpression*>(&expression)) {
             if (const auto* base = base_identifier(assignment->target.get())) {
+                if (base->name == "hierarchy_data") {
+                    add_error("ORL_ANALYSIS_CONTEXT_WRITE",
+                        "The implicit hierarchy_data global is read-only");
+                }
                 access(base->name, ParameterAccess::Write);
             }
             if (assignment->target != nullptr && assignment->target->index != nullptr) {
@@ -328,9 +341,12 @@ private:
         } else if (const auto* assignment = dynamic_cast<const MemberAssignmentExpression*>(&expression)) {
             if (assignment->target != nullptr) {
                 if (const auto* base = base_identifier(assignment->target->base.get())) {
-                    if (base->name == "solver_context") {
+                    if (base->name == "solver_context"
+                        || base->name == "hierarchy_context"
+                        || base->name == "hierarchy_data")
+                    {
                         add_error("ORL_ANALYSIS_CONTEXT_WRITE",
-                            "The implicit solver_context global is read-only");
+                            "The implicit runtime context global is read-only");
                     }
                     access(base->name, ParameterAccess::Write);
                 }

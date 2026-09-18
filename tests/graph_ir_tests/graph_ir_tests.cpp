@@ -438,6 +438,33 @@ TEST_CASE("oro serialization is deterministic and round trips", "[orlgraph][oro]
     REQUIRE_FALSE(lookup->parameter_values.contains("index"));
 }
 
+TEST_CASE("oro serialization preserves partial evaluation footprints",
+    "[orlgraph][oro][partial]")
+{
+    NodeRegistry registry;
+    auto definition = make_passthrough_definition();
+    PartialEvaluationFootprint footprint;
+    footprint.declared = true;
+    footprint.supports_sparse_dispatch = true;
+    footprint.propagation = PartialPropagation::AncestorsAndDescendants;
+    footprint.read_joint_ports = {"parent"};
+    footprint.write_joints = {StableId{"joint.output"}};
+    footprint.read_resources = {StableId{"scene.joints"}};
+    definition.partial_footprint = footprint;
+    REQUIRE(registry.register_definition(std::move(definition)));
+
+    GraphModule module;
+    module.module_id = "oro.partial";
+    const auto serialized = serialize_oro(module, registry);
+    REQUIRE(serialized.ok);
+    const auto loaded = deserialize_oro(serialized.text);
+    REQUIRE(loaded.ok);
+    const auto* result = loaded.registry.find(StableId{"builtin.pass"});
+    REQUIRE(result != nullptr);
+    REQUIRE(result->partial_footprint.has_value());
+    REQUIRE(*result->partial_footprint == footprint);
+}
+
 TEST_CASE("editable graph JSON is deterministic and round trips",
     "[orlgraph][graph-json]")
 {

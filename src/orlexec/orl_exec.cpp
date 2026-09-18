@@ -52,6 +52,9 @@ std::size_t element_stride_for(std::string_view type_name) {
     if (type_name == orlrig::kSolverContextOrlType) {
         return orlrig::kSolverContextStride;
     }
+    if (type_name == orlrig::kHierarchyContextOrlType) {
+        return orlrig::kHierarchyContextStride;
+    }
     return 0;
 }
 
@@ -362,6 +365,7 @@ struct OrlExecution::Impl {
     std::optional<PackedStorage> packed_storage;
     DeviceBuffer packed_device;
     std::optional<OrlBuffer> solver_context;
+    std::optional<OrlBuffer> hierarchy_context;
     std::unique_ptr<orlcomp::OrlJitEngine> jit;
     std::unique_ptr<orlcomp::OrlGpuEngine> gpu;
     std::vector<std::string> errors;
@@ -447,6 +451,26 @@ struct OrlExecution::Impl {
                     ordered_buffers.push_back(
                         backend == Backend::Cpu
                             ? solver_context->data() : nullptr);
+                    continue;
+                }
+                if (parameter.name == orlcomp::kHierarchyContextParameterName) {
+                    if (!hierarchy_context.has_value()) {
+                        errors.emplace_back(
+                            "Implicit HierarchyContext storage is unavailable");
+                        continue;
+                    }
+                    if (hierarchy_context->orl_type()
+                            != parameter.orl_type
+                        || hierarchy_context->element_stride()
+                            != parameter.element_stride)
+                    {
+                        errors.emplace_back(
+                            "Implicit HierarchyContext buffer ABI is incompatible");
+                        continue;
+                    }
+                    ordered_buffers.push_back(
+                        backend == Backend::Cpu
+                            ? hierarchy_context->data() : nullptr);
                     continue;
                 }
                 const auto device = device_bindings.find(parameter.name);
@@ -701,6 +725,26 @@ OrlExecution OrlExecution::Create(const OrlProgram& program, Backend backend) {
             return OrlExecution(std::move(impl));
         }
     }
+    const auto hierarchy_parameter = std::find_if(
+        impl->program->parameters.begin(),
+        impl->program->parameters.end(),
+        [](const ParameterDesc& parameter) {
+            return parameter.name
+                == orlcomp::kHierarchyContextParameterName;
+        });
+    if (hierarchy_parameter != impl->program->parameters.end()) {
+        impl->hierarchy_context.emplace(
+            orlrig::kHierarchyContextOrlType,
+            orlrig::kHierarchyContextStride);
+        const orlrig::HierarchyContext context{};
+        if (!impl->hierarchy_context->resize(1)
+            || !impl->hierarchy_context->write(0, context))
+        {
+            impl->errors.emplace_back(
+                "Failed to initialize implicit HierarchyContext storage");
+            return OrlExecution(std::move(impl));
+        }
+    }
     impl->initialize();
     return OrlExecution(std::move(impl));
 }
@@ -893,6 +937,66 @@ bool OrlExecution::set_solver_context(
     return true;
 }
 
+bool OrlExecution::set_hierarchy_context(
+    const orlrig::HierarchyContext& context)
+{
+    impl_->errors.clear();
+    if (!impl_->hierarchy_context.has_value()) {
+        return true;
+    }
+    if (!impl_->initialized) {
+        impl_->errors.emplace_back("ORL execution was not initialized");
+        return false;
+    }
+    if (std::memcmp(
+            static_cast<const OrlBuffer&>(*impl_->hierarchy_context).data(),
+            &context,
+            sizeof(context)) == 0)
+    {
+        return true;
+    }
+    if (!impl_->hierarchy_context->write(0, context)) {
+        impl_->errors.emplace_back(
+            "Failed to update implicit HierarchyContext storage");
+        return false;
+    }
+    return true;
+}
+
+bool OrlExecution::bind_hierarchy_data(OrlBuffer& buffer)
+{
+    if (impl_ == nullptr) {
+        return false;
+    }
+    if (!impl_->initialized) {
+        impl_->errors.clear();
+        impl_->errors.emplace_back("ORL execution was not initialized");
+        return false;
+    }
+    const auto* parameter =
+        impl_->parameter(orlcomp::kHierarchyDataParameterName);
+    if (parameter == nullptr) {
+        impl_->errors.clear();
+        return true;
+    }
+    if (buffer.orl_type() != parameter->orl_type
+        || buffer.element_stride() != parameter->element_stride)
+    {
+        impl_->errors.clear();
+        impl_->errors.emplace_back(
+            "Hierarchy data buffer ABI is incompatible");
+        return false;
+    }
+    impl_->errors.clear();
+    impl_->buffers[std::string(orlcomp::kHierarchyDataParameterName)] =
+        &buffer;
+    impl_->packed_bindings.erase(
+        std::string(orlcomp::kHierarchyDataParameterName));
+    impl_->release_device_binding(
+        std::string(orlcomp::kHierarchyDataParameterName));
+    return true;
+}
+
 void OrlExecution::clear_bindings() {
     impl_->release_device_bindings();
     impl_->buffers.clear();
@@ -927,12 +1031,38 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
 
     if (impl_->backend == Backend::Cpu) {
         const std::string wrapper = "__orl_host_entry_" + entry;
-        const auto result = impl_->solver_context.has_value()
-            ? impl_->jit->InvokeInt64WithRuntimeArgsAndContext(
+        std::optional<std::int64_t> result;
+        const bool has_solver_context = impl_->solver_context.has_value();
+        const bool has_hierarchy_context =
+            impl_->hierarchy_context.has_value();
+        if (has_solver_context && has_hierarchy_context) {
+            result = impl_->jit->InvokeInt64WithRuntimeArgsAndContexts(
                 wrapper, host_buffers.data(), integers.data(), floats.data(),
-                impl_->solver_context->data())
-            : impl_->jit->InvokeInt64WithRuntimeArgs(
+                impl_->solver_context->data(),
+                const_cast<void*>(static_cast<const OrlBuffer&>(
+                    *impl_->hierarchy_context).data()),
+                const_cast<void*>(static_cast<const OrlBuffer&>(
+                    *impl_->buffers.at(
+                        std::string(orlcomp::kHierarchyDataParameterName)))
+                    .data()));
+        } else if (has_solver_context) {
+            result = impl_->jit->InvokeInt64WithRuntimeArgsAndContext(
+                wrapper, host_buffers.data(), integers.data(), floats.data(),
+                impl_->solver_context->data());
+        } else if (has_hierarchy_context) {
+            result =
+                impl_->jit->InvokeInt64WithRuntimeArgsAndHierarchyContext(
+                    wrapper, host_buffers.data(), integers.data(), floats.data(),
+                    const_cast<void*>(static_cast<const OrlBuffer&>(
+                        *impl_->hierarchy_context).data()),
+                    const_cast<void*>(static_cast<const OrlBuffer&>(
+                        *impl_->buffers.at(
+                            std::string(orlcomp::kHierarchyDataParameterName)))
+                        .data()));
+        } else {
+            result = impl_->jit->InvokeInt64WithRuntimeArgs(
                 wrapper, host_buffers.data(), integers.data(), floats.data());
+        }
         timing.kernel_ms = elapsed_ms(t0);
         timing.total_ms = timing.kernel_ms;
         if (!result.has_value()) {
@@ -965,6 +1095,18 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
                             &upload_calls,
                             &upload_bytes);
                 if (!ready)
+                {
+                    return std::nullopt;
+                }
+            } else if (parameter.name
+                == orlcomp::kHierarchyContextParameterName)
+            {
+                if (!impl_->hierarchy_context.has_value()
+                    || !impl_->ensure_device_buffer(
+                        *impl_->hierarchy_context,
+                        &handle,
+                        &upload_calls,
+                        &upload_bytes))
                 {
                     return std::nullopt;
                 }
@@ -1143,6 +1285,27 @@ std::optional<DeviceBufferView> OrlExecution::device_buffer_view(
         }
         return DeviceBufferView{
             view->device_ptr, sizeof(orlrig::SolverContext)};
+    }
+
+    if (name == orlcomp::kHierarchyContextParameterName
+        && impl_->hierarchy_context.has_value())
+    {
+        const auto device = impl_->device_buffers.find(
+            &*impl_->hierarchy_context);
+        if (device == impl_->device_buffers.end()) {
+            impl_->errors.clear();
+            impl_->errors.emplace_back(
+                "Device buffer for hierarchy context has not been allocated");
+            return std::nullopt;
+        }
+        const auto view =
+            impl_->gpu->DeviceBufferView(device->second.handle);
+        if (!view.has_value()) {
+            append_errors(impl_->errors, impl_->gpu->Errors());
+            return std::nullopt;
+        }
+        return DeviceBufferView{
+            view->device_ptr, sizeof(orlrig::HierarchyContext)};
     }
 
     const auto host = impl_->buffers.find(name);

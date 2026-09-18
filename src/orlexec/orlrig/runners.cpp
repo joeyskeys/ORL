@@ -1,9 +1,11 @@
 #include "runners.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <utility>
 
+#include <tbb/parallel_for.h>
 #include <glm/vec4.hpp>
 
 namespace orlrig
@@ -544,6 +546,7 @@ SolverRunner::SolverRunner(exec::Backend backend)
     , packed_joints(kJointOrlType, kJointStride)
     , target_xform(kLocatorOrlType, kLocatorStride)
     , pole_xform(kLocatorOrlType, kLocatorStride)
+    , hierarchy_data(kHierarchyDataOrlType, kHierarchyDataStride)
 {
 }
 
@@ -571,6 +574,40 @@ RunnerStatus SolverRunner::ensure_program() {
     }
     program = std::move(compiled);
     execution = std::move(created);
+    return success();
+}
+
+RunnerStatus SolverRunner::set_hierarchy_plan(
+    const HierarchyPlan& plan)
+{
+    if (plan.joint_count != plan.preorder_joints.size()
+        || plan.subtree_begin.size() != plan.joint_count
+        || plan.subtree_end.size() != plan.joint_count
+        || plan.depth.size() != plan.joint_count)
+    {
+        return failure("Solver hierarchy plan has inconsistent sizes");
+    }
+    if (compiled_hierarchy_plan.has_value()
+        && compiled_hierarchy_plan->topology_revision
+            == plan.topology_revision
+        && compiled_hierarchy_plan->ancestor_storage
+            == plan.ancestor_storage)
+    {
+        return success();
+    }
+    compiled_hierarchy_plan = plan;
+    const auto packed = pack_hierarchy_plan(plan);
+    hierarchy_context = packed.context;
+    if (!hierarchy_data.resize(packed.data.size())) {
+        compiled_hierarchy_plan.reset();
+        return failure("Failed to allocate solver hierarchy data");
+    }
+    for (std::size_t index = 0; index < packed.data.size(); ++index) {
+        if (!hierarchy_data.write(index, packed.data[index])) {
+            compiled_hierarchy_plan.reset();
+            return failure("Failed to populate solver hierarchy data");
+        }
+    }
     return success();
 }
 
@@ -626,6 +663,8 @@ RunnerStatus SolverRunner::evaluate_two_bone(exec::OrlBuffer& joint_buffer,
 
     const auto joint_count = static_cast<std::int64_t>(joint_buffer.count());
     if (!execution->set_solver_context(joint_count, 0)
+        || !execution->set_hierarchy_context(hierarchy_context)
+        || !execution->bind_hierarchy_data(hierarchy_data)
         || !execution->bind_buffer("joints", joint_buffer)
         || !execution->bind_int("root", root)
         || !execution->bind_int("mid", mid)
@@ -654,6 +693,143 @@ RunnerStatus SolverRunner::evaluate_two_bone(std::vector<Joint>& joints,
     pole_locator.xform = pole.xform;
     return evaluate_two_bone(joints, root, mid, end,
         target_locator, pole_locator);
+}
+
+RunnerStatus SolverRunner::evaluate_two_bone(
+    ComponentStore& components,
+    ComponentId root,
+    ComponentId mid,
+    ComponentId end,
+    const Locator& target,
+    const Locator& pole)
+{
+    if (!compiled_hierarchy_plan.has_value()) {
+        return failure("Solver hierarchy plan is not compiled");
+    }
+    if (compiled_hierarchy_plan->joint_count
+        != components.size(ComponentKind::Joint))
+    {
+        return failure("Solver hierarchy plan does not match the joint store");
+    }
+    if (!compiled_hierarchy_plan->is_direct_parent(root, mid)
+        || !compiled_hierarchy_plan->is_direct_parent(mid, end))
+    {
+        return failure(
+            "Two-bone solver chain does not match the compiled hierarchy");
+    }
+
+    const auto root_index = components.joint_index(root);
+    const auto mid_index = components.joint_index(mid);
+    const auto end_index = components.joint_index(end);
+    auto packed = components.packed_joints();
+    if (root_index < 0 || mid_index < 0 || end_index < 0
+        || packed.size() != compiled_hierarchy_plan->joint_count)
+    {
+        return failure("Two-bone solver joints are unavailable");
+    }
+
+    const auto status = evaluate_two_bone(
+        packed, root_index, mid_index, end_index, target, pole);
+    if (!status) {
+        return status;
+    }
+
+    auto* root_joint = components.joint(root);
+    auto* mid_joint = components.joint(mid);
+    if (root_joint == nullptr || mid_joint == nullptr) {
+        return failure("Two-bone solver joints are unavailable");
+    }
+    *root_joint = packed[static_cast<std::size_t>(root_index)];
+    *mid_joint = packed[static_cast<std::size_t>(mid_index)];
+    return success();
+}
+
+RunnerStatus dispatch_cpu_levels(
+    const EvaluationPlan& plan,
+    const DynamicDispatchPlan& dispatch,
+    const SolverRegionCallback& callback)
+{
+    if (!callback) {
+        return failure("CPU solver dispatch callback is empty");
+    }
+    for (const auto& level : dispatch.levels) {
+        std::vector<RunnerStatus> statuses(level.size());
+        std::atomic<bool> failed{false};
+        tbb::parallel_for(std::size_t{0}, level.size(),
+            [&](std::size_t offset) {
+                const std::size_t region_index = level[offset];
+                if (region_index >= plan.regions.size()) {
+                    statuses[offset] = failure(
+                        "CPU solver dispatch contains an invalid region");
+                    failed.store(true);
+                    return;
+                }
+                statuses[offset] = callback(plan.regions[region_index]);
+                if (!statuses[offset]) {
+                    failed.store(true);
+                }
+            });
+        if (failed.load()) {
+            RunnerStatus result;
+            for (const auto& status : statuses) {
+                if (!status) {
+                    result.errors.insert(result.errors.end(),
+                        status.errors.begin(), status.errors.end());
+                }
+            }
+            return result.errors.empty()
+                ? failure("CPU solver region dispatch failed")
+                : result;
+        }
+    }
+    return success();
+}
+
+RunnerStatus compute_world_matrices_parallel(
+    const HierarchyPlan& hierarchy,
+    const ComponentStore& components,
+    std::vector<glm::mat4>* world_matrices)
+{
+    if (world_matrices == nullptr) {
+        return failure("World-matrix output is null");
+    }
+    if (hierarchy.preorder_joints.size() != hierarchy.joint_count
+        || hierarchy.level_offsets.empty()
+        || hierarchy.level_joints.size() != hierarchy.joint_count)
+    {
+        return failure("Hierarchy plan has incomplete level buckets");
+    }
+    world_matrices->assign(hierarchy.joint_count, glm::mat4{1.0f});
+    for (std::size_t level = 0;
+         level + 1 < hierarchy.level_offsets.size(); ++level)
+    {
+        const auto begin = hierarchy.level_offsets[level];
+        const auto end = hierarchy.level_offsets[level + 1];
+        tbb::parallel_for(begin, end,
+            [&](std::uint32_t offset) {
+                if (offset >= hierarchy.level_joints.size()) {
+                    return;
+                }
+                const ComponentId id = hierarchy.level_joints[offset];
+                const auto position = hierarchy.preorder_position(id);
+                const auto* joint = components.joint(id);
+                if (!position.has_value() || joint == nullptr) {
+                    return;
+                }
+                glm::mat4 world = joint_local_matrix(*joint);
+                const auto parent = hierarchy.parent_of(id);
+                if (parent.has_value()) {
+                    const auto parent_position =
+                        hierarchy.preorder_position(*parent);
+                    if (!parent_position.has_value()) {
+                        return;
+                    }
+                    world = (*world_matrices)[*parent_position] * world;
+                }
+                (*world_matrices)[*position] = world;
+            });
+    }
+    return success();
 }
 
 } // namespace orlrig

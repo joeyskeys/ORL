@@ -7,6 +7,7 @@
 #include "orl_parser.h"
 
 #include <algorithm>
+#include <vector>
 
 using namespace orlcomp;
 
@@ -183,6 +184,33 @@ TEST_CASE("only exported functions become stage-aware node definitions",
         [solve](const auto* definition) {
             return definition->id == solve->id;
         }));
+}
+
+TEST_CASE("export metadata imports a partial evaluation footprint",
+    "[orl][analysis][partial]")
+{
+    const auto imported = import_node_definitions(R"(
+        export int solve [[
+            string stage = "solver",
+            string partial_propagation = "descendants",
+            string partial_read_locator_ports = "target,pole",
+            int partial_sparse = 1
+        ]] (int value) {
+            return value;
+        }
+    )", NodeImportOptions{.module_name = "partial_nodes"});
+
+    REQUIRE(imported.ok());
+    const auto* solve = imported.registry.find("partial_nodes.solve");
+    REQUIRE(solve != nullptr);
+    REQUIRE(solve->partial_footprint.has_value());
+    REQUIRE(solve->partial_footprint->declared);
+    REQUIRE_FALSE(solve->partial_footprint->global);
+    REQUIRE(solve->partial_footprint->supports_sparse_dispatch);
+    REQUIRE(solve->partial_footprint->propagation
+        == orlgraph::PartialPropagation::Descendants);
+    REQUIRE(solve->partial_footprint->read_locator_ports
+        == std::vector<std::string>{"target", "pole"});
 }
 
 TEST_CASE("semantic analysis rejects unresolved calls and unsupported types",

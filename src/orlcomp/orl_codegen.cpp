@@ -100,8 +100,11 @@ struct LlvmIrCodegen::Impl {
         current_function_return_type_ = nullptr;
         current_function_definition_ = nullptr;
         solver_context_argument_ = nullptr;
+        hierarchy_context_argument_ = nullptr;
+        hierarchy_data_argument_ = nullptr;
         generating_parallel_body_ = false;
         uses_solver_context_ = program.uses_solver_context;
+        uses_hierarchy_context_ = program.uses_hierarchy_context;
 
         if (target_ == OrlCodegenTarget::Host && !ApplyNativeDataLayout()) {
             return false;
@@ -118,6 +121,29 @@ struct LlvmIrCodegen::Impl {
             struct_field_indices_["SolverContext"] = {
                 {"joint_count", 0},
                 {"controller_count", 1},
+            };
+        }
+        if (uses_hierarchy_context_) {
+            auto *context_type = llvm::StructType::create(
+                *context_, "HierarchyContext");
+            context_type->setBody(std::vector<llvm::Type*>(
+                14, builder_.getInt64Ty()), false);
+            struct_types_.emplace("HierarchyContext", context_type);
+            struct_field_indices_["HierarchyContext"] = {
+                {"joint_count", 0},
+                {"level_count", 1},
+                {"ancestor_count", 2},
+                {"ancestor_storage", 3},
+                {"preorder_offset", 4},
+                {"depth_offset", 5},
+                {"subtree_begin_offset", 6},
+                {"subtree_end_offset", 7},
+                {"level_offsets_offset", 8},
+                {"level_joints_offset", 9},
+                {"parent_joints_offset", 10},
+                {"ancestor_offsets_offset", 11},
+                {"ancestor_joints_offset", 12},
+                {"data_count", 13},
             };
         }
 
@@ -375,7 +401,8 @@ struct LlvmIrCodegen::Impl {
 
         std::vector<llvm::Type *> parameter_types;
         parameter_types.reserve(function_definition.parameters.size()
-            + (uses_solver_context_ ? 1 : 0));
+            + (uses_solver_context_ ? 1 : 0)
+            + (uses_hierarchy_context_ ? 2 : 0));
         for (const auto &parameter : function_definition.parameters) {
             llvm::Type *parameter_type = MapTypeName(parameter.type_name);
             if (parameter_type == nullptr) {
@@ -385,6 +412,10 @@ struct LlvmIrCodegen::Impl {
             parameter_types.push_back(parameter.is_buffer ? builder_.getPtrTy() : parameter_type);
         }
         if (uses_solver_context_) {
+            parameter_types.push_back(builder_.getPtrTy());
+        }
+        if (uses_hierarchy_context_) {
+            parameter_types.push_back(builder_.getPtrTy());
             parameter_types.push_back(builder_.getPtrTy());
         }
 
@@ -411,10 +442,13 @@ struct LlvmIrCodegen::Impl {
 
         auto argument = function->arg_begin();
         for (const auto &parameter_ast : function_definition.parameters) {
-            if (parameter_ast.name == "solver_context") {
+            if (parameter_ast.name == "solver_context"
+                || parameter_ast.name == "hierarchy_context"
+                || parameter_ast.name == "hierarchy_data")
+            {
                 AddError(
-                    "The name 'solver_context' is reserved for the implicit "
-                    "SolverContext global");
+                    "The parameter name '" + parameter_ast.name
+                    + "' is reserved for an implicit runtime global");
             }
             argument->setName(parameter_ast.name);
             if (parameter_ast.is_buffer) {
@@ -442,6 +476,30 @@ struct LlvmIrCodegen::Impl {
                     false,
                     true,
                 });
+            ++argument;
+        }
+        if (uses_hierarchy_context_) {
+            hierarchy_context_argument_ = &*argument;
+            hierarchy_context_argument_->setName("__orl_hierarchy_context");
+            AddVariable("hierarchy_context",
+                VariableInfo{
+                    hierarchy_context_argument_,
+                    MapTypeName("HierarchyContext"),
+                    true,
+                    false,
+                    true,
+                });
+            ++argument;
+            hierarchy_data_argument_ = &*argument;
+            hierarchy_data_argument_->setName("__orl_hierarchy_data");
+            AddVariable("hierarchy_data",
+                VariableInfo{
+                    hierarchy_data_argument_,
+                    builder_.getInt64Ty(),
+                    true,
+                    false,
+                    true,
+                });
         }
 
         GenerateBlock(*function_definition.body);
@@ -458,6 +516,8 @@ struct LlvmIrCodegen::Impl {
         current_function_return_type_ = nullptr;
         current_function_definition_ = nullptr;
         solver_context_argument_ = nullptr;
+        hierarchy_context_argument_ = nullptr;
+        hierarchy_data_argument_ = nullptr;
 
         if (llvm::verifyFunction(*function, &llvm::errs())) {
             AddError("LLVM verifier failed for function: " + function_definition.name);
@@ -482,6 +542,10 @@ struct LlvmIrCodegen::Impl {
             builder_.getPtrTy(), // const double* floats
         };
         if (uses_solver_context_) {
+            parameter_types.push_back(builder_.getPtrTy());
+        }
+        if (uses_hierarchy_context_) {
+            parameter_types.push_back(builder_.getPtrTy());
             parameter_types.push_back(builder_.getPtrTy());
         }
         const std::string wrapper_name = "__orl_host_entry_" + definition.name;
@@ -513,6 +577,10 @@ struct LlvmIrCodegen::Impl {
         llvm::Value *floats = &*argument++;
         llvm::Value *solver_context = uses_solver_context_
             ? &*argument++ : nullptr;
+        llvm::Value *hierarchy_context = uses_hierarchy_context_
+            ? &*argument++ : nullptr;
+        llvm::Value *hierarchy_data = uses_hierarchy_context_
+            ? &*argument++ : nullptr;
 
         llvm::BasicBlock *entry = llvm::BasicBlock::Create(*context_, "entry", wrapper);
         llvm::IRBuilder<> wrapper_builder(entry);
@@ -539,6 +607,10 @@ struct LlvmIrCodegen::Impl {
         }
         if (uses_solver_context_) {
             call_arguments.push_back(solver_context);
+        }
+        if (uses_hierarchy_context_) {
+            call_arguments.push_back(hierarchy_context);
+            call_arguments.push_back(hierarchy_data);
         }
 
         llvm::Value *result = wrapper_builder.CreateCall(target, call_arguments, "orl.exec.result");
@@ -600,10 +672,13 @@ struct LlvmIrCodegen::Impl {
     }
 
     bool GenerateDeclaration(const DeclarationStatement &declaration) {
-        if (declaration.variable_name == "solver_context") {
+        if (declaration.variable_name == "solver_context"
+            || declaration.variable_name == "hierarchy_context"
+            || declaration.variable_name == "hierarchy_data")
+        {
             AddError(
-                "The name 'solver_context' is reserved for the implicit "
-                "SolverContext global");
+                "The variable name '" + declaration.variable_name
+                + "' is reserved for an implicit runtime global");
             return false;
         }
         llvm::Type *element_type = MapTypeName(declaration.type_name);
@@ -1065,9 +1140,11 @@ struct LlvmIrCodegen::Impl {
             AddError("Undefined array: " + base_identifier->name);
             return nullptr;
         }
-        if (array_variable->is_implicit_context) {
+        if (array_variable->is_implicit_context
+            && base_identifier->name != "hierarchy_data")
+        {
             AddError(
-                "The implicit solver_context global may only be read through "
+                "The implicit context global may only be read through "
                 "its fields");
             return nullptr;
         }
@@ -1215,6 +1292,9 @@ struct LlvmIrCodegen::Impl {
             return nullptr;
         }
         if (variable->is_implicit_context) {
+            if (identifier.name == "hierarchy_data") {
+                return variable->slot;
+            }
             return CreatePackedLoad(
                 variable->type, variable->slot, "solver_context");
         }
@@ -1507,6 +1587,13 @@ struct LlvmIrCodegen::Impl {
     }
 
     llvm::Value *GenerateIndexAssignment(const IndexAssignmentExpression &assignment) {
+        if (const auto* base = dynamic_cast<const IdentifierExpression*>(
+                assignment.target->base.get());
+            base != nullptr && base->name == "hierarchy_data")
+        {
+            AddError("The implicit hierarchy_data global is read-only");
+            return nullptr;
+        }
         llvm::Type *element_type = nullptr;
         llvm::Value *address = GenerateIndexAddress(*assignment.target, &element_type);
         if (address == nullptr) {
@@ -1769,6 +1856,19 @@ struct LlvmIrCodegen::Impl {
             }
             arguments.push_back(solver_context_argument_);
         }
+        if (uses_hierarchy_context_
+            && function_names_.contains(callee_identifier->name))
+        {
+            if (hierarchy_context_argument_ == nullptr
+                || hierarchy_data_argument_ == nullptr)
+            {
+                AddError(
+                    "HierarchyContext is unavailable outside an ORL function");
+                return nullptr;
+            }
+            arguments.push_back(hierarchy_context_argument_);
+            arguments.push_back(hierarchy_data_argument_);
+        }
 
         llvm::Function *callee = GetOrCreateExtern(callee_identifier->name, arguments);
         if (callee == nullptr) {
@@ -1820,7 +1920,10 @@ struct LlvmIrCodegen::Impl {
     llvm::Type *current_function_return_type_ = nullptr;
     const FunctionDefinitionStatement *current_function_definition_ = nullptr;
     llvm::Value *solver_context_argument_ = nullptr;
+    llvm::Value *hierarchy_context_argument_ = nullptr;
+    llvm::Value *hierarchy_data_argument_ = nullptr;
     bool uses_solver_context_ = false;
+    bool uses_hierarchy_context_ = false;
     bool generating_parallel_body_ = false;
     std::vector<std::string> errors_;
 };

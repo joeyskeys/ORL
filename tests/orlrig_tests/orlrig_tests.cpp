@@ -2,17 +2,23 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <atomic>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/vec3.hpp>
 
 #include "orlrig/abi.hpp"
 #include "orlrig/component_store.hpp"
+#include "orlrig/graph_resources.hpp"
+#include "orlrig/hierarchy.hpp"
 #include "orlrig/ik.hpp"
 #include "orlrig/locator.hpp"
 #include "orlrig/runners.hpp"
@@ -206,6 +212,268 @@ TEST_CASE("orlrig component store packs joints deterministically",
     REQUIRE(store.packed_joint_ids() == std::vector<orlrig::ComponentId>{
         root_id, child_id});
     REQUIRE(store.packed_joints()[1].parent == 0);
+}
+
+TEST_CASE("orlrig compiles stable-ID preorder hierarchy",
+    "[orlrig][hierarchy]")
+{
+    orlrig::ComponentStore store;
+    const auto root = store.create_joint("root");
+    const auto other_root = store.create_joint("other_root");
+
+    auto child_joint = orlrig::make_identity_joint();
+    child_joint.parent = 0;
+    const auto child = store.create_joint("child", child_joint);
+
+    auto grandchild_joint = orlrig::make_identity_joint();
+    grandchild_joint.parent = 2;
+    const auto grandchild = store.create_joint(
+        "grandchild", grandchild_joint);
+
+    auto other_child_joint = orlrig::make_identity_joint();
+    other_child_joint.parent = 1;
+    const auto other_child = store.create_joint(
+        "other_child", other_child_joint);
+
+    orlrig::HierarchyCompileOptions options;
+    options.topology_revision = 42;
+    const auto result = orlrig::compile_hierarchy_plan(store, options);
+
+    REQUIRE(result);
+    REQUIRE(result.plan->topology_revision == 42);
+    REQUIRE(result.plan->joint_count == 5);
+    REQUIRE(result.plan->preorder_joints
+        == std::vector<orlrig::ComponentId>{
+            root, child, grandchild, other_root, other_child});
+    REQUIRE(result.plan->depth
+        == std::vector<std::uint32_t>{0, 1, 2, 0, 1});
+    REQUIRE(result.plan->subtree_begin
+        == std::vector<std::uint32_t>{0, 1, 2, 3, 4});
+    REQUIRE(result.plan->subtree_end
+        == std::vector<std::uint32_t>{3, 3, 3, 5, 5});
+    REQUIRE(result.plan->level_offsets
+        == std::vector<std::uint32_t>{0, 2, 4, 5});
+    REQUIRE(result.plan->level_joints
+        == std::vector<orlrig::ComponentId>{
+            root, other_root, child, other_child, grandchild});
+}
+
+TEST_CASE("orlrig hierarchy defaults to flattened ancestors",
+    "[orlrig][hierarchy][ancestors]")
+{
+    orlrig::ComponentStore store;
+    const auto root = store.create_joint("root");
+
+    auto mid_joint = orlrig::make_identity_joint();
+    mid_joint.parent = 0;
+    const auto mid = store.create_joint("mid", mid_joint);
+
+    auto end_joint = orlrig::make_identity_joint();
+    end_joint.parent = 1;
+    const auto end = store.create_joint("end", end_joint);
+
+    const auto result = orlrig::compile_hierarchy_plan(store);
+
+    REQUIRE(result);
+    REQUIRE(result.plan->ancestor_storage
+        == orlrig::AncestorStorageMode::Flattened);
+    REQUIRE(result.plan->parent_joints.empty());
+    REQUIRE(result.plan->ancestor_offsets
+        == std::vector<std::uint32_t>{0, 0, 1, 3});
+    REQUIRE(result.plan->ancestor_joints
+        == std::vector<orlrig::ComponentId>{root, root, mid});
+    REQUIRE(result.plan->preorder_joints
+        == std::vector<orlrig::ComponentId>{root, mid, end});
+}
+
+TEST_CASE("orlrig hierarchy supports parent-chain ancestors",
+    "[orlrig][hierarchy][ancestors]")
+{
+    orlrig::ComponentStore store;
+    const auto root = store.create_joint("root");
+
+    auto child_joint = orlrig::make_identity_joint();
+    child_joint.parent = 0;
+    const auto child = store.create_joint("child", child_joint);
+
+    orlrig::HierarchyCompileOptions options;
+    options.ancestor_storage = orlrig::AncestorStorageMode::ParentChain;
+    const auto result = orlrig::compile_hierarchy_plan(store, options);
+
+    REQUIRE(result);
+    REQUIRE(result.plan->ancestor_storage
+        == orlrig::AncestorStorageMode::ParentChain);
+    REQUIRE(result.plan->parent_joints
+        == std::vector<orlrig::ComponentId>{
+            orlrig::ComponentId{}, root});
+    REQUIRE(result.plan->ancestor_offsets.empty());
+    REQUIRE(result.plan->ancestor_joints.empty());
+    REQUIRE(result.plan->preorder_joints
+        == std::vector<orlrig::ComponentId>{root, child});
+}
+
+TEST_CASE("orlrig hierarchy packs a deterministic ABI buffer",
+    "[orlrig][hierarchy][abi]")
+{
+    orlrig::ComponentStore store;
+    const auto root = store.create_joint("root");
+    auto child_joint = orlrig::make_identity_joint();
+    child_joint.parent = 0;
+    const auto child = store.create_joint("child", child_joint);
+
+    const auto result = orlrig::compile_hierarchy_plan(store);
+    REQUIRE(result);
+    const auto packed = orlrig::pack_hierarchy_plan(*result.plan);
+
+    REQUIRE(packed.context.joint_count == 2);
+    REQUIRE(packed.context.level_count == 2);
+    REQUIRE(packed.context.ancestor_storage == 1);
+    REQUIRE(packed.context.preorder_offset == 0);
+    REQUIRE(packed.context.depth_offset == 2);
+    REQUIRE(packed.context.subtree_begin_offset == 4);
+    REQUIRE(packed.context.subtree_end_offset == 6);
+    REQUIRE(packed.context.level_offsets_offset == 8);
+    REQUIRE(packed.context.level_joints_offset == 11);
+    REQUIRE(packed.context.parent_joints_offset == 13);
+    REQUIRE(packed.context.ancestor_offsets_offset == 13);
+    REQUIRE(packed.context.ancestor_joints_offset == 16);
+    REQUIRE(packed.context.data_count
+        == static_cast<std::int64_t>(packed.data.size()));
+    REQUIRE(packed.data == std::vector<std::int64_t>{
+        static_cast<std::int64_t>(root.value),
+        static_cast<std::int64_t>(child.value),
+        0, 1,
+        0, 2,
+        1, 2,
+        0, 1, 2,
+        static_cast<std::int64_t>(root.value),
+        static_cast<std::int64_t>(child.value),
+        0, 0, 1,
+        static_cast<std::int64_t>(root.value),
+    });
+
+    orlrig::HierarchyCompileOptions chain_options;
+    chain_options.ancestor_storage =
+        orlrig::AncestorStorageMode::ParentChain;
+    const auto chain_result =
+        orlrig::compile_hierarchy_plan(store, chain_options);
+    REQUIRE(chain_result);
+    const auto chain = orlrig::pack_hierarchy_plan(*chain_result.plan);
+    REQUIRE(chain.context.ancestor_storage == 0);
+    REQUIRE(chain.context.ancestor_count == 2);
+    REQUIRE(chain.context.parent_joints_offset == 13);
+    REQUIRE(chain.context.ancestor_offsets_offset == 15);
+    REQUIRE(chain.context.ancestor_joints_offset == 15);
+    REQUIRE(chain.data == std::vector<std::int64_t>{
+        static_cast<std::int64_t>(root.value),
+        static_cast<std::int64_t>(child.value),
+        0, 1,
+        0, 1,
+        2, 2,
+        0, 1, 2,
+        0, static_cast<std::int64_t>(root.value),
+    });
+}
+
+TEST_CASE("orlrig hierarchy resolves stable parent relationships",
+    "[orlrig][hierarchy][lookup]")
+{
+    orlrig::ComponentStore store;
+    const auto root = store.create_joint("root");
+    auto child_joint = orlrig::make_identity_joint();
+    child_joint.parent = 0;
+    const auto child = store.create_joint("child", child_joint);
+
+    const auto result = orlrig::compile_hierarchy_plan(store);
+
+    REQUIRE(result);
+    REQUIRE(result.plan->preorder_position(root)
+        == std::optional<std::size_t>{0});
+    REQUIRE(result.plan->preorder_position(child)
+        == std::optional<std::size_t>{1});
+    REQUIRE_FALSE(result.plan->preorder_position(
+        orlrig::ComponentId{999}).has_value());
+    REQUIRE(result.plan->parent_of(root)
+        == std::optional<orlrig::ComponentId>{orlrig::ComponentId{}});
+    REQUIRE(result.plan->parent_of(child)
+        == std::optional<orlrig::ComponentId>{root});
+    REQUIRE(result.plan->is_direct_parent(root, child));
+    REQUIRE_FALSE(result.plan->is_direct_parent(child, root));
+}
+
+TEST_CASE("orlrig hierarchy handles empty and single-root stores",
+    "[orlrig][hierarchy]")
+{
+    const auto empty_result =
+        orlrig::compile_hierarchy_plan(orlrig::ComponentStore{});
+    REQUIRE(empty_result);
+    REQUIRE(empty_result.plan->joint_count == 0);
+    REQUIRE(empty_result.plan->preorder_joints.empty());
+    REQUIRE(empty_result.plan->ancestor_offsets
+        == std::vector<std::uint32_t>{0});
+    REQUIRE(empty_result.plan->level_offsets
+        == std::vector<std::uint32_t>{0});
+
+    orlrig::ComponentStore store;
+    const auto root = store.create_joint("root");
+    const auto result = orlrig::compile_hierarchy_plan(store);
+
+    REQUIRE(result);
+    REQUIRE(result.plan->preorder_joints
+        == std::vector<orlrig::ComponentId>{root});
+    REQUIRE(result.plan->subtree_begin
+        == std::vector<std::uint32_t>{0});
+    REQUIRE(result.plan->subtree_end
+        == std::vector<std::uint32_t>{1});
+    REQUIRE(result.plan->ancestor_offsets
+        == std::vector<std::uint32_t>{0, 0});
+}
+
+TEST_CASE("orlrig hierarchy rejects invalid parent indices",
+    "[orlrig][hierarchy][validation]")
+{
+    orlrig::ComponentStore store;
+    auto invalid = orlrig::make_identity_joint();
+    invalid.parent = 7;
+    store.create_joint("invalid", invalid);
+
+    const auto result = orlrig::compile_hierarchy_plan(store);
+
+    REQUIRE_FALSE(result);
+    REQUIRE_FALSE(result.plan.has_value());
+    REQUIRE_FALSE(result.errors.empty());
+    REQUIRE(result.errors.front().find("out of range")
+        != std::string::npos);
+}
+
+TEST_CASE("orlrig hierarchy rejects self-parenting and cycles",
+    "[orlrig][hierarchy][validation]")
+{
+    orlrig::ComponentStore self_store;
+    auto self = orlrig::make_identity_joint();
+    self.parent = 0;
+    self_store.create_joint("self", self);
+    const auto self_result =
+        orlrig::compile_hierarchy_plan(self_store);
+    REQUIRE_FALSE(self_result);
+    REQUIRE(self_result.errors.front().find("own parent")
+        != std::string::npos);
+
+    orlrig::ComponentStore cycle_store;
+    auto first = orlrig::make_identity_joint();
+    const auto first_id = cycle_store.create_joint("first", first);
+    auto second = orlrig::make_identity_joint();
+    second.parent = 0;
+    const auto second_id = cycle_store.create_joint("second", second);
+    REQUIRE(first_id);
+    REQUIRE(second_id);
+    cycle_store.joint(first_id)->parent = 1;
+
+    const auto cycle_result =
+        orlrig::compile_hierarchy_plan(cycle_store);
+    REQUIRE_FALSE(cycle_result);
+    REQUIRE(cycle_result.errors.front().find("cycle")
+        != std::string::npos);
 }
 
 TEST_CASE("orlrig component store packs locators deterministically",
@@ -444,6 +712,45 @@ TEST_CASE("orlrig runs auto-weight and two-bone solver on CPU",
     REQUIRE(status);
 }
 
+TEST_CASE("solver runner consumes a compiled hierarchy plan",
+    "[orlrig][cpu][hierarchy][ik]")
+{
+    orlrig::ComponentStore store;
+    const auto root = store.create_joint("root");
+
+    auto mid_joint = orlrig::make_identity_joint();
+    mid_joint.parent = 0;
+    mid_joint.translation[0] = 1.0;
+    const auto mid = store.create_joint("mid", mid_joint);
+
+    auto end_joint = orlrig::make_identity_joint();
+    end_joint.parent = 1;
+    end_joint.translation[0] = 1.0;
+    const auto end = store.create_joint("end", end_joint);
+    const auto other_root = store.create_joint("other_root");
+
+    const auto hierarchy = orlrig::compile_hierarchy_plan(store);
+    REQUIRE(hierarchy);
+
+    orlrig::SolverRunner solver(ORL::exec::Backend::Cpu);
+    REQUIRE(solver.set_hierarchy_plan(*hierarchy.plan));
+    const auto target = orlrig::make_locator(
+        glm::vec3{1.0f, 1.0f, 0.0f});
+    const auto pole = orlrig::make_locator(
+        glm::vec3{0.0f, 0.0f, 1.0f});
+
+    REQUIRE(solver.evaluate_two_bone(
+        store, root, mid, end, target, pole));
+    REQUIRE(store.joint(root)->rotation[3] != Catch::Approx(1.0));
+
+    const auto invalid_chain = solver.evaluate_two_bone(
+        store, root, other_root, end, target, pole);
+    REQUIRE_FALSE(invalid_chain);
+    REQUIRE_FALSE(invalid_chain.errors.empty());
+    REQUIRE(invalid_chain.errors.front().find("compiled hierarchy")
+        != std::string::npos);
+}
+
 TEST_CASE("two-bone solver keeps a near-collinear pole bend stable",
     "[orlrig][cpu][rigging][ik]")
 {
@@ -525,6 +832,161 @@ TEST_CASE("orlrig exposes CUDA output for no-window tests",
     const auto* output = static_cast<const double*>(
         runner.output_positions().data());
     REQUIRE(output[0] == Catch::Approx(2.0));
+}
+
+TEST_CASE("evaluation plan resolves typed solver footprints and dirty levels",
+    "[orlrig][partial][plan]")
+{
+    orlrig::ComponentStore store;
+    const auto root = store.create_joint("root");
+    auto mid_value = orlrig::make_identity_joint();
+    mid_value.parent = 0;
+    mid_value.translation[0] = 1.0;
+    const auto mid = store.create_joint("mid", mid_value);
+    auto end_value = orlrig::make_identity_joint();
+    end_value.parent = 1;
+    end_value.translation[0] = 1.0;
+    const auto end = store.create_joint("end", end_value);
+    const auto target = store.create_locator("target");
+    const auto pole = store.create_locator("pole");
+
+    orlgraph::NodeRegistry registry;
+    REQUIRE(orlrig::register_rig_node_definitions(registry));
+    orlgraph::GraphModule graph;
+    graph.module_id = "partial.ik";
+
+    const auto add_find = [&](std::string id, std::string definition,
+        std::string name) {
+        orlgraph::NodeInstance node;
+        node.id = orlgraph::StableId{std::move(id)};
+        node.definition = orlgraph::StableId{std::move(definition)};
+        node.name = node.id.value;
+        node.parameter_values.emplace("name",
+            orlgraph::ConstantValue{
+                orlgraph::LogicalType::string(), std::move(name)});
+        return graph.add_node(std::move(node));
+    };
+    REQUIRE(add_find("find.root", "orlrig.input.find_joint", "root"));
+    REQUIRE(add_find("find.mid", "orlrig.input.find_joint", "mid"));
+    REQUIRE(add_find("find.end", "orlrig.input.find_joint", "end"));
+    REQUIRE(add_find("find.target", "orlrig.input.find_locator", "target"));
+    REQUIRE(add_find("find.pole", "orlrig.input.find_locator", "pole"));
+
+    orlgraph::NodeInstance solver;
+    solver.id = orlgraph::StableId{"ik"};
+    solver.definition = orlgraph::StableId{"orlrig.solver.ik_two_bone"};
+    solver.name = "ik";
+    REQUIRE(graph.add_node(std::move(solver)));
+
+    const auto connect = [&](std::string source_node,
+        std::string source_port, std::string destination_port) {
+        orlgraph::Connection connection;
+        connection.source = orlgraph::Endpoint::node_port(
+            orlgraph::StableId{std::move(source_node)},
+            orlgraph::StableId{std::move(source_port)});
+        connection.destination = orlgraph::Endpoint::node_port(
+            orlgraph::StableId{"ik"},
+            orlgraph::StableId{std::move(destination_port)});
+        return graph.add_connection(std::move(connection));
+    };
+    REQUIRE(connect("find.root", "handle", "root"));
+    REQUIRE(connect("find.mid", "handle", "mid"));
+    REQUIRE(connect("find.end", "handle", "end"));
+    REQUIRE(connect("find.target", "handle", "target"));
+    REQUIRE(connect("find.pole", "handle", "pole"));
+
+    const auto hierarchy = orlrig::compile_hierarchy_plan(store);
+    REQUIRE(hierarchy);
+    const auto compiled = orlrig::compile_evaluation_plan(
+        graph, registry, store, *hierarchy.plan);
+    REQUIRE(compiled);
+    REQUIRE(compiled.plan->regions.size() == 1);
+    const auto& region = compiled.plan->regions.front();
+    REQUIRE_FALSE(region.global);
+    REQUIRE(region.read_joints.size() == 3);
+    REQUIRE(region.affected_joints.size() == 3);
+    REQUIRE(std::find(region.read_joints.begin(), region.read_joints.end(),
+        root) != region.read_joints.end());
+    REQUIRE(std::find(region.read_joints.begin(), region.read_joints.end(),
+        mid) != region.read_joints.end());
+    REQUIRE(std::find(region.read_joints.begin(), region.read_joints.end(),
+        end) != region.read_joints.end());
+    const std::vector<orlrig::ComponentId> expected_locators = {
+        target, pole};
+    REQUIRE(region.read_locators == expected_locators);
+
+    orlrig::DirtyInputs clean;
+    const auto clean_dispatch =
+        orlrig::build_dynamic_dispatch_plan(*compiled.plan, clean);
+    REQUIRE(clean_dispatch.region_indices.empty());
+
+    orlrig::DirtyInputs locator_dirty;
+    locator_dirty.locators = {target};
+    const auto partial_dispatch =
+        orlrig::build_dynamic_dispatch_plan(
+            *compiled.plan, locator_dirty, 1.0);
+    REQUIRE_FALSE(partial_dispatch.full_evaluation);
+    REQUIRE(partial_dispatch.region_indices.size() == 1);
+    std::atomic<int> calls{0};
+    REQUIRE(orlrig::dispatch_cpu_levels(
+        *compiled.plan, partial_dispatch,
+        [&](const orlrig::SolverRegion&) {
+            ++calls;
+            return orlrig::RunnerStatus{true, {}};
+        }));
+    REQUIRE(calls.load() == 1);
+
+    const auto cuda_dispatch = orlrig::build_cuda_dispatch_plan(
+        *compiled.plan, locator_dirty, 1.0);
+    REQUIRE(cuda_dispatch.full_evaluation);
+    const auto packed_dispatch =
+        orlrig::pack_dynamic_dispatch_plan(cuda_dispatch);
+    REQUIRE(packed_dispatch.context.full_evaluation == 1);
+    REQUIRE(packed_dispatch.context.range_count == 1);
+    REQUIRE(packed_dispatch.data.size() == 3);
+
+    orlrig::DirtyInputs full;
+    full.full_evaluation = true;
+    const auto full_dispatch =
+        orlrig::build_dynamic_dispatch_plan(*compiled.plan, full);
+    REQUIRE(full_dispatch.full_evaluation);
+    REQUIRE(full_dispatch.region_indices.size() == 1);
+
+    std::vector<glm::mat4> worlds;
+    REQUIRE(orlrig::compute_world_matrices_parallel(
+        *hierarchy.plan, store, &worlds));
+    REQUIRE(worlds.size() == 3);
+    REQUIRE(glm::vec3{worlds[2][3]}.x == Catch::Approx(2.0f));
+}
+
+TEST_CASE("opaque solver nodes force conservative full evaluation",
+    "[orlrig][partial][fallback]")
+{
+    orlrig::ComponentStore store;
+    store.create_joint("root");
+    const auto hierarchy = orlrig::compile_hierarchy_plan(store);
+    REQUIRE(hierarchy);
+
+    orlgraph::NodeRegistry registry;
+    orlgraph::NodeDefinition definition;
+    definition.id = orlgraph::StableId{"opaque.solver"};
+    definition.qualified_name = "opaque.solver";
+    definition.operation = "solver";
+    REQUIRE(registry.register_definition(std::move(definition)));
+
+    orlgraph::GraphModule graph;
+    graph.module_id = "opaque";
+    orlgraph::NodeInstance node;
+    node.id = orlgraph::StableId{"solver"};
+    node.definition = orlgraph::StableId{"opaque.solver"};
+    REQUIRE(graph.add_node(std::move(node)));
+
+    const auto plan = orlrig::compile_evaluation_plan(
+        graph, registry, store, *hierarchy.plan);
+    REQUIRE(plan);
+    REQUIRE(plan.plan->full_evaluation_required);
+    REQUIRE(plan.plan->regions.size() == 1);
+    REQUIRE(plan.plan->regions.front().global);
 }
 
 #endif

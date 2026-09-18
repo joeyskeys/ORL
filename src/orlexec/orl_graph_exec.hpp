@@ -109,6 +109,8 @@ public:
     bool bind_float(std::string_view parameter, double value);
     bool set_solver_context(
         std::int64_t joint_count, std::int64_t controller_count);
+    bool set_hierarchy_context(const orlrig::HierarchyContext& context);
+    bool bind_hierarchy_data(OrlBuffer& buffer);
     bool bind_graph_inputs(const orlgraph::GraphModule& module,
         const GraphInputResolver& resolver);
     void clear_bindings();

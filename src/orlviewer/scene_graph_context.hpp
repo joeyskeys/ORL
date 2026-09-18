@@ -1,18 +1,39 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "graph_scene_inputs.hpp"
 #include "orlgraph/graph_ir.hpp"
 #include "orlgraph/graph_validation.hpp"
+#include "orlrig/evaluation.hpp"
+#include "orlrig/hierarchy.hpp"
 
 namespace ORL
 {
+
+struct ChangeSet {
+    std::uint64_t generation = 0;
+    std::uint64_t topology_revision = 0;
+    std::uint64_t pose_revision = 0;
+    bool full_evaluation = false;
+    bool plan_invalidated = false;
+    std::vector<ComponentId> joints;
+    std::vector<ComponentId> controllers;
+    std::vector<ComponentId> locators;
+
+    bool empty() const {
+        return !full_evaluation && !plan_invalidated
+            && joints.empty() && controllers.empty() && locators.empty();
+    }
+};
 
 // Runtime relationship between one viewport scene and its graph document.
 // The graph IR stays scene-independent; this object owns the ephemeral
@@ -36,6 +57,7 @@ public:
     std::size_t scene_input_revision() const {
         return scene_inputs_.revision();
     }
+    ChangeSet take_change_set();
 
     orlgraph::GraphModule& graph() { return graph_; }
     const orlgraph::GraphModule& graph() const { return graph_; }
@@ -48,10 +70,15 @@ public:
         ++graph_revision_;
         ++graph_edit_revision_;
         ++evaluation_revision_;
+        mark_plan_invalidated();
     }
     // Request evaluation without changing the graph. This is used when
     // kernels are re-enabled after authoring edits were made while disabled.
-    void request_evaluation() { ++evaluation_revision_; }
+    void request_evaluation() {
+        ++evaluation_revision_;
+        pending_changes_.full_evaluation = true;
+        pending_changes_.generation = ++change_generation_;
+    }
     orlgraph::NodeRegistry& registry() { return registry_; }
     const orlgraph::NodeRegistry& registry() const { return registry_; }
 
@@ -63,6 +90,20 @@ public:
     SceneInputCatalog& scene_inputs() { return scene_inputs_; }
     const SceneInputCatalog& scene_inputs() const { return scene_inputs_; }
     void refresh_scene_inputs();
+    bool ensure_hierarchy_plan(std::string* error = nullptr);
+    const std::optional<orlrig::HierarchyPlan>& hierarchy_plan() const {
+        return compiled_hierarchy_plan;
+    }
+    const orlrig::HierarchyContext& hierarchy_context() const {
+        return hierarchy_context_;
+    }
+    bool ensure_evaluation_plan(
+        orlgraph::GraphStage stage, std::string* error = nullptr);
+    std::shared_ptr<const orlrig::EvaluationPlan> evaluation_plan() const;
+    exec::OrlBuffer& hierarchy_data() { return hierarchy_data_; }
+    const exec::OrlBuffer& hierarchy_data() const {
+        return hierarchy_data_;
+    }
     void set_computed_joints_device(
         std::optional<exec::DeviceBufferView> view,
         std::size_t element_count);
@@ -96,6 +137,7 @@ public:
         std::string* error = nullptr);
     bool commit_scene_writes(const exec::GraphEvaluationResult& result,
         bool host_readback_complete, std::string* error = nullptr);
+    void acknowledge_pose_changes();
 
     orlgraph::ValidationResult validate() const;
     orlgraph::ValidationResult validate(orlgraph::GraphStage stage) const;
@@ -108,10 +150,18 @@ public:
 
 private:
     bool set_error(std::string* error, std::string message) const;
+    std::size_t hierarchy_signature() const;
+    std::size_t evaluation_signature(orlgraph::GraphStage stage) const;
+    std::map<std::uint64_t, std::size_t> capture_pose_snapshot() const;
+    void invalidate_evaluation_plan();
+    void update_change_set();
+    void mark_plan_invalidated();
 
     vkkk::Scene& scene_;
     ComponentManager& components_;
     SceneInputCatalog scene_inputs_;
+    exec::OrlBuffer hierarchy_data_;
+    orlrig::HierarchyContext hierarchy_context_;
     orlgraph::GraphModule graph_;
     orlgraph::GraphModule solver_graph_;
     orlgraph::NodeRegistry registry_;
@@ -121,6 +171,17 @@ private:
     std::size_t graph_edit_revision_ = 0;
     std::size_t evaluation_revision_ = 0;
     bool staged_graphs_ = false;
+    std::optional<orlrig::HierarchyPlan> compiled_hierarchy_plan;
+    std::size_t compiled_hierarchy_signature = 0;
+    std::shared_ptr<const orlrig::EvaluationPlan> compiled_evaluation_plan_;
+    std::size_t compiled_evaluation_signature_ = 0;
+    std::uint64_t topology_revision_ = 0;
+    std::uint64_t pose_revision_ = 0;
+    std::uint64_t change_generation_ = 0;
+    ChangeSet pending_changes_;
+    std::map<std::uint64_t, std::size_t> pose_snapshots_;
+    std::size_t observed_topology_signature_ = 0;
+    std::size_t observed_scene_input_revision_ = 0;
 };
 
 } // namespace ORL

@@ -1,6 +1,5 @@
 #include "vp/solver_feature.hpp"
 
-#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -24,12 +23,6 @@ void print_runner_errors(const std::vector<std::string>& errors) {
     for (const auto& error : errors) {
         std::cerr << "Solver: " << error << '\n';
     }
-}
-
-void write_rotation(orlviewer::Joint& destination,
-    const orlviewer::Joint& source)
-{
-    std::memcpy(destination.rotation, source.rotation, sizeof(destination.rotation));
 }
 
 } // namespace
@@ -59,6 +52,18 @@ void SolverFeature::on_update(
     // staged graphs existed.
     if (graph_runtime.has_active_graph_content()) {
         graph_runtime.on_update(context);
+        return;
+    }
+    std::string hierarchy_error;
+    if (!graph_context.ensure_hierarchy_plan(&hierarchy_error)) {
+        std::cerr << "Solver: " << hierarchy_error << '\n';
+        return;
+    }
+    if (const auto status = runner.set_hierarchy_plan(
+            *graph_context.hierarchy_plan());
+        !status)
+    {
+        print_runner_errors(status.errors);
         return;
     }
     graph_context.clear_computed_joints_device();
@@ -143,28 +148,14 @@ bool SolverFeature::evaluate_two_bone(ConstraintData& constraint) {
         return false;
     }
 
-    auto packed = components.packed_joints();
-    const auto root = components.joint_index(constraint.root);
-    const auto mid = components.joint_index(constraint.mid);
-    const auto end = components.joint_index(constraint.end);
-    if (root < 0 || mid < 0 || end < 0) {
-        constraint.bound = false;
-        return false;
-    }
-
     const auto status = runner.evaluate_two_bone(
-        packed, root, mid, end, *target, *pole);
+        components.rigging(),
+        constraint.root, constraint.mid, constraint.end,
+        *target, *pole);
     if (!status) {
         print_runner_errors(status.errors);
         constraint.bound = false;
         return false;
-    }
-
-    if (auto* joint = components.joint(constraint.root)) {
-        write_rotation(*joint, packed[static_cast<std::size_t>(root)]);
-    }
-    if (auto* joint = components.joint(constraint.mid)) {
-        write_rotation(*joint, packed[static_cast<std::size_t>(mid)]);
     }
     return true;
 }

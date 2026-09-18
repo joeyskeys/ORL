@@ -148,8 +148,10 @@ bool Parser::ParseStructDefinition() {
         AddError(name, "Duplicate struct definition: " + name.lexeme);
         return false;
     }
-    if (name.lexeme == "SolverContext") {
-        AddError(name, "The type name 'SolverContext' is reserved");
+    if (name.lexeme == "SolverContext"
+        || name.lexeme == "HierarchyContext")
+    {
+        AddError(name, "The type name '" + name.lexeme + "' is reserved");
         return false;
     }
     if (!Expect(TokenKind::LBrace, "Expected '{' after struct name")) {
@@ -201,8 +203,11 @@ bool Parser::ParseFunctionDefinition(bool exported) {
         AddError(name, "Expected function name");
         return false;
     }
-    if (name.lexeme == "solver_context") {
-        AddError(name, "The name 'solver_context' is reserved");
+    if (name.lexeme == "solver_context"
+        || name.lexeme == "hierarchy_context"
+        || name.lexeme == "hierarchy_data")
+    {
+        AddError(name, "The name '" + name.lexeme + "' is reserved");
         return false;
     }
     std::vector<FunctionMetadata> metadata;
@@ -233,6 +238,14 @@ bool Parser::ParseFunctionDefinition(bool exported) {
             }
 
             const Token parameter_name = Advance();
+            if (parameter_name.lexeme == "solver_context"
+                || parameter_name.lexeme == "hierarchy_context"
+                || parameter_name.lexeme == "hierarchy_data")
+            {
+                AddError(parameter_name,
+                    "The parameter name '" + parameter_name.lexeme
+                        + "' is reserved");
+            }
             bool is_buffer = false;
             if (Match(TokenKind::LBracket)) {
                 if (!Expect(TokenKind::RBracket, "Expected ']' after buffer parameter name")) {
@@ -966,8 +979,14 @@ bool Parser::ParsePrimary() {
         if (token.kind == TokenKind::Identifier || IsTypeToken(token.kind)) {
             auto identifier = std::make_unique<IdentifierExpression>();
             identifier->name = token.lexeme;
-            if (token.lexeme == "solver_context" && program_ != nullptr) {
-                program_->uses_solver_context = true;
+            if (program_ != nullptr) {
+                if (token.lexeme == "solver_context") {
+                    program_->uses_solver_context = true;
+                } else if (token.lexeme == "hierarchy_context"
+                    || token.lexeme == "hierarchy_data")
+                {
+                    program_->uses_hierarchy_context = true;
+                }
             }
             last_expression_ = std::move(identifier);
             return true;

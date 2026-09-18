@@ -4,6 +4,8 @@
 #include <cctype>
 #include <utility>
 
+#include "orl_runtime_signature.h"
+
 namespace ORL::exec
 {
 
@@ -245,6 +247,43 @@ bool OrlGraphExecution::set_solver_context(
         errors_ = execution_->errors();
         return false;
     }
+    return true;
+}
+
+bool OrlGraphExecution::set_hierarchy_context(
+    const orlrig::HierarchyContext& context)
+{
+    if (!execution_.has_value()) {
+        errors_.emplace_back("ORL graph execution is invalid");
+        return false;
+    }
+    if (!execution_->set_hierarchy_context(context)) {
+        errors_ = execution_->errors();
+        return false;
+    }
+    return true;
+}
+
+bool OrlGraphExecution::bind_hierarchy_data(OrlBuffer& buffer)
+{
+    if (!execution_.has_value()) {
+        errors_.emplace_back("ORL graph execution is invalid");
+        return false;
+    }
+    if (!execution_->bind_hierarchy_data(buffer)) {
+        errors_ = execution_->errors();
+        return false;
+    }
+    if (find_parameter(
+            parameters_, orlcomp::kHierarchyDataParameterName)
+        == nullptr)
+    {
+        return true;
+    }
+    host_buffers_[std::string(orlcomp::kHierarchyDataParameterName)] =
+        &buffer;
+    device_buffers_.erase(
+        std::string(orlcomp::kHierarchyDataParameterName));
     return true;
 }
 

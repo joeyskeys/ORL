@@ -42,6 +42,7 @@ private:
         orlgraph::GraphModule graph;
         std::optional<exec::OrlGraphProgram> program;
         std::optional<exec::OrlGraphExecution> execution;
+        std::vector<orlgraph::StableId> region_nodes;
     };
 
     struct ExecutionStep {
@@ -75,6 +76,7 @@ private:
         std::string* error);
     bool execute_orl_segment(
         vkkk::Context& context, std::size_t segment_index);
+    bool segment_is_clean(std::size_t segment_index) const;
     bool execute_runtime_node(
         vkkk::Context& context,
         const orlgraph::NodeInstance& instance,
@@ -148,6 +150,10 @@ private:
     std::size_t observed_evaluation_revision_ = 0;
     bool execution_plan_ready_ = false;
     bool graph_active_ = false;
+    std::shared_ptr<const orlrig::EvaluationPlan> evaluation_plan_;
+    ChangeSet active_change_set_;
+    orlrig::DynamicDispatchPlan active_dispatch_;
+    orlrig::SolverDispatchRuntimeData active_dispatch_data_;
     bool logged_rest = false;
     bool logged_move = false;
 };

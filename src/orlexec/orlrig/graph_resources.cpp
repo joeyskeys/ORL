@@ -410,6 +410,26 @@ orlgraph::NodeDefinition make_stdlib_definition(std::string category,
         : category == "constraint" ? "constraint" : category;
     definition.pure = false;
     definition.stateful = stateful;
+    if (category == "solver" && function == "ik_two_bone") {
+        orlgraph::PartialEvaluationFootprint footprint;
+        footprint.declared = true;
+        footprint.propagation =
+            orlgraph::PartialPropagation::Descendants;
+        footprint.read_joint_ports = {"root", "mid", "end"};
+        footprint.write_joint_ports = {"root", "mid"};
+        footprint.read_locator_ports = {"target", "pole"};
+        definition.partial_footprint = std::move(footprint);
+    } else if (category == "solver") {
+        // The remaining solvers currently read/write broad buffers or carry
+        // iterative state. They are explicit conservative barriers until a
+        // solver-specific footprint is available.
+        orlgraph::PartialEvaluationFootprint footprint;
+        footprint.declared = true;
+        footprint.global = true;
+        footprint.stateful = stateful;
+        footprint.propagation = orlgraph::PartialPropagation::Full;
+        definition.partial_footprint = std::move(footprint);
+    }
     return definition;
 }
 

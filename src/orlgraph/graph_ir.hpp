@@ -78,6 +78,42 @@ struct ResourceEffect {
     friend bool operator==(const ResourceEffect&, const ResourceEffect&) = default;
 };
 
+enum class PartialPropagation : std::uint8_t {
+    None,
+    Ancestors,
+    Descendants,
+    AncestorsAndDescendants,
+    Full,
+};
+
+// Element-level dependency information for incremental rig evaluation.
+// Port names are resolved against a node instance's graph connections during
+// evaluation-plan compilation. Explicit IDs are useful for registry-owned
+// built-ins and serialized compiled graphs.
+struct PartialEvaluationFootprint {
+    bool declared = false;
+    bool global = false;
+    bool stateful = false;
+    bool supports_sparse_dispatch = false;
+    PartialPropagation propagation = PartialPropagation::Full;
+
+    std::vector<std::string> read_joint_ports;
+    std::vector<std::string> write_joint_ports;
+    std::vector<std::string> read_controller_ports;
+    std::vector<std::string> read_locator_ports;
+
+    std::vector<StableId> read_joints;
+    std::vector<StableId> write_joints;
+    std::vector<StableId> read_controllers;
+    std::vector<StableId> read_locators;
+    std::vector<StableId> read_resources;
+    std::vector<StableId> write_resources;
+
+    friend bool operator==(
+        const PartialEvaluationFootprint&,
+        const PartialEvaluationFootprint&) = default;
+};
+
 enum class InlinePolicy : std::uint8_t {
     Default,
     Never,
@@ -163,6 +199,7 @@ struct NodeDefinition {
     bool pure = true;
     bool stateful = false;
     Provenance provenance;
+    std::optional<PartialEvaluationFootprint> partial_footprint;
 
     const Port* input(std::string_view name) const;
     const Port* output(std::string_view name) const;

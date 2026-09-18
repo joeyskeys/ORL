@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include "orlrig/abi.hpp"
+
 namespace ORL::exec
 {
 
@@ -148,6 +150,12 @@ public:
     // uses it. This is a no-op for ordinary programs.
     bool set_solver_context(
         std::int64_t joint_count, std::int64_t controller_count);
+    // Updates the implicit hierarchy_context global when the compiled
+    // program uses it. This is a no-op for ordinary programs.
+    bool set_hierarchy_context(const orlrig::HierarchyContext& context);
+    // Binds the static hierarchy_data buffer. This is a no-op for ordinary
+    // programs that do not reference the implicit hierarchy globals.
+    bool bind_hierarchy_data(OrlBuffer& buffer);
     void clear_bindings();
 
     bool valid() const;
