@@ -17,8 +17,16 @@
 #include "orl_runtime_signature.h"
 #include "orlrig/abi.hpp"
 
+#include <llvm/Config/llvm-config.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#if __has_include(<llvm/TargetParser/Host.h>)
+#include <llvm/TargetParser/Host.h>
+#define ORL_HAS_LLVM_HOST_TRIPLE 1
+#elif __has_include(<llvm/Support/Host.h>)
+#include <llvm/Support/Host.h>
+#define ORL_HAS_LLVM_HOST_TRIPLE 1
+#endif
 
 namespace ORL::exec
 {
@@ -85,6 +93,57 @@ double elapsed_ms(Clock::time_point start, Clock::time_point end = Clock::now())
 
 const char* backend_label(Backend backend) {
     return backend == Backend::Cuda ? "CUDA" : "CPU";
+}
+
+std::string execution_cache_material(
+    Backend backend, std::string_view source, std::string_view entry,
+    std::string_view source_name,
+    const std::vector<std::string>& include_paths)
+{
+    std::string material = "orl-binary-cache-v1\n";
+    material += "backend=";
+    material += backend == Backend::Cuda ? "cuda\n" : "cpu\n";
+    material += "target=";
+    material += backend == Backend::Cuda ? "cuda-sm-52\n" : "native-host\n";
+    material += "runtime_abi=orl-runtime-signature-v1\n";
+    material += "llvm_version=";
+    material += LLVM_VERSION_STRING;
+    material += "\nhost_triple=";
+#if defined(ORL_HAS_LLVM_HOST_TRIPLE)
+    material += llvm::sys::getDefaultTargetTriple();
+#else
+    material += "unknown";
+#endif
+    material += "pointer_size=";
+    material += std::to_string(sizeof(void*));
+    material += "\nentry=";
+    material += entry;
+    material += "\nsource_name=";
+    material += source_name;
+    material += "\ninclude_paths=";
+    for (const auto& include_path : include_paths) {
+        material += include_path;
+        material.push_back('\n');
+    }
+    material += "source_size=";
+    material += std::to_string(source.size());
+    material += "\nsource=";
+    material += source;
+    return material;
+}
+
+orlcomp::OrlGpuKernelParameterType gpu_parameter_type(ParameterKind kind) {
+    switch (kind) {
+    case ParameterKind::Buffer:
+        return orlcomp::OrlGpuKernelParameterType::Buffer;
+    case ParameterKind::Int64:
+        return orlcomp::OrlGpuKernelParameterType::Int64;
+    case ParameterKind::Float64:
+        return orlcomp::OrlGpuKernelParameterType::Float64;
+    case ParameterKind::Unsupported:
+        return orlcomp::OrlGpuKernelParameterType::Unsupported;
+    }
+    return orlcomp::OrlGpuKernelParameterType::Unsupported;
 }
 
 std::string fmt_ms(double ms) {
@@ -356,6 +415,8 @@ struct OrlExecution::Impl {
 
     std::shared_ptr<OrlProgram::Impl> program;
     Backend backend = Backend::Cpu;
+    orlcomp::OrlBinaryCacheOptions cache_options;
+    std::string cache_key;
     std::unordered_map<std::string, OrlBuffer*> buffers;
     std::unordered_map<std::string, ExternalDeviceBuffer> device_bindings;
     std::unordered_map<std::string, PackedBinding> packed_bindings;
@@ -392,6 +453,13 @@ struct OrlExecution::Impl {
             gpu->FreeBuffer(packed_device.handle);
         }
         packed_device = {};
+    }
+
+    void* solver_context_data() {
+        if (packed_storage.has_value()) {
+            return packed_storage->data;
+        }
+        return solver_context.has_value() ? solver_context->data() : nullptr;
     }
 
     void release_device_binding(const std::string& name) {
@@ -627,8 +695,103 @@ struct OrlExecution::Impl {
         return true;
     }
 
+    void configure_cached_gpu_parameters() {
+        if (gpu == nullptr) {
+            return;
+        }
+        std::vector<orlcomp::OrlGpuKernelParameter> parameters;
+        parameters.reserve(program->parameters.size());
+        for (const auto& parameter : program->parameters) {
+            parameters.push_back({
+                parameter.name, gpu_parameter_type(parameter.kind)});
+        }
+        gpu->SetCudaEntryParameters(std::move(parameters));
+    }
+
+    bool try_load_cached_cpu() {
+        if (backend != Backend::Cpu
+            || cache_key.empty()
+            || cache_options.directory.empty()
+            || cache_options.force_recompile)
+        {
+            return false;
+        }
+
+        orlcomp::OrlBinaryCache cache(cache_options);
+        std::vector<std::uint8_t> object;
+        if (!cache.load(orlcomp::OrlBinaryKind::CpuObject, cache_key, object)) {
+            return false;
+        }
+
+        jit = std::make_unique<orlcomp::OrlJitEngine>(
+            orlcomp::OrlJitTarget::Native, cache_options);
+        if (!jit->LoadObject(object)) {
+            jit.reset();
+            return false;
+        }
+
+        std::cout << "ORL binary cache hit '"
+            << program->options.entry_function
+            << "' CPU (" << program->options.source_name << ")\n";
+        initialized = true;
+        return true;
+    }
+
+    bool try_load_cached_gpu() {
+        if (backend != Backend::Cuda
+            || cache_key.empty()
+            || cache_options.directory.empty()
+            || cache_options.force_recompile)
+        {
+            return false;
+        }
+
+        orlcomp::OrlBinaryCache cache(cache_options);
+        for (const auto kind : {
+                 orlcomp::OrlBinaryKind::CudaCubin,
+                 orlcomp::OrlBinaryKind::CudaPtx})
+        {
+            std::vector<std::uint8_t> binary;
+            if (!cache.load(kind, cache_key, binary)) {
+                continue;
+            }
+
+            gpu = std::make_unique<orlcomp::OrlGpuEngine>(
+                orlcomp::OrlGpuBackend::Cuda);
+            gpu->SetCudaEntryFunction(program->options.entry_function);
+            configure_cached_gpu_parameters();
+            if (kind == orlcomp::OrlBinaryKind::CudaCubin) {
+                gpu->SetDeviceBinary(std::move(binary));
+            } else {
+                gpu->SetDeviceCode(std::string(
+                    reinterpret_cast<const char*>(binary.data()),
+                    binary.size()));
+            }
+            if (gpu->LoadToDriver()) {
+                if (!gpu->DeviceBinary().empty()) {
+                    cache.save(
+                        orlcomp::OrlBinaryKind::CudaCubin,
+                        cache_key,
+                        std::span<const std::uint8_t>(
+                            gpu->DeviceBinary().data(),
+                            gpu->DeviceBinary().size()));
+                }
+                std::cout << "ORL binary cache hit '"
+                    << program->options.entry_function
+                    << "' CUDA (" << program->options.source_name << ")\n";
+                initialized = true;
+                return true;
+            }
+            gpu.reset();
+        }
+        return false;
+    }
+
     bool initialize() {
         const auto t0 = Clock::now();
+        if (try_load_cached_cpu() || try_load_cached_gpu()) {
+            return true;
+        }
         orlcomp::Parser parser(program->source);
         for (const auto& include_path : program->options.include_paths) {
             parser.AddIncludePath(include_path);
@@ -654,8 +817,12 @@ struct OrlExecution::Impl {
         const auto t2 = Clock::now();
 
         if (backend == Backend::Cpu) {
-            jit = std::make_unique<orlcomp::OrlJitEngine>(orlcomp::OrlJitTarget::Native);
-            if (!jit->LoadModuleWithOptimization(codegen.ReleaseModule(), codegen.ReleaseContext())) {
+            jit = std::make_unique<orlcomp::OrlJitEngine>(
+                orlcomp::OrlJitTarget::Native, cache_options);
+            if (!jit->LoadModuleWithOptimization(
+                    codegen.ReleaseModule(), codegen.ReleaseContext(),
+                    orlcomp::OrlOptimizationLevel::O2, cache_key))
+            {
                 append_errors(errors, jit->Errors());
                 print_jit(program->options.entry_function, backend, program->options.source_name,
                     elapsed_ms(t0, t1), elapsed_ms(t1, t2), elapsed_ms(t2), 0, false);
@@ -682,6 +849,24 @@ struct OrlExecution::Impl {
                 elapsed_ms(t0, t1), elapsed_ms(t1, t2), elapsed_ms(t2, t3), elapsed_ms(t3), false);
             return false;
         }
+        if (!gpu->DeviceBinary().empty() && !cache_key.empty()) {
+            orlcomp::OrlBinaryCache cache(cache_options);
+            cache.save(
+                orlcomp::OrlBinaryKind::CudaCubin,
+                cache_key,
+                std::span<const std::uint8_t>(
+                    gpu->DeviceBinary().data(),
+                    gpu->DeviceBinary().size()));
+        } else if (!gpu->DeviceCode().empty() && !cache_key.empty()) {
+            orlcomp::OrlBinaryCache cache(cache_options);
+            const auto& ptx = gpu->DeviceCode();
+            cache.save(
+                orlcomp::OrlBinaryKind::CudaPtx,
+                cache_key,
+                std::span<const std::uint8_t>(
+                    reinterpret_cast<const std::uint8_t*>(ptx.data()),
+                    ptx.size()));
+        }
         print_jit(program->options.entry_function, backend, program->options.source_name,
             elapsed_ms(t0, t1), elapsed_ms(t1, t2), elapsed_ms(t2, t3), elapsed_ms(t3), true);
         initialized = true;
@@ -698,14 +883,24 @@ OrlExecution::~OrlExecution() = default;
 OrlExecution::OrlExecution(OrlExecution&&) noexcept = default;
 OrlExecution& OrlExecution::operator=(OrlExecution&&) noexcept = default;
 
-OrlExecution OrlExecution::Create(const OrlProgram& program, Backend backend) {
+OrlExecution OrlExecution::Create(
+    const OrlProgram& program, Backend backend,
+    orlcomp::OrlBinaryCacheOptions cache) {
     auto impl = std::make_unique<Impl>();
     impl->backend = backend;
+    impl->cache_options = std::move(cache);
     if (!program.valid()) {
         append_errors(impl->errors, program.errors());
         return OrlExecution(std::move(impl));
     }
     impl->program = program.impl_;
+    impl->cache_key = orlcomp::make_binary_cache_key(
+        execution_cache_material(
+            backend,
+            impl->program->source,
+            impl->program->options.entry_function,
+            impl->program->options.source_name,
+            impl->program->options.include_paths));
     const auto context_parameter = std::find_if(
         impl->program->parameters.begin(),
         impl->program->parameters.end(),
@@ -775,9 +970,12 @@ bool OrlExecution::bind_packed_buffer(
         impl_->errors.emplace_back("ORL execution was not initialized");
         return false;
     }
-    if (impl_->backend != Backend::Cuda || impl_->gpu == nullptr) {
+    if (impl_->backend != Backend::Cuda
+        && parameter != orlcomp::kSolverContextParameterName)
+    {
         impl_->errors.emplace_back(
-            "bind_packed_buffer requires the CUDA backend");
+            "bind_packed_buffer requires the CUDA backend except for "
+            "the implicit SolverContext");
         return false;
     }
     const auto* desc = impl_->parameter(parameter);
@@ -819,6 +1017,24 @@ bool OrlExecution::bind_packed_buffer(
     impl_->packed_bindings[name] = Impl::PackedBinding{
         view.offset, view.bytes};
     return true;
+}
+
+bool OrlExecution::bind_solver_context(
+    const PackedBufferView& view)
+{
+    if (impl_ == nullptr || !impl_->initialized) {
+        if (impl_ != nullptr) {
+            impl_->errors.clear();
+            impl_->errors.emplace_back(
+                "ORL execution was not initialized");
+        }
+        return false;
+    }
+    if (impl_->parameter(orlcomp::kSolverContextParameterName) == nullptr) {
+        return true;
+    }
+    return bind_packed_buffer(
+        orlcomp::kSolverContextParameterName, view);
 }
 
 bool OrlExecution::bind_device_buffer(std::string_view parameter, std::uint64_t device_ptr,
@@ -902,6 +1118,13 @@ bool OrlExecution::bind_float(std::string_view parameter, double value) {
 bool OrlExecution::set_solver_context(
     std::int64_t joint_count, std::int64_t controller_count)
 {
+    return set_solver_context(orlrig::SolverContext{
+        joint_count, controller_count, 0, 0, 0, 0});
+}
+
+bool OrlExecution::set_solver_context(
+    const orlrig::SolverContext& context)
+{
     impl_->errors.clear();
     if (!impl_->initialized) {
         impl_->errors.emplace_back("ORL execution was not initialized");
@@ -915,8 +1138,6 @@ bool OrlExecution::set_solver_context(
                 "Packed SolverContext storage is too small");
             return false;
         }
-        const orlrig::SolverContext context{
-            joint_count, controller_count};
         std::memcpy(
             impl_->packed_storage->data,
             &context,
@@ -927,8 +1148,6 @@ bool OrlExecution::set_solver_context(
     if (!impl_->solver_context.has_value()) {
         return true;
     }
-    const orlrig::SolverContext context{
-        joint_count, controller_count};
     if (!impl_->solver_context->write(0, context)) {
         impl_->errors.emplace_back(
             "Failed to update implicit SolverContext storage");
@@ -1033,12 +1252,13 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
         const std::string wrapper = "__orl_host_entry_" + entry;
         std::optional<std::int64_t> result;
         const bool has_solver_context = impl_->solver_context.has_value();
+        void* solver_context_data = impl_->solver_context_data();
         const bool has_hierarchy_context =
             impl_->hierarchy_context.has_value();
         if (has_solver_context && has_hierarchy_context) {
             result = impl_->jit->InvokeInt64WithRuntimeArgsAndContexts(
                 wrapper, host_buffers.data(), integers.data(), floats.data(),
-                impl_->solver_context->data(),
+                solver_context_data,
                 const_cast<void*>(static_cast<const OrlBuffer&>(
                     *impl_->hierarchy_context).data()),
                 const_cast<void*>(static_cast<const OrlBuffer&>(
@@ -1048,7 +1268,7 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
         } else if (has_solver_context) {
             result = impl_->jit->InvokeInt64WithRuntimeArgsAndContext(
                 wrapper, host_buffers.data(), integers.data(), floats.data(),
-                impl_->solver_context->data());
+                solver_context_data);
         } else if (has_hierarchy_context) {
             result =
                 impl_->jit->InvokeInt64WithRuntimeArgsAndHierarchyContext(

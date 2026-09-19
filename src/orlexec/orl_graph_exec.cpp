@@ -152,7 +152,7 @@ const GraphOutputValue* GraphEvaluationResult::output(
 }
 
 OrlGraphExecution OrlGraphExecution::Create(const OrlGraphProgram& program,
-    Backend backend)
+    Backend backend, orlcomp::OrlBinaryCacheOptions cache)
 {
     OrlGraphExecution result;
     if (!program.valid() || !program.program_.has_value()) {
@@ -162,7 +162,8 @@ OrlGraphExecution OrlGraphExecution::Create(const OrlGraphProgram& program,
         }
         return result;
     }
-    result.execution_ = OrlExecution::Create(*program.program_, backend);
+    result.execution_ = OrlExecution::Create(
+        *program.program_, backend, std::move(cache));
     if (!result.execution_->valid()) {
         append_errors(result.errors_, result.execution_->errors());
         result.execution_.reset();
@@ -239,11 +240,40 @@ bool OrlGraphExecution::bind_float(std::string_view parameter, double value) {
 bool OrlGraphExecution::set_solver_context(
     std::int64_t joint_count, std::int64_t controller_count)
 {
+    return set_solver_context(orlrig::SolverContext{
+        joint_count, controller_count, 0, 0, 0, 0});
+}
+
+bool OrlGraphExecution::set_solver_context(
+    const orlrig::SolverContext& context)
+{
     if (!execution_.has_value()) {
         errors_.emplace_back("ORL graph execution is invalid");
         return false;
     }
-    if (!execution_->set_solver_context(joint_count, controller_count)) {
+    if (!execution_->set_solver_context(context)) {
+        errors_ = execution_->errors();
+        return false;
+    }
+    return true;
+}
+
+bool OrlGraphExecution::bind_solver_context(
+    const PackedBufferView& view)
+{
+    if (!execution_.has_value()) {
+        errors_.emplace_back("ORL graph execution is invalid");
+        return false;
+    }
+    if (find_parameter(
+            parameters_, orlcomp::kSolverContextParameterName)
+        == nullptr)
+    {
+        return true;
+    }
+    if (!execution_->bind_packed_buffer(
+            orlcomp::kSolverContextParameterName, view))
+    {
         errors_ = execution_->errors();
         return false;
     }

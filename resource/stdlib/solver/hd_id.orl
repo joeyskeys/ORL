@@ -7,9 +7,11 @@
 // caller should preserve it between evaluations.
 
 use joint;
+use locator;
 
-point solver_hd_id_origin(Joint joints[], int index) {
-    return joint_world_matrix(joints, index) * point(0.0, 0.0, 0.0);
+point solver_hd_id_origin(int index) {
+    return joint_world_matrix(solver_context.joints, index)
+        * point(0.0, 0.0, 0.0);
 }
 
 vector solver_hd_id_any_perpendicular(vector axis) {
@@ -45,7 +47,7 @@ quat solver_hd_id_from_to(vector from, vector to) {
     return quat_normalize(q);
 }
 
-int solver_hd_id_has_chain(Joint joints[], int root, int end) {
+int solver_hd_id_has_chain(int root, int end) {
     int joint_count = solver_context.joint_count;
     int node = end;
     int steps = 0;
@@ -56,7 +58,7 @@ int solver_hd_id_has_chain(Joint joints[], int root, int end) {
             node = -1;
         }
         if (node >= 0) {
-            node = joints[node].parent;
+            node = solver_context.joints[node].parent;
         }
         steps = steps + 1;
     }
@@ -64,24 +66,27 @@ int solver_hd_id_has_chain(Joint joints[], int root, int end) {
 }
 
 export int solver_hd_id [[ string stage = "solver" ]]
-    (Joint joints[],
-                 Joint history[],
+    (Joint history[],
                  int root,
                  int end,
-                 matrix target[],
+                 int target_index,
                  int iterations) {
     int joint_count = solver_context.joint_count;
+    int locator_count = solver_context.locator_count;
     if (root < 0 || root >= joint_count || end < 0 || end >= joint_count) {
+        return 0;
+    }
+    if (target_index < 0 || target_index >= locator_count) {
         return 0;
     }
     if (iterations < 1) {
         iterations = 1;
     }
-    if (solver_hd_id_has_chain(joints, root, end) == 0) {
+    if (solver_hd_id_has_chain(root, end) == 0) {
         return 0;
     }
     if (root == end) {
-        history[root] = joints[root];
+        history[root] = solver_context.joints[root];
         return 1;
     }
 
@@ -89,34 +94,36 @@ export int solver_hd_id [[ string stage = "solver" ]]
     // translations, hierarchy, scale, and any non-history fields.
     int index = 0;
     while (index < joint_count) {
-        Joint current = joints[index];
+        Joint current = solver_context.joints[index];
         Joint previous = history[index];
         if (length(previous.rotation) > 0.000001) {
             current.rotation = previous.rotation;
-            joints[index] = current;
+            solver_context.joints[index] = current;
         }
         index = index + 1;
     }
 
-    point target_pos = target[0] * point(0.0, 0.0, 0.0);
+    point target_pos = solver_context.locators[target_index].xform
+        * point(0.0, 0.0, 0.0);
     int pass = 0;
     while (pass < iterations) {
-        int pivot = joints[end].parent;
+        int pivot = solver_context.joints[end].parent;
         int depth = 0;
         while (pivot >= 0 && pivot < joint_count && depth < joint_count) {
-            point end_pos = solver_hd_id_origin(joints, end);
-            point pivot_pos = solver_hd_id_origin(joints, pivot);
+            point end_pos = solver_hd_id_origin(end);
+            point pivot_pos = solver_hd_id_origin(pivot);
             vector current_world = end_pos - pivot_pos;
             vector desired_world = target_pos - pivot_pos;
             if (length(current_world) > 0.000001
                 && length(desired_world) > 0.000001)
             {
-                int parent = joints[pivot].parent;
+                int parent = solver_context.joints[pivot].parent;
                 point current_local = end_pos;
                 point pivot_local = pivot_pos;
                 point target_local = target_pos;
                 if (parent >= 0 && parent < joint_count) {
-                    matrix parent_inverse = mat_inverse(joint_world_matrix(joints, parent));
+                    matrix parent_inverse = mat_inverse(
+                        joint_world_matrix(solver_context.joints, parent));
                     current_local = parent_inverse * end_pos;
                     pivot_local = parent_inverse * pivot_pos;
                     target_local = parent_inverse * target_pos;
@@ -125,15 +132,15 @@ export int solver_hd_id [[ string stage = "solver" ]]
                 vector desired_local_direction = target_local - pivot_local;
                 quat delta = solver_hd_id_from_to(
                     current_local_direction, desired_local_direction);
-                Joint solved = joints[pivot];
+                Joint solved = solver_context.joints[pivot];
                 solved.rotation = quat_normalize(quat_mul(delta, solved.rotation));
-                joints[pivot] = solved;
+                solver_context.joints[pivot] = solved;
             }
             if (pivot == root) {
                 pivot = -1;
             }
             if (pivot >= 0) {
-                pivot = joints[pivot].parent;
+                pivot = solver_context.joints[pivot].parent;
             }
             depth = depth + 1;
         }
@@ -142,7 +149,7 @@ export int solver_hd_id [[ string stage = "solver" ]]
 
     index = 0;
     while (index < joint_count) {
-        history[index] = joints[index];
+        history[index] = solver_context.joints[index];
         index = index + 1;
     }
     return 1;

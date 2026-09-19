@@ -13,6 +13,7 @@
 #include "orlrig/controller.hpp"
 #include "orlrig/graph_resources.hpp"
 #include "orlrig/locator.hpp"
+#include "orl_runtime_signature.h"
 
 namespace ORL
 {
@@ -63,9 +64,7 @@ void SceneInputCatalog::refresh() {
     pack_joints();
     pack_locators();
     pack_controllers();
-    if (cuda_evaluation) {
-        prepare_packed_inputs();
-    }
+    prepare_packed_inputs();
     add_descriptors();
 }
 
@@ -524,11 +523,64 @@ bool SceneInputCatalog::bind_graph_inputs(exec::OrlGraphExecution& execution,
     {
         return false;
     }
-    return execution.set_solver_context(
-        static_cast<std::int64_t>(
-            components_.size(ComponentKind::Joint)),
-        static_cast<std::int64_t>(
-            components_.size(ComponentKind::Controller)));
+    return bind_solver_context(execution);
+}
+
+bool SceneInputCatalog::bind_solver_context(
+    exec::OrlGraphExecution& execution, std::string* error)
+{
+    if (!packed_solver_inputs.ready && !prepare_packed_inputs()) {
+        return set_error(error,
+            "Unable to prepare packed solver context storage");
+    }
+    const auto view = exec::PackedBufferView{
+        packed_solver_inputs.storage.data(),
+        packed_solver_inputs.storage.size(),
+        0,
+        packed_solver_inputs.storage.size(),
+        packed_solver_inputs.version};
+    if (!execution.bind_solver_context(view)) {
+        return set_error(error,
+            execution.errors().empty()
+                ? "Unable to bind packed solver context"
+                : execution.errors().front());
+    }
+    if (!execution.set_solver_context(solver_context())) {
+        return set_error(error,
+            execution.errors().empty()
+                ? "Unable to update solver context"
+                : execution.errors().front());
+    }
+    return true;
+}
+
+orlrig::SolverContext SceneInputCatalog::solver_context() const
+{
+    return orlrig::SolverContext{
+        static_cast<std::int64_t>(joint_ids_.size()),
+        static_cast<std::int64_t>(controller_ids_.size()),
+        static_cast<std::int64_t>(locator_ids_.size()),
+        static_cast<std::int64_t>(packed_solver_inputs.joints_offset),
+        static_cast<std::int64_t>(packed_solver_inputs.controllers_offset),
+        static_cast<std::int64_t>(packed_solver_inputs.locators_offset),
+    };
+}
+
+std::optional<exec::DeviceBufferView>
+SceneInputCatalog::solver_joints_device_view(
+    exec::OrlGraphExecution& execution) const
+{
+    const auto context = solver_context();
+    const auto base = execution.device_buffer_view(
+        orlcomp::kSolverContextParameterName);
+    if (!base.has_value() || context.joint_count <= 0) {
+        return std::nullopt;
+    }
+    return exec::DeviceBufferView{
+        base->device_ptr + static_cast<std::uint64_t>(
+            context.joints_offset),
+        static_cast<std::size_t>(context.joint_count)
+            * orlrig::kJointStride};
 }
 
 bool SceneInputCatalog::commit_joints(
@@ -546,8 +598,27 @@ bool SceneInputCatalog::commit_joints(
         return set_error(error,
             "Packed joint buffer has fewer elements than the component store");
     }
+    const std::byte* source_bytes = nullptr;
+    const auto current_joints = components_.packed_joints();
+    const bool host_buffer_was_edited =
+        joints_.count() != current_joints.size()
+        || (!current_joints.empty()
+            && std::memcmp(
+                joints_.data(), current_joints.data(),
+                current_joints.size() * orlrig::kJointStride) != 0);
+    if (!host_buffer_was_edited
+        && packed_solver_inputs.ready
+        && packed_solver_inputs.storage.size()
+            >= packed_solver_inputs.joints_offset
+                + ids.size() * orlrig::kJointStride)
+    {
+        source_bytes = packed_solver_inputs.storage.data()
+            + packed_solver_inputs.joints_offset;
+    } else {
+        source_bytes = static_cast<const std::byte*>(joints_.data());
+    }
     const auto* source =
-        static_cast<const orlviewer::Joint*>(joints_.data());
+        reinterpret_cast<const orlviewer::Joint*>(source_bytes);
     if (source == nullptr && !ids.empty()) {
         return set_error(error, "Packed joint buffer has no host data");
     }
@@ -876,7 +947,11 @@ bool SceneInputCatalog::prepare_packed_inputs()
     }
     const orlrig::SolverContext context{
         static_cast<std::int64_t>(joint_ids_.size()),
-        static_cast<std::int64_t>(controller_ids_.size())};
+        static_cast<std::int64_t>(controller_ids_.size()),
+        static_cast<std::int64_t>(locator_ids_.size()),
+        static_cast<std::int64_t>(joints_offset),
+        static_cast<std::int64_t>(controllers_offset),
+        static_cast<std::int64_t>(locators_offset)};
     std::memcpy(
         packed_solver_inputs.storage.data(),
         &context,

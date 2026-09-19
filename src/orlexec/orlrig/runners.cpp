@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <limits>
 #include <utility>
 
 #include <tbb/parallel_for.h>
 #include <glm/vec4.hpp>
+
+#include "orl_runtime_signature.h"
 
 namespace orlrig
 {
@@ -116,6 +119,84 @@ bool fill_xform(exec::OrlBuffer& destination, const Locator& locator) {
     return true;
 }
 
+bool pack_solver_context(
+    exec::OrlBuffer& storage,
+    const exec::OrlBuffer& joints,
+    const exec::OrlBuffer& locators,
+    const exec::OrlBuffer& controllers,
+    orlrig::SolverContext* context)
+{
+    if (context == nullptr) {
+        return false;
+    }
+    constexpr std::size_t alignment = 16;
+    const auto align_up = [alignment](std::size_t value) {
+        const std::size_t remainder = value % alignment;
+        return remainder == 0
+            ? value
+            : value > std::numeric_limits<std::size_t>::max()
+                    - (alignment - remainder)
+                ? std::numeric_limits<std::size_t>::max()
+                : value + (alignment - remainder);
+    };
+    std::size_t offset = align_up(sizeof(orlrig::SolverContext));
+    if (offset == std::numeric_limits<std::size_t>::max()) {
+        return false;
+    }
+    const std::size_t joints_offset = offset;
+    if (joints.byte_size() > std::numeric_limits<std::size_t>::max() - offset) {
+        return false;
+    }
+    offset += joints.byte_size();
+    offset = align_up(offset);
+    if (offset == std::numeric_limits<std::size_t>::max()) {
+        return false;
+    }
+    const std::size_t locators_offset = offset;
+    if (locators.byte_size()
+        > std::numeric_limits<std::size_t>::max() - offset)
+    {
+        return false;
+    }
+    offset += locators.byte_size();
+    offset = align_up(offset);
+    if (offset == std::numeric_limits<std::size_t>::max()) {
+        return false;
+    }
+    const std::size_t controllers_offset = offset;
+    if (controllers.byte_size()
+        > std::numeric_limits<std::size_t>::max() - offset)
+    {
+        return false;
+    }
+    offset += controllers.byte_size();
+
+    if (!storage.resize(offset)) {
+        return false;
+    }
+    *context = orlrig::SolverContext{
+        static_cast<std::int64_t>(joints.count()),
+        static_cast<std::int64_t>(controllers.count()),
+        static_cast<std::int64_t>(locators.count()),
+        static_cast<std::int64_t>(joints_offset),
+        static_cast<std::int64_t>(controllers_offset),
+        static_cast<std::int64_t>(locators_offset),
+    };
+    std::memcpy(storage.data(), context, sizeof(*context));
+    const auto copy = [&storage](
+        const exec::OrlBuffer& source, std::size_t destination_offset) {
+        if (source.byte_size() != 0) {
+            std::memcpy(
+                static_cast<std::byte*>(storage.data()) + destination_offset,
+                source.data(), source.byte_size());
+        }
+    };
+    copy(joints, joints_offset);
+    copy(locators, locators_offset);
+    copy(controllers, controllers_offset);
+    return true;
+}
+
 RunnerStatus bind_error(const exec::OrlExecution& execution, const char* stage) {
     RunnerStatus result = failure(execution.errors());
     if (result.errors.empty()) {
@@ -147,6 +228,9 @@ RunnerStatus validate_joint_buffer(const exec::OrlBuffer& buffer,
 LbsRunner::LbsRunner(exec::Backend backend)
     : compute_backend(backend)
     , joints(kJointOrlType, kJointStride)
+    , solver_locators(kLocatorOrlType, kLocatorStride)
+    , solver_controllers(kMatrixOrlType, kMatrixStride)
+    , solver_context_storage(kSolverContextOrlType, 1)
     , output(kPointOrlType, kPointStride)
 {
 }
@@ -209,10 +293,19 @@ RunnerStatus LbsRunner::ensure_programs(const std::string& type) {
 RunnerStatus LbsRunner::bind_capture(exec::OrlBuffer& packed,
     DeformerData& deformer)
 {
-    if (!capture_execution->bind_buffer("joints", packed)
-        || !capture_execution->bind_buffer("inverse_binds", deformer.inverse_binds)
-        || !capture_execution->bind_int("joint_count",
-            static_cast<std::int64_t>(packed.count())))
+    orlrig::SolverContext context;
+    if (!pack_solver_context(
+            solver_context_storage, packed, solver_locators,
+            solver_controllers, &context)
+        || !capture_execution->bind_solver_context(exec::PackedBufferView{
+            solver_context_storage.data(),
+            solver_context_storage.byte_size(),
+            0,
+            solver_context_storage.byte_size(),
+            solver_context_storage.version()})
+        || !capture_execution->set_solver_context(context)
+        || !capture_execution->bind_buffer(
+            "inverse_binds", deformer.inverse_binds))
     {
         return bind_error(*capture_execution, "capture binding");
     }
@@ -269,8 +362,24 @@ RunnerStatus LbsRunner::bind_deform(exec::OrlBuffer& packed,
     std::int64_t vertex_count)
 {
     const std::int64_t weight_count = std::max<std::int64_t>(1, weights.weight_cnt);
-    const std::int64_t joint_count = static_cast<std::int64_t>(packed.count());
+    orlrig::SolverContext context;
+    if (!pack_solver_context(
+            solver_context_storage, packed, solver_locators,
+            solver_controllers, &context)
+        || !deform_execution->bind_solver_context(exec::PackedBufferView{
+            solver_context_storage.data(),
+            solver_context_storage.byte_size(),
+            0,
+            solver_context_storage.byte_size(),
+            solver_context_storage.version()})
+        || !deform_execution->set_solver_context(context))
+    {
+        return bind_error(*deform_execution, "deformer context binding");
+    }
     for (const auto& parameter : deform_program->parameters()) {
+        if (parameter.name == orlcomp::kSolverContextParameterName) {
+            continue;
+        }
         bool bound = true;
         if (parameter.name == "bind_positions") {
             bound = deform_execution->bind_buffer("bind_positions",
@@ -278,9 +387,6 @@ RunnerStatus LbsRunner::bind_deform(exec::OrlBuffer& packed,
         }
         else if (parameter.name == "output_positions") {
             bound = deform_execution->bind_buffer("output_positions", output);
-        }
-        else if (parameter.name == "joints") {
-            bound = deform_execution->bind_buffer("joints", packed);
         }
         else if (parameter.name == "inverse_binds") {
             bound = deform_execution->bind_buffer("inverse_binds",
@@ -291,9 +397,6 @@ RunnerStatus LbsRunner::bind_deform(exec::OrlBuffer& packed,
         }
         else if (parameter.name == "vertex_count") {
             bound = deform_execution->bind_int("vertex_count", vertex_count);
-        }
-        else if (parameter.name == "joint_count") {
-            bound = deform_execution->bind_int("joint_count", joint_count);
         }
         else if (parameter.name == "weight_cnt") {
             bound = deform_execution->bind_int("weight_cnt", weight_count);
@@ -546,6 +649,8 @@ SolverRunner::SolverRunner(exec::Backend backend)
     , packed_joints(kJointOrlType, kJointStride)
     , target_xform(kLocatorOrlType, kLocatorStride)
     , pole_xform(kLocatorOrlType, kLocatorStride)
+    , solver_locators(kLocatorOrlType, kLocatorStride)
+    , solver_context_storage(kSolverContextOrlType, 1)
     , hierarchy_data(kHierarchyDataOrlType, kHierarchyDataStride)
 {
 }
@@ -656,21 +761,36 @@ RunnerStatus SolverRunner::evaluate_two_bone(exec::OrlBuffer& joint_buffer,
         return status;
     }
     if (!fill_xform(target_xform, target)
-        || !fill_xform(pole_xform, pole))
+        || !fill_xform(pole_xform, pole)
+        || !solver_locators.resize(2))
     {
         return failure("Failed to pack solver inputs");
     }
+    std::memcpy(
+        static_cast<std::byte*>(solver_locators.data()),
+        target_xform.data(), kLocatorStride);
+    std::memcpy(
+        static_cast<std::byte*>(solver_locators.data()) + kLocatorStride,
+        pole_xform.data(), kLocatorStride);
 
-    const auto joint_count = static_cast<std::int64_t>(joint_buffer.count());
-    if (!execution->set_solver_context(joint_count, 0)
+    orlrig::SolverContext context;
+    if (!pack_solver_context(
+            solver_context_storage, joint_buffer, solver_locators,
+            exec::OrlBuffer{kMatrixOrlType, kMatrixStride}, &context)
+        || !execution->bind_solver_context(exec::PackedBufferView{
+            solver_context_storage.data(),
+            solver_context_storage.byte_size(),
+            0,
+            solver_context_storage.byte_size(),
+            solver_context_storage.version()})
+        || !execution->set_solver_context(context)
         || !execution->set_hierarchy_context(hierarchy_context)
         || !execution->bind_hierarchy_data(hierarchy_data)
-        || !execution->bind_buffer("joints", joint_buffer)
         || !execution->bind_int("root", root)
         || !execution->bind_int("mid", mid)
         || !execution->bind_int("end", end)
-        || !execution->bind_buffer("target", target_xform)
-        || !execution->bind_buffer("pole", pole_xform))
+        || !execution->bind_int("target_index", 0)
+        || !execution->bind_int("pole_index", 1))
     {
         return bind_error(*execution, "solver binding");
     }

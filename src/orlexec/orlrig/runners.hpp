@@ -61,6 +61,9 @@ private:
     std::optional<ORL::exec::OrlProgram> deform_program;
     std::optional<ORL::exec::OrlExecution> deform_execution;
     ORL::exec::OrlBuffer joints;
+    ORL::exec::OrlBuffer solver_locators;
+    ORL::exec::OrlBuffer solver_controllers;
+    ORL::exec::OrlBuffer solver_context_storage;
     ORL::exec::OrlBuffer output;
     std::int64_t last_vertex_count = 0;
 };
@@ -135,6 +138,8 @@ private:
     ORL::exec::OrlBuffer packed_joints;
     ORL::exec::OrlBuffer target_xform;
     ORL::exec::OrlBuffer pole_xform;
+    ORL::exec::OrlBuffer solver_locators;
+    ORL::exec::OrlBuffer solver_context_storage;
     ORL::exec::OrlBuffer hierarchy_data;
     HierarchyContext hierarchy_context;
     std::optional<HierarchyPlan> compiled_hierarchy_plan;

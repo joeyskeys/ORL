@@ -3,14 +3,20 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+
+#include <glm/gtc/matrix_transform.hpp>
 
 #include "component_manager.hpp"
 #include "control_map.hpp"
 #include "graph_scene_runtime.hpp"
 #include "ops/create_joint_op.hpp"
+#include "ops/delete_op.hpp"
+#include "ops/mirror_op.hpp"
+#include "ops/transform_mode.hpp"
 #include "ops/toggle_controller_attachment_op.hpp"
 #include "orlrig/abi.hpp"
 #include "orlrig/graph_resources.hpp"
@@ -23,6 +29,51 @@ namespace
 static_assert(requires(ORL::CreateJointOp& operation) {
     operation.enter();
 });
+
+class TestWindowBackend final : public vkkk::WindowBackend {
+public:
+    TestWindowBackend() {
+        pointer_state.window_size = size;
+        pointer_state.framebuffer_size = size;
+    }
+
+    std::vector<const char*> instance_extensions(bool) const override {
+        return {};
+    }
+    VkSurfaceKHR create_surface(VkInstance) override {
+        return VK_NULL_HANDLE;
+    }
+    VkExtent2D framebuffer_size() const override {
+        return size;
+    }
+    VkExtent2D window_size() const override {
+        return size;
+    }
+    void wait_until_visible() override {}
+    bool should_close() const override {
+        return false;
+    }
+    void poll_events() override {}
+    void set_resize_flag(bool*) override {}
+    void* native_handle() const override {
+        return nullptr;
+    }
+    vkkk::InputPointer pointer() const override {
+        return pointer_state;
+    }
+    bool mouse_down(vkkk::MouseButton) const override {
+        return false;
+    }
+    bool key_down(vkkk::Key) const override {
+        return false;
+    }
+    std::uint32_t modifiers() const override {
+        return 0;
+    }
+
+    VkExtent2D size{100, 100};
+    vkkk::InputPointer pointer_state{50.0, 50.0};
+};
 
 orlgraph::GraphModule make_controller_to_joint_graph()
 {
@@ -125,10 +176,6 @@ orlgraph::GraphModule make_two_bone_solver_graph()
     add_find("mid", "orlrig.input.find_joint", "mid");
     add_find("end", "orlrig.input.find_joint", "end");
     graph.add_node(orlgraph::NodeInstance{
-        orlgraph::StableId{"input_joints"},
-        orlgraph::StableId{"orlrig.input.joints"},
-        "input_joints", {}, {}, orlgraph::InlinePolicy::Default});
-    graph.add_node(orlgraph::NodeInstance{
         orlgraph::StableId{"solver"},
         orlgraph::StableId{"orlrig.solver.ik_two_bone"},
         "solver", {}, {}, orlgraph::InlinePolicy::Default});
@@ -144,9 +191,8 @@ orlgraph::GraphModule make_two_bone_solver_graph()
                 orlgraph::StableId{"solver"},
                 orlgraph::StableId{std::move(destination_port)})});
     };
-    connect("input_joints", "joints", "joints");
-    connect("target", "xform", "target");
-    connect("pole", "xform", "pole");
+    connect("target", "index", "target_index");
+    connect("pole", "index", "pole_index");
     connect("root", "index", "root");
     connect("mid", "index", "mid");
     connect("end", "index", "end");
@@ -236,12 +282,10 @@ TEST_CASE("scene graph context owns the active LBS graph",
 
     context.refresh_scene_inputs();
     std::string error;
-    REQUIRE(context.map_input_by_binding(
-        "joints", std::string{orlrig::kSceneJointsBinding}, &error));
-    const auto* joints = context.graph().input(orlgraph::StableId{"joints"});
-    REQUIRE(joints != nullptr);
+    REQUIRE(context.graph().input(orlgraph::StableId{"joints"}) == nullptr);
     ORL::exec::GraphInputBinding binding;
-    REQUIRE(context.resolve_graph_input(*joints, binding, &error));
+    REQUIRE(context.scene_inputs().resolve_binding(
+        orlrig::kSceneJointsBinding, binding, &error));
     REQUIRE(binding.kind == ORL::exec::ParameterKind::Buffer);
     REQUIRE(binding.element_count == 1);
     REQUIRE(context.scene_inputs().resolve_element_handle(
@@ -376,6 +420,76 @@ TEST_CASE("control map scopes viewport edits",
     REQUIRE(evaluations == 1);
     REQUIRE(scope_enters == 1);
     REQUIRE(scope_exits == 1);
+}
+
+TEST_CASE("transform axis keys cycle screen world and local spaces",
+    "[controls][transform]")
+{
+    ORL::TransformConstraint constraint;
+    ORL::InputEvent event;
+    event.kind = ORL::InputEvent::Kind::Key;
+    event.action = vkkk::InputAction::Press;
+
+    event.key = vkkk::Key::X;
+    REQUIRE(constraint.handle_axis_key(event));
+    REQUIRE(constraint.space == ORL::TransformSpace::World);
+    REQUIRE(constraint.axis == ORL::TransformAxis::X);
+
+    REQUIRE(constraint.handle_axis_key(event));
+    REQUIRE(constraint.space == ORL::TransformSpace::Local);
+    REQUIRE(constraint.axis == ORL::TransformAxis::X);
+
+    event.key = vkkk::Key::Y;
+    REQUIRE(constraint.handle_axis_key(event));
+    REQUIRE(constraint.space == ORL::TransformSpace::Local);
+    REQUIRE(constraint.axis == ORL::TransformAxis::Y);
+
+    REQUIRE(constraint.handle_axis_key(event));
+    REQUIRE(constraint.space == ORL::TransformSpace::Screen);
+    REQUIRE(constraint.axis == ORL::TransformAxis::None);
+}
+
+TEST_CASE("control map separates window and panel bindings",
+    "[controls][scope]")
+{
+    ORL::ControlMap controls;
+    int window_calls = 0;
+    int graph_calls = 0;
+    controls.bind_op("window_action",
+        [&window_calls](const ORL::InputEvent&) { ++window_calls; });
+    controls.bind_op("graph_action",
+        [&graph_calls](const ORL::InputEvent&) { ++graph_calls; });
+
+    const ORL::InputSpec input{
+        ORL::InputSpec::Type::Key,
+        static_cast<int>(vkkk::Key::A),
+        static_cast<int>(vkkk::InputAction::Press),
+        0,
+    };
+    controls.map(input, "window_action",
+        ORL::BindingScope::Window);
+    controls.map(input, "graph_action",
+        ORL::BindingScope::Panel, "node_graph");
+
+    ORL::InputEvent event;
+    event.kind = ORL::InputEvent::Kind::Key;
+    event.action = vkkk::InputAction::Press;
+    event.key = vkkk::Key::A;
+
+    controls.set_active_panel("properties");
+    controls.dispatch_event(event);
+    REQUIRE(window_calls == 1);
+    REQUIRE(graph_calls == 0);
+
+    controls.set_active_panel("node_graph");
+    controls.dispatch_event(event);
+    REQUIRE(window_calls == 2);
+    REQUIRE(graph_calls == 1);
+
+    controls.set_active_panel("viewport");
+    controls.dispatch_event(event);
+    REQUIRE(window_calls == 3);
+    REQUIRE(graph_calls == 1);
 }
 
 TEST_CASE("controller attachments preserve target-local transforms",
@@ -580,10 +694,29 @@ TEST_CASE("control map preserves contextual attachment and curve controls",
     REQUIRE(std::find(tab->ops.begin(), tab->ops.end(),
         "toggle_orl_evaluation") != tab->ops.end());
 
+    const auto delete_key = find_key(vkkk::Key::Delete, 0);
+    REQUIRE(delete_key != controls.bindings().end());
+    REQUIRE(std::find(delete_key->ops.begin(), delete_key->ops.end(),
+        "delete_selection") != delete_key->ops.end());
+    REQUIRE(delete_key->scope == ORL::BindingScope::Panel);
+    REQUIRE(delete_key->panel == "viewport");
+    const auto backspace = find_key(vkkk::Key::Backspace, 0);
+    REQUIRE(backspace != controls.bindings().end());
+    REQUIRE(std::find(backspace->ops.begin(), backspace->ops.end(),
+        "delete_selection") != backspace->ops.end());
+    const auto m = find_key(vkkk::Key::M, 0);
+    REQUIRE(m != controls.bindings().end());
+    REQUIRE(std::find(m->ops.begin(), m->ops.end(), "mirror")
+        != m->ops.end());
+
     const auto j = find_key(vkkk::Key::J, 0);
     REQUIRE(j != controls.bindings().end());
     REQUIRE(std::find(j->ops.begin(), j->ops.end(),
         "create_joint") != j->ops.end());
+    const auto e = find_key(vkkk::Key::E, 0);
+    REQUIRE(e != controls.bindings().end());
+    REQUIRE(std::find(e->ops.begin(), e->ops.end(),
+        "extend_joint_chain") != e->ops.end());
     for (const auto& binding : controls.bindings()) {
         if (binding.input.type == ORL::InputSpec::Type::MouseButton
             && binding.input.code
@@ -592,6 +725,236 @@ TEST_CASE("control map preserves contextual attachment and curve controls",
             REQUIRE(std::find(binding.ops.begin(), binding.ops.end(),
                 "create_joint") == binding.ops.end());
         }
+    }
+}
+
+TEST_CASE("joint chain extension requires exactly one existing joint",
+    "[controls][joint-creation]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    const auto joint = components.create_joint("root");
+    const auto controller = components.create_controller("controller");
+    vkkk::Camera camera{};
+    ORL::Selection selection(components, scene);
+    ORL::CreateJointOp create_joint(
+        components, camera, glm::vec3{}, nullptr, selection);
+    ORL::ExtendJointChainOp extend_joint_chain(create_joint);
+
+    selection.set(ORL::SelectionRef::joint(joint));
+    extend_joint_chain.enter();
+    REQUIRE(extend_joint_chain.active());
+    extend_joint_chain.cancel();
+    REQUIRE_FALSE(extend_joint_chain.active());
+
+    selection.clear();
+    extend_joint_chain.enter();
+    REQUIRE_FALSE(extend_joint_chain.active());
+
+    selection.set(ORL::SelectionRef::controller(controller));
+    extend_joint_chain.enter();
+    REQUIRE_FALSE(extend_joint_chain.active());
+
+    selection.set(ORL::SelectionRef::joint(joint));
+    selection.add(ORL::SelectionRef::controller(controller));
+    extend_joint_chain.enter();
+    REQUIRE_FALSE(extend_joint_chain.active());
+}
+
+TEST_CASE("joint creation exposes a cursor preview for J and E modes",
+    "[controls][joint-creation]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    const auto root = components.create_joint("root");
+    ORL::Selection selection(components, scene);
+    vkkk::Camera camera{};
+    camera.pos = {0.0f, 0.0f, 5.0f};
+    camera.front = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.ubo_data.view = glm::lookAt(
+        camera.pos, camera.pos + camera.front, camera.up);
+    camera.ubo_data.proj = glm::perspective(
+        glm::radians(60.0f), 1.0f, 0.1f, 100.0f);
+    camera.ubo_data.proj[1][1] *= -1.0f;
+    TestWindowBackend window;
+
+    ORL::CreateJointOp create_joint(
+        components, camera, glm::vec3{}, &window, selection);
+    create_joint.enter();
+    REQUIRE(create_joint.active());
+    REQUIRE(create_joint.preview().visible);
+    REQUIRE_FALSE(create_joint.preview().parent);
+
+    ORL::InputEvent move;
+    move.kind = ORL::InputEvent::Kind::MouseMove;
+    move.x = 75.0;
+    move.y = 50.0;
+    create_joint.eval(move);
+    REQUIRE(create_joint.preview().visible);
+
+    create_joint.cancel();
+    REQUIRE_FALSE(create_joint.preview().visible);
+
+    ORL::ExtendJointChainOp extend_joint_chain(create_joint);
+    selection.set(ORL::SelectionRef::joint(root));
+    extend_joint_chain.enter();
+    REQUIRE(extend_joint_chain.active());
+    REQUIRE(extend_joint_chain.preview().visible);
+    REQUIRE(extend_joint_chain.preview().parent == root);
+    extend_joint_chain.cancel();
+    REQUIRE_FALSE(extend_joint_chain.preview().visible);
+}
+
+TEST_CASE("recursive joint deletion preserves packed hierarchy and detaches controllers",
+    "[components][delete]")
+{
+    ORL::ComponentManager components;
+
+    const auto removed_root = components.create_joint("removed_root");
+    auto removed_child_data = orlviewer::make_identity_joint();
+    removed_child_data.parent = 0;
+    const auto removed_child = components.create_joint(
+        "removed_child", removed_child_data);
+    auto removed_grandchild_data = orlviewer::make_identity_joint();
+    removed_grandchild_data.parent = 1;
+    const auto removed_grandchild = components.create_joint(
+        "removed_grandchild", removed_grandchild_data);
+
+    const auto surviving_root = components.create_joint("surviving_root");
+    auto surviving_child_data = orlviewer::make_identity_joint();
+    surviving_child_data.parent = 3;
+    const auto surviving_child = components.create_joint(
+        "surviving_child", surviving_child_data);
+
+    const auto child_controller = components.create_controller(
+        "child_controller");
+    REQUIRE(components.attach_controller(child_controller, removed_child));
+    REQUIRE(components.destroy_joint_recursive(removed_root));
+
+    REQUIRE(components.find(removed_root) == nullptr);
+    REQUIRE(components.find(removed_child) == nullptr);
+    REQUIRE(components.find(removed_grandchild) == nullptr);
+    REQUIRE(components.joint(surviving_root) != nullptr);
+    REQUIRE(components.joint(surviving_child) != nullptr);
+    REQUIRE(components.joint(surviving_root)->parent == -1);
+    REQUIRE(components.joint(surviving_child)->parent
+        == components.joint_index(surviving_root));
+    REQUIRE(components.controller(child_controller) != nullptr);
+    REQUIRE(components.controller_attachment(child_controller) == nullptr);
+    REQUIRE(components.validate_controller_attachments());
+
+    const auto locator = components.create_locator("locator");
+    const auto locator_controller = components.create_controller(
+        "locator_controller");
+    REQUIRE(components.attach_controller(locator_controller, locator));
+    REQUIRE(components.destroy(locator));
+    REQUIRE(components.controller(locator_controller) != nullptr);
+    REQUIRE(components.controller_attachment(locator_controller) == nullptr);
+    REQUIRE_FALSE(components.attached_controller(locator));
+    REQUIRE(components.validate_controller_attachments());
+}
+
+TEST_CASE("delete operation removes selected scene and component elements",
+    "[controls][delete]")
+{
+    vkkk::Scene scene;
+    REQUIRE(scene.add_object("mesh_instance", "mesh"));
+    ORL::ComponentManager components;
+
+    const auto root = components.create_joint("root");
+    auto child_data = orlviewer::make_identity_joint();
+    child_data.parent = 0;
+    const auto child = components.create_joint("child", child_data);
+    const auto locator = components.create_locator("locator");
+    const auto controller = components.create_controller("controller");
+    REQUIRE(components.attach_controller(controller, locator));
+
+    ORL::Selection selection(components, scene);
+    ORL::DeleteOp delete_op(components, scene, selection);
+    ORL::InputEvent event;
+    event.kind = ORL::InputEvent::Kind::Key;
+    event.key = vkkk::Key::Delete;
+    event.action = vkkk::InputAction::Press;
+
+    selection.add(ORL::SelectionRef::scene_object("mesh_instance"));
+    selection.add(ORL::SelectionRef::controller(controller));
+    delete_op.eval(event);
+
+    REQUIRE(scene.find_object("mesh_instance") == nullptr);
+    REQUIRE(components.find(controller) == nullptr);
+    REQUIRE(components.find(locator) != nullptr);
+    REQUIRE_FALSE(components.attached_controller(locator));
+    REQUIRE(components.validate_controller_attachments());
+
+    selection.set(ORL::SelectionRef::locator(locator));
+    delete_op.eval(event);
+    REQUIRE(components.find(locator) == nullptr);
+
+    selection.set(ORL::SelectionRef::joint(root));
+    delete_op.eval(event);
+    REQUIRE(components.find(root) == nullptr);
+    REQUIRE(components.find(child) == nullptr);
+    REQUIRE(selection.empty());
+}
+
+TEST_CASE("mirror operation copies the selected joint subtree across X",
+    "[controls][mirror]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+
+    auto root_data = orlviewer::make_identity_joint();
+    root_data.translation[0] = 2.0;
+    const auto root = components.create_joint("root", root_data);
+
+    auto child_data = orlviewer::make_identity_joint();
+    child_data.parent = 0;
+    child_data.translation[0] = 1.0;
+    const auto child = components.create_joint("child", child_data);
+
+    ORL::Selection selection(components, scene);
+    selection.set(ORL::SelectionRef::joint(root));
+    ORL::MirrorOp mirror(components, selection);
+    mirror.enter();
+    REQUIRE(mirror.active());
+
+    ORL::InputEvent event;
+    event.kind = ORL::InputEvent::Kind::Key;
+    event.action = vkkk::InputAction::Press;
+    event.key = vkkk::Key::X;
+    mirror.eval(event);
+
+    REQUIRE_FALSE(mirror.active());
+    const auto* mirrored_root = components.find("root_mirror");
+    const auto* mirrored_child = components.find("child_mirror");
+    REQUIRE(mirrored_root != nullptr);
+    REQUIRE(mirrored_child != nullptr);
+    REQUIRE(components.joint(mirrored_root->id)->parent == -1);
+    REQUIRE(components.joint(mirrored_child->id)->parent
+        == components.joint_index(mirrored_root->id));
+
+    const auto packed = components.packed_joints();
+    const auto root_world = orlviewer::joint_world_matrix(
+        packed, components.joint_index(root));
+    const auto child_world = orlviewer::joint_world_matrix(
+        packed, components.joint_index(child));
+    const auto mirrored_root_world = orlviewer::joint_world_matrix(
+        packed, components.joint_index(mirrored_root->id));
+    const auto mirrored_child_world = orlviewer::joint_world_matrix(
+        packed, components.joint_index(mirrored_child->id));
+    REQUIRE(glm::vec3{mirrored_root_world[3]}.x
+        == Catch::Approx(-glm::vec3{root_world[3]}.x));
+    REQUIRE(glm::vec3{mirrored_child_world[3]}.x
+        == Catch::Approx(-glm::vec3{child_world[3]}.x));
+
+    REQUIRE(selection.refs().size() == 2);
+    REQUIRE(selection.focus() != nullptr);
+    REQUIRE(selection.focus()->component == mirrored_root->id);
+    for (const auto& ref : selection.refs()) {
+        REQUIRE(ref.kind == ORL::SelectionRef::Kind::Joint);
+        REQUIRE((ref.component == mirrored_root->id
+            || ref.component == mirrored_child->id));
     }
 }
 
@@ -749,16 +1112,8 @@ TEST_CASE("scene graph commits host-readback joint writeback",
     context.refresh_scene_inputs();
 
     std::string error;
-    REQUIRE(context.map_input_by_binding(
-        "joints", std::string{orlrig::kSceneJointsBinding}, &error));
-    const auto* scene_joints_input =
-        context.graph().input(orlgraph::StableId{"joints"});
-    REQUIRE(scene_joints_input != nullptr);
-    ORL::exec::GraphInputBinding binding;
-    REQUIRE(context.resolve_graph_input(
-        *scene_joints_input, binding, &error));
-    REQUIRE(binding.buffer != nullptr);
-    auto* packed = static_cast<orlrig::Joint*>(binding.buffer->data());
+    auto* packed = static_cast<orlrig::Joint*>(
+        context.scene_inputs().computed_joints_buffer().data());
     REQUIRE(packed != nullptr);
     packed[0].translation[0] = 3.0;
 

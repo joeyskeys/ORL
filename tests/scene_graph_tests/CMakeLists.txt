@@ -6,6 +6,9 @@ add_executable(orl_scene_graph_tests
     scene_graph_tests.cpp
     ${CMAKE_SOURCE_DIR}/src/orlviewer/component_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/orlviewer/control_map.cpp
+    ${CMAKE_SOURCE_DIR}/src/orlviewer/ops/create_joint_op.cpp
+    ${CMAKE_SOURCE_DIR}/src/orlviewer/ops/mirror_op.cpp
+    ${CMAKE_SOURCE_DIR}/src/orlviewer/ops/delete_op.cpp
     ${CMAKE_SOURCE_DIR}/src/orlviewer/graph_scene_inputs.cpp
     ${CMAKE_SOURCE_DIR}/src/orlviewer/scene_graph_context.cpp
     ${CMAKE_SOURCE_DIR}/src/orlviewer/graph_scene_runtime.cpp

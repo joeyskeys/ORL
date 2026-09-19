@@ -6,9 +6,11 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 
@@ -1787,6 +1789,128 @@ OroDocument load_oro(const std::string& path) {
     std::ostringstream contents;
     contents << input.rdbuf();
     return deserialize_oro(contents.str());
+}
+
+std::filesystem::path graph_ir_cache_path(
+    const std::filesystem::path& directory,
+    std::string_view content_hash)
+{
+    return directory / "graph_ir"
+        / (std::string{content_hash} + ".oro");
+}
+
+bool save_graph_ir_cache(const std::filesystem::path& directory,
+    const GraphModule& module, const NodeRegistry& registry,
+    std::string* content_hash, std::vector<Diagnostic>* diagnostics)
+{
+    const auto serialized = serialize_oro(module, registry);
+    if (content_hash != nullptr) {
+        *content_hash = serialized.content_hash;
+    }
+    if (diagnostics != nullptr) {
+        *diagnostics = serialized.diagnostics;
+    }
+    if (!serialized.ok || serialized.content_hash.empty()) {
+        return false;
+    }
+
+    const auto destination =
+        graph_ir_cache_path(directory, serialized.content_hash);
+    std::error_code error;
+    std::filesystem::create_directories(
+        destination.parent_path(), error);
+    if (error) {
+        return false;
+    }
+
+    const auto temporary = destination.string() + ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            return false;
+        }
+        output << serialized.text;
+        if (!output) {
+            return false;
+        }
+    }
+    std::filesystem::remove(destination, error);
+    error.clear();
+    std::filesystem::rename(temporary, destination, error);
+    if (error) {
+        std::filesystem::remove(temporary, error);
+        return false;
+    }
+    return true;
+}
+
+OroDocument load_graph_ir_cache(
+    const std::filesystem::path& directory,
+    std::string_view content_hash)
+{
+    if (directory.empty() || content_hash.empty()) {
+        OroDocument result;
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_CACHE_INVALID_KEY",
+            "Graph IR cache directory or content hash is empty",
+            {}, {}, {},
+        });
+        return result;
+    }
+    return load_oro(
+        graph_ir_cache_path(directory, content_hash).string());
+}
+
+OrlGraphIrCache::OrlGraphIrCache(GraphIrCacheOptions options)
+    : options_(std::move(options))
+{
+}
+
+bool OrlGraphIrCache::enabled() const {
+    return !options_.directory.empty();
+}
+
+std::filesystem::path OrlGraphIrCache::path(
+    std::string_view content_hash) const
+{
+    return graph_ir_cache_path(options_.directory, content_hash);
+}
+
+bool OrlGraphIrCache::save(const GraphModule& module,
+    const NodeRegistry& registry, std::string* content_hash,
+    std::vector<Diagnostic>* diagnostics) const
+{
+    return save_graph_ir_cache(
+        options_.directory, module, registry, content_hash, diagnostics);
+}
+
+OroDocument OrlGraphIrCache::load(std::string_view content_hash) const {
+    if (!enabled() || force_recompile()) {
+        OroDocument result;
+        result.diagnostics.push_back({
+            DiagnosticSeverity::Error, "ORLGRAPH_CACHE_INVALID_KEY",
+            force_recompile()
+                ? "Graph IR cache reload was skipped because recompilation was requested"
+                : "Graph IR cache directory is empty",
+            {}, {}, {},
+        });
+        return result;
+    }
+    return load_graph_ir_cache(options_.directory, content_hash);
+}
+
+bool save_graph_ir_cache(const GraphIrCacheOptions& options,
+    const GraphModule& module, const NodeRegistry& registry,
+    std::string* content_hash, std::vector<Diagnostic>* diagnostics)
+{
+    return OrlGraphIrCache(options).save(
+        module, registry, content_hash, diagnostics);
+}
+
+OroDocument load_graph_ir_cache(const GraphIrCacheOptions& options,
+    std::string_view content_hash)
+{
+    return OrlGraphIrCache(options).load(content_hash);
 }
 
 GraphJsonSerializationResult serialize_graph_json(const GraphModule& module)

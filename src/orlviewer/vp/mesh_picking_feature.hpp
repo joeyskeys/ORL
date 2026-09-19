@@ -143,8 +143,10 @@ private:
         const auto frag_path = shader_dir / "object_picking.frag";
         vkkk::ShaderModule vert_module;
         vkkk::ShaderModule frag_module;
-        if (!vert_module.load(vert_path, vk::ShaderStageFlagBits::eVertex)
-            || !frag_module.load(frag_path, vk::ShaderStageFlagBits::eFragment))
+        if (!context.load_shader(
+                vert_module, vert_path, vk::ShaderStageFlagBits::eVertex)
+            || !context.load_shader(
+                frag_module, frag_path, vk::ShaderStageFlagBits::eFragment))
         {
             return false;
         }

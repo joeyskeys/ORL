@@ -514,11 +514,7 @@ bool SceneGraphContext::bind_graph_inputs(
     {
         return false;
     }
-    return execution.set_solver_context(
-        static_cast<std::int64_t>(
-            components_.size(ComponentKind::Joint)),
-        static_cast<std::int64_t>(
-            components_.size(ComponentKind::Controller)));
+    return scene_inputs_.bind_solver_context(execution);
 }
 
 bool SceneGraphContext::commit_scene_writes(

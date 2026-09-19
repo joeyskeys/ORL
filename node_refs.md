@@ -367,16 +367,14 @@ Signature:
 
 ```orl
 int deformer_lbs_capture_bind(
-    Joint joints[],
-    matrix inverse_binds[],
-    int joint_count
+    matrix inverse_binds[]
 )
 ```
 
 Inputs and effects:
 
-- `joints[]`: bind-pose joint buffer, read;
-- `joint_count`: number of joints;
+- `solver_context.joints[]`: bind-pose joint buffer supplied by the
+  runtime context;
 - `inverse_binds[]`: matrix buffer written in place.
 
 The function is the ORL implementation behind the registered runtime
@@ -390,11 +388,9 @@ Signature:
 int deformer_lbs(
     point bind_positions[],
     point output_positions[],
-    Joint joints[],
     matrix inverse_binds[],
     Weight weights[],
     int vertex_count,
-    int joint_count,
     int weight_cnt
 )
 ```
@@ -402,10 +398,11 @@ int deformer_lbs(
 Inputs and effects:
 
 - `bind_positions[]`: rest-pose vertex positions, read;
-- `joints[]`: current local joint pose, read;
+- `solver_context.joints[]`: current local joint pose supplied by the runtime
+  context;
 - `inverse_binds[]`: captured inverse bind matrices, read;
 - `weights[]`: vertex-major influence cells, read;
-- `vertex_count`, `joint_count`, `weight_cnt`: extents;
+- `vertex_count` and `weight_cnt`: extents;
 - `output_positions[]`: posed positions, written.
 
 The vertex loop is marked `parallel for`, so it is suitable for the CUDA
@@ -743,9 +740,9 @@ Solver procedures mutate the supplied `Joint` buffer. They are generally
 stateful or effectful from a graph perspective and should not be optimized as
 pure arithmetic nodes.
 
-All solver procedures can read the implicit `solver_context` global. Its
-`joint_count` and `controller_count` fields are supplied by the runtime and
-are not graph-node sockets.
+All solver procedures can read and write the implicit `solver_context` global.
+Its `joints[]`, `locators[]`, and `controllers[]` arenas, their counts, and
+their byte offsets are supplied by the runtime and are not graph-node sockets.
 
 ### 6.1 `solver_fk`
 
@@ -755,7 +752,6 @@ Signature:
 
 ```orl
 int solver_fk(
-    Joint joints[],
     matrix world[]
 )
 ```
@@ -784,21 +780,20 @@ Signature:
 
 ```orl
 int solver_ik_two_bone(
-    Joint joints[],
     int root,
     int mid,
     int end,
-    matrix target[],
-    matrix pole[]
+    int target_index,
+    int pole_index
 )
 ```
 
 Inputs:
 
-- `joints[]`: mutable local pose;
+- `solver_context.joints[]`: mutable local pose;
 - `root`, `mid`, `end`: indices of a strict three-joint chain;
-- `target[]`: one-element target transform buffer;
-- `pole[]`: one-element pole transform buffer;
+- `target_index` and `pole_index`: indices into
+  `solver_context.locators[]`;
 - `solver_context.joint_count`: implicit joint extent.
 
 Behavior:
@@ -824,11 +819,10 @@ Signature:
 
 ```orl
 int solver_hd_id(
-    Joint joints[],
     Joint history[],
     int root,
     int end,
-    matrix target[],
+    int target_index,
     int iterations
 )
 ```
@@ -838,15 +832,15 @@ Behavior:
 - validates that `root` is an ancestor of `end`;
 - copies valid previous rotations from `history[]` into the current pose;
 - runs CCD passes from the end parent toward the root;
-- writes the solved pose back to `joints[]`;
+- writes the solved pose back to `solver_context.joints[]`;
 - copies the resulting pose to `history[]`.
 
 `history[]` is both input and output. The caller must preserve it between
 evaluations to obtain the intended history-dependent continuity. Passing a
 fresh history buffer every frame removes the warm-start behavior.
 
-The target is a one-element matrix buffer. `iterations < 1` is promoted to
-one iteration.
+The target is selected from `solver_context.locators[]`.
+`iterations < 1` is promoted to one iteration.
 
 Current runner status: source implementation exists, but no runner method or
 graph definition currently exposes it.
@@ -859,7 +853,6 @@ Signature:
 
 ```orl
 int solver_spline_ik(
-    Joint joints[],
     int chain[],
     point spline[],
     int chain_count,
@@ -896,9 +889,8 @@ Signature:
 
 ```orl
 int solver_full_body_ik(
-    Joint joints[],
     int effectors[],
-    matrix targets[],
+    int target_indices[],
     int effector_count,
     int iterations
 )
@@ -907,7 +899,7 @@ int solver_full_body_ik(
 Inputs:
 
 - `effectors[]`: end-joint indices;
-- `targets[]`: one target matrix per effector;
+- `target_indices[]`: locator indices into `solver_context.locators[]`;
 - `iterations`: number of global CCD passes.
 
 Behavior:

@@ -40,3 +40,7 @@ build*
 # CMake user cache
 CMakeLists.txt.user*
 
+# orlviewer runtime shader/driver caches
+/.orlviewer_spirv_cache/
+/orlviewer.pipeline.cache
+

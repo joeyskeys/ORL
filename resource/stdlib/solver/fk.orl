@@ -7,18 +7,18 @@
 
 use joint;
 
-matrix solver_fk_world_matrix(Joint joints[], int index) {
+matrix solver_fk_world_matrix(int index) {
     int joint_count = solver_context.joint_count;
     if (index < 0 || index >= joint_count) {
         return mat_identity();
     }
 
-    Joint current = joints[index];
+    Joint current = solver_context.joints[index];
     matrix world = joint_local_matrix(current);
     int parent = current.parent;
     int steps = 0;
     while (parent >= 0 && parent < joint_count && steps < joint_count) {
-        current = joints[parent];
+        current = solver_context.joints[parent];
         world = mat_mul(joint_local_matrix(current), world);
         parent = current.parent;
         steps = steps + 1;
@@ -27,11 +27,11 @@ matrix solver_fk_world_matrix(Joint joints[], int index) {
 }
 
 export int solver_fk [[ string stage = "solver" ]]
-    (Joint joints[], matrix world[]) {
+    (matrix world[]) {
     int joint_count = solver_context.joint_count;
     int index = 0;
     while (index < joint_count) {
-        world[index] = solver_fk_world_matrix(joints, index);
+        world[index] = solver_fk_world_matrix(index);
         index = index + 1;
     }
     return joint_count;

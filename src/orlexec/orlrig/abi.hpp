@@ -26,13 +26,28 @@ inline constexpr const char* kSolverContextOrlType = "SolverContext";
 struct SolverContext {
     std::int64_t joint_count = 0;
     std::int64_t controller_count = 0;
+    std::int64_t locator_count = 0;
+    // Byte offsets from the beginning of the bound SolverContext storage.
+    // These are offsets rather than host/device pointers so the same packed
+    // arena can be used by both the CPU JIT and CUDA kernels.
+    std::int64_t joints_offset = 0;
+    std::int64_t controllers_offset = 0;
+    std::int64_t locators_offset = 0;
 };
 
 inline constexpr std::size_t kSolverContextStride = sizeof(SolverContext);
 
 static_assert(offsetof(SolverContext, joint_count) == 0);
 static_assert(offsetof(SolverContext, controller_count) == sizeof(std::int64_t));
-static_assert(sizeof(SolverContext) == sizeof(std::int64_t) * 2);
+static_assert(offsetof(SolverContext, locator_count)
+    == sizeof(std::int64_t) * 2);
+static_assert(offsetof(SolverContext, joints_offset)
+    == sizeof(std::int64_t) * 3);
+static_assert(offsetof(SolverContext, controllers_offset)
+    == sizeof(std::int64_t) * 4);
+static_assert(offsetof(SolverContext, locators_offset)
+    == sizeof(std::int64_t) * 5);
+static_assert(sizeof(SolverContext) == sizeof(std::int64_t) * 6);
 
 inline constexpr const char* kSolverDispatchContextOrlType =
     "SolverDispatchContext";

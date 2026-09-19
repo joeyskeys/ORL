@@ -14,6 +14,7 @@
 #include "concepts/line.h"
 #include "concepts/point.h"
 #include "../scene_graph_context.hpp"
+#include "ops/create_joint_op.hpp"
 #include "utils/sizeable.hpp"
 #include "vk_ins/shader_module_pack.hpp"
 #include "vp/feature.hpp"
@@ -47,6 +48,10 @@ public:
         , camera(camera)
         , shader_dir(std::move(shader_dir))
     {
+    }
+
+    void set_preview_source(const CreateJointOp& source) {
+        preview_source = &source;
     }
 
     void on_attach(vkkk::Context& context, vk::Extent2D) {
@@ -89,9 +94,14 @@ public:
                     device_joints->device_ptr, bytes);
         }
 
+        const auto* preview = preview_source == nullptr
+            ? nullptr : &preview_source->preview();
         std::vector<orlviewer::Joint> joints;
         if (!gpu_joints) {
             joints = components.packed_joints();
+            if (preview != nullptr && preview->visible) {
+                append_preview(joints, *preview);
+            }
             if (joints.empty()) {
                 return;
             }
@@ -102,6 +112,9 @@ public:
             gpu_joints, joint_count);
         record_points(context, cmd, image_index, joints,
             gpu_joints, joint_count);
+        if (gpu_joints && preview != nullptr && preview->visible) {
+            record_gpu_preview(context, cmd, image_index, *preview);
+        }
     }
 
 private:
@@ -115,6 +128,64 @@ private:
     static constexpr const char* kDummyPoints = "orl_joint_draw_points";
     static constexpr const char* kDummyLines = "orl_joint_draw_lines";
 
+    void append_preview(std::vector<orlviewer::Joint>& joints,
+        const CreateJointOp::Preview& preview) const
+    {
+        orlviewer::Joint pending = orlviewer::make_identity_joint();
+        const auto parent_index = preview.parent
+            ? components.joint_index(preview.parent) : -1;
+        pending.parent = parent_index >= 0
+            && static_cast<std::size_t>(parent_index) < joints.size()
+            ? parent_index : -1;
+        const auto local = orlviewer::world_to_local(
+            joints, pending.parent, preview.world);
+        pending.translation[0] = local.x;
+        pending.translation[1] = local.y;
+        pending.translation[2] = local.z;
+        pending.selected = 1;
+        joints.push_back(pending);
+    }
+
+    void record_gpu_preview(vkkk::Context& context,
+        vk::raii::CommandBuffer& cmd, uint32_t image_index,
+        const CreateJointOp::Preview& preview)
+    {
+        const auto packed = components.packed_joints();
+        const auto parent_index = preview.parent
+            ? components.joint_index(preview.parent) : -1;
+        if (parent_index >= 0
+            && static_cast<std::size_t>(parent_index) < packed.size())
+        {
+            const auto parent_world = glm::vec3{
+                orlviewer::joint_world_matrix(packed, parent_index)[3]};
+            auto parent = orlviewer::make_identity_joint();
+            parent.selected = 1;
+            parent.translation[0] = parent_world.x;
+            parent.translation[1] = parent_world.y;
+            parent.translation[2] = parent_world.z;
+
+            auto pending = orlviewer::make_identity_joint();
+            pending.parent = 0;
+            pending.selected = 1;
+            pending.translation[0] = preview.world.x - parent_world.x;
+            pending.translation[1] = preview.world.y - parent_world.y;
+            pending.translation[2] = preview.world.z - parent_world.z;
+
+            std::vector<orlviewer::Joint> line_joints{parent, pending};
+            record_lines(context, cmd, image_index, line_joints,
+                false, static_cast<std::uint32_t>(line_joints.size()));
+        }
+
+        auto point = orlviewer::make_identity_joint();
+        point.selected = 1;
+        point.translation[0] = preview.world.x;
+        point.translation[1] = preview.world.y;
+        point.translation[2] = preview.world.z;
+        std::vector<orlviewer::Joint> point_joints{point};
+        record_points(context, cmd, image_index, point_joints,
+            false, 1);
+    }
+
     bool create_point_pipeline(vkkk::Context& context) {
         if (context.pipelines.contains(kPointPipeline)) {
             return true;
@@ -124,8 +195,10 @@ private:
         const auto frag_path = shader_dir / "point.frag";
         vkkk::ShaderModule vert_module;
         vkkk::ShaderModule frag_module;
-        if (!vert_module.load(vert_path, vk::ShaderStageFlagBits::eVertex)
-            || !frag_module.load(frag_path, vk::ShaderStageFlagBits::eFragment))
+        if (!context.load_shader(
+                vert_module, vert_path, vk::ShaderStageFlagBits::eVertex)
+            || !context.load_shader(
+                frag_module, frag_path, vk::ShaderStageFlagBits::eFragment))
         {
             return false;
         }
@@ -153,8 +226,10 @@ private:
         const auto frag_path = shader_dir / "line.frag";
         vkkk::ShaderModule vert_module;
         vkkk::ShaderModule frag_module;
-        if (!vert_module.load(vert_path, vk::ShaderStageFlagBits::eVertex)
-            || !frag_module.load(frag_path, vk::ShaderStageFlagBits::eFragment))
+        if (!context.load_shader(
+                vert_module, vert_path, vk::ShaderStageFlagBits::eVertex)
+            || !context.load_shader(
+                frag_module, frag_path, vk::ShaderStageFlagBits::eFragment))
         {
             return false;
         }
@@ -283,6 +358,7 @@ private:
     const ComponentManager& components;
     const vkkk::Camera& camera;
     std::filesystem::path shader_dir;
+    const CreateJointOp* preview_source = nullptr;
     PointSizeUBO point_size{};
     PointColorUBO point_color{};
     LineWidthUBO line_width{};

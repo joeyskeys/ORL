@@ -2,8 +2,8 @@
 //   use solver/ik_two_bone;
 //
 // Rotates root and mid so the end reaches target. pole aims the bend.
-// target[] and pole[] are one-element Locator buffers. Their translations
-// are used as the goal and bend pole; the end joint is left alone.
+// target_index and pole_index select Locator values from solver_context;
+// the end joint is left alone.
 
 use joint;
 use locator;
@@ -36,16 +36,17 @@ vector solver_joint_offset(Joint joint) {
     return offset;
 }
 
-point solver_joint_origin(Joint joints[], int index) {
-    matrix world = joint_world_matrix(joints, index);
+point solver_joint_origin(int index) {
+    matrix world = joint_world_matrix(solver_context.joints, index);
     return world * point(0.0, 0.0, 0.0);
 }
 
-point solver_world_to_local(Joint joints[], int parent, point world) {
+point solver_world_to_local(int parent, point world) {
     if (parent < 0) {
         return world;
     }
-    matrix inv = mat_inverse(joint_world_matrix(joints, parent));
+    matrix inv = mat_inverse(
+        joint_world_matrix(solver_context.joints, parent));
     return inv * world;
 }
 
@@ -88,13 +89,13 @@ quat solver_quat_from_to(vector from, vector to) {
 }
 
 export int solver_ik_two_bone [[ string stage = "solver" ]]
-    (Joint joints[],
-                       int root,
+    (int root,
                        int mid,
                        int end,
-                       Locator target[],
-                       Locator pole[]) {
+                       int target_index,
+                       int pole_index) {
     int joint_count = solver_context.joint_count;
+    int locator_count = solver_context.locator_count;
     if (root < 0) {
         return 0;
     }
@@ -113,10 +114,16 @@ export int solver_ik_two_bone [[ string stage = "solver" ]]
     if (end >= joint_count) {
         return 0;
     }
+    if (target_index < 0 || target_index >= locator_count) {
+        return 0;
+    }
+    if (pole_index < 0 || pole_index >= locator_count) {
+        return 0;
+    }
 
-    Joint root_joint = joints[root];
-    Joint mid_joint = joints[mid];
-    Joint end_joint = joints[end];
+    Joint root_joint = solver_context.joints[root];
+    Joint mid_joint = solver_context.joints[mid];
+    Joint end_joint = solver_context.joints[end];
     if (mid_joint.parent != root) {
         return 0;
     }
@@ -135,8 +142,9 @@ export int solver_ik_two_bone [[ string stage = "solver" ]]
         return 0;
     }
 
-    point root_pos = solver_joint_origin(joints, root);
-    point target_pos = target[0].xform * point(0.0, 0.0, 0.0);
+    point root_pos = solver_joint_origin(root);
+    point target_pos = solver_context.locators[target_index].xform
+        * point(0.0, 0.0, 0.0);
     vector reach = target_pos - root_pos;
     float d = length(reach);
     if (d < 0.000001) {
@@ -151,7 +159,8 @@ export int solver_ik_two_bone [[ string stage = "solver" ]]
     }
 
     vector axis = normalize(reach);
-    point pole_pos = pole[0].xform * point(0.0, 0.0, 0.0);
+    point pole_pos = solver_context.locators[pole_index].xform
+        * point(0.0, 0.0, 0.0);
 
     vector pole_dir = pole_pos - root_pos;
     vector side = pole_dir - axis * dot(pole_dir, axis);
@@ -159,7 +168,7 @@ export int solver_ik_two_bone [[ string stage = "solver" ]]
     // plane. Reusing the current elbow direction avoids switching between
     // arbitrary perpendicular branches from one frame to the next.
     if (length(side) < 0.0001) {
-        point current_mid = solver_joint_origin(joints, mid);
+        point current_mid = solver_joint_origin(mid);
         vector current_dir = current_mid - root_pos;
         vector current_side =
             current_dir - axis * dot(current_dir, axis);
@@ -180,15 +189,15 @@ export int solver_ik_two_bone [[ string stage = "solver" ]]
     point elbow = root_pos + axis * x + side * h;
     point reach_target = root_pos + axis * d_clamped;
 
-    point elbow_local = solver_world_to_local(joints, root_joint.parent, elbow);
+    point elbow_local = solver_world_to_local(root_joint.parent, elbow);
     vector root_offset = solver_joint_offset(root_joint);
     vector desired_root = elbow_local - root_offset;
     root_joint.rotation = solver_quat_from_to(upper, desired_root);
-    joints[root] = root_joint;
+    solver_context.joints[root] = root_joint;
 
-    point target_local = solver_world_to_local(joints, root, reach_target);
+    point target_local = solver_world_to_local(root, reach_target);
     vector desired_mid = target_local - upper;
     mid_joint.rotation = solver_quat_from_to(lower, desired_mid);
-    joints[mid] = mid_joint;
+    solver_context.joints[mid] = mid_joint;
     return 1;
 }

@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 
+#include "orl_cache.h"
 #include "orlrig/abi.hpp"
 
 namespace ORL::exec
@@ -129,7 +130,8 @@ public:
     // Creation retains diagnostics on the returned object when a backend is
     // unavailable, avoiding an error-losing optional construction path.
     static OrlExecution Create(const OrlProgram& program,
-        Backend backend = Backend::Cpu);
+        Backend backend = Backend::Cpu,
+        orlcomp::OrlBinaryCacheOptions cache = {});
     ~OrlExecution();
 
     OrlExecution(const OrlExecution&) = delete;
@@ -150,6 +152,11 @@ public:
     // uses it. This is a no-op for ordinary programs.
     bool set_solver_context(
         std::int64_t joint_count, std::int64_t controller_count);
+    bool set_solver_context(const orlrig::SolverContext& context);
+    // Binds the packed arena used by the implicit solver_context global. CPU
+    // execution uses the host allocation directly; CUDA uploads the same
+    // allocation once and passes offsets from SolverContext.
+    bool bind_solver_context(const PackedBufferView& view);
     // Updates the implicit hierarchy_context global when the compiled
     // program uses it. This is a no-op for ordinary programs.
     bool set_hierarchy_context(const orlrig::HierarchyContext& context);

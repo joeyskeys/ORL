@@ -1,11 +1,13 @@
 #pragma once
 
+#include "orl_cache.h"
 #include "orl_optimizer.h"
 
 #include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -24,13 +26,19 @@ enum class OrlJitTarget : std::uint8_t {
 
 class OrlJitEngine {
 public:
-    explicit OrlJitEngine(OrlJitTarget target = OrlJitTarget::Native);
+    explicit OrlJitEngine(OrlJitTarget target = OrlJitTarget::Native,
+        OrlBinaryCacheOptions cache = {});
     ~OrlJitEngine();
 
-    bool LoadModule(std::unique_ptr<llvm::Module> module, std::unique_ptr<llvm::LLVMContext> context);
+    bool LoadModule(std::unique_ptr<llvm::Module> module,
+        std::unique_ptr<llvm::LLVMContext> context,
+        std::string cache_key = {});
     bool LoadModuleWithOptimization(std::unique_ptr<llvm::Module> module,
                                     std::unique_ptr<llvm::LLVMContext> context,
-                                    OrlOptimizationLevel level = OrlOptimizationLevel::O2);
+                                    OrlOptimizationLevel level = OrlOptimizationLevel::O2,
+                                    std::string cache_key = {});
+    // Loads a previously compiled host object without generating LLVM IR.
+    bool LoadObject(std::span<const std::uint8_t> object);
 
     std::optional<int64_t> InvokeInt64(const std::string &name);
     std::optional<int64_t> InvokeInt64(const std::string &name, int64_t arg);

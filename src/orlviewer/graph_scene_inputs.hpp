@@ -84,6 +84,11 @@ public:
     }
     bool bind_graph_inputs(exec::OrlGraphExecution& execution,
         const orlgraph::GraphModule& module);
+    bool bind_solver_context(exec::OrlGraphExecution& execution,
+        std::string* error = nullptr);
+    orlrig::SolverContext solver_context() const;
+    std::optional<exec::DeviceBufferView> solver_joints_device_view(
+        exec::OrlGraphExecution& execution) const;
     // Copies the host-side packed joint buffer back to component storage after
     // a graph evaluation that performed host readback. Device-only evaluation
     // must pass false and is rejected to avoid committing stale TRS values.

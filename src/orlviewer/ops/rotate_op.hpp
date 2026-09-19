@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include "camera_navigator.hpp"
 #include "gui/window_backend.hpp"
 #include "selection.hpp"
+#include "transform_mode.hpp"
 #include "vp_operation.hpp"
 
 namespace ORL
@@ -33,8 +35,24 @@ public:
     }
 
     bool is_active() const { return engaged; }
+    bool guide_visible() const {
+        return engaged && constraint.constrained();
+    }
+
+    TransformAxis guide_axis_kind() const {
+        return constraint.axis;
+    }
+
+    glm::vec3 guide_axis() const {
+        return interaction_axis();
+    }
+
+    glm::vec3 guide_origin() const {
+        return pivot;
+    }
 
     void on_enter() {
+        constraint.reset();
         starts.clear();
         const auto* focus = selection.focus();
         if (focus == nullptr || window == nullptr) {
@@ -58,6 +76,17 @@ public:
             if (attr.has_world_matrix()) {
                 start.matrix = attr.world_matrix();
             }
+            for (int axis = 0; axis < 3; ++axis) {
+                start.local_axes[static_cast<std::size_t>(axis)] =
+                    attr.local_axis(axis);
+                if (glm::length(start.local_axes[static_cast<std::size_t>(axis)])
+                    < 1.0e-6f)
+                {
+                    start.local_axes[static_cast<std::size_t>(axis)] =
+                        transform_axis_vector(
+                            static_cast<TransformAxis>(axis));
+                }
+            }
             start.local_rot = attr.local_rotation();
             starts.push_back(start);
             pivot_sum += start.world_pos;
@@ -77,32 +106,39 @@ public:
         }
 
         const auto pointer = window->pointer();
+        grab_screen = {static_cast<float>(pointer.x),
+            static_cast<float>(pointer.y)};
         grab_angle = screen_angle(pointer.x, pointer.y);
-        accum = 0.0f;
         engaged = true;
-        apply();
+        apply(pointer.x, pointer.y);
     }
 
     void on_confirm() { engaged = false; }
 
     void on_cancel() {
-        accum = 0.0f;
-        apply();
+        apply(grab_screen.x, grab_screen.y);
         engaged = false;
     }
 
     void on_eval(const InputEvent& event) {
-        if (!engaged || event.kind != InputEvent::Kind::MouseMove) {
+        if (!engaged) {
             return;
         }
-        accum = screen_angle(event.x, event.y) - grab_angle;
-        apply();
+        if (constraint.handle_axis_key(event)) {
+            apply(event.x, event.y);
+            return;
+        }
+        if (event.kind != InputEvent::Kind::MouseMove) {
+            return;
+        }
+        apply(event.x, event.y);
     }
 
 private:
     struct Start {
         glm::mat4 matrix{1.0f};
         glm::vec3 world_pos{0.0f};
+        std::array<glm::vec3, 3> local_axes{};
         glm::quat local_rot{1.0f, 0.0f, 0.0f, 0.0f};
     };
 
@@ -115,23 +151,83 @@ private:
         return std::atan2(dy, dx);
     }
 
-    void apply() {
+    glm::vec3 interaction_axis() const {
+        if (constraint.space == TransformSpace::World) {
+            return transform_axis_vector(constraint.axis);
+        }
+        if (constraint.space == TransformSpace::Local
+            && constraint.axis_index() >= 0
+            && !starts.empty())
+        {
+            return starts.back().local_axes[
+                static_cast<std::size_t>(constraint.axis_index())];
+        }
+        return {};
+    }
+
+    bool axis_plane_vector(double cursor_x, double cursor_y,
+        const glm::vec3& axis, glm::vec3& vector) const
+    {
+        const auto size = window->window_size();
+        glm::vec3 hit{};
+        if (!navigator.plane_hit(cursor_x, cursor_y,
+                static_cast<int>(size.width), static_cast<int>(size.height),
+                pivot, axis, hit))
+        {
+            return false;
+        }
+        vector = hit - pivot;
+        const float length = glm::length(vector);
+        if (length < 1.0e-6f) {
+            return false;
+        }
+        vector /= length;
+        return true;
+    }
+
+    float constrained_angle(double cursor_x, double cursor_y) const {
+        const glm::vec3 axis = interaction_axis();
+        const float axis_length = glm::length(axis);
+        if (axis_length < 1.0e-6f) {
+            return screen_angle(cursor_x, cursor_y) - grab_angle;
+        }
+        const glm::vec3 unit_axis = axis / axis_length;
+        glm::vec3 start_vector{};
+        glm::vec3 current_vector{};
+        if (!axis_plane_vector(
+                grab_screen.x, grab_screen.y, unit_axis, start_vector)
+            || !axis_plane_vector(
+                cursor_x, cursor_y, unit_axis, current_vector))
+        {
+            return screen_angle(cursor_x, cursor_y) - grab_angle;
+        }
+        return std::atan2(
+            glm::dot(glm::cross(start_vector, current_vector), unit_axis),
+            glm::dot(start_vector, current_vector));
+    }
+
+    void apply(double cursor_x, double cursor_y) {
         const auto* focus = selection.focus();
         if (focus == nullptr) {
             return;
         }
 
-        glm::vec3 axis = navigator.camera.front;
-        const float axis_len = glm::length(axis);
-        if (axis_len < 1.0e-6f) {
+        glm::vec3 axis{};
+        float angle = 0.0f;
+        if (constraint.space == TransformSpace::Screen) {
+            axis = navigator.camera.front;
+            angle = (screen_angle(cursor_x, cursor_y) - grab_angle)
+                * navigator.screen_x_sign();
+        }
+        else {
+            axis = interaction_axis();
+            angle = constrained_angle(cursor_x, cursor_y);
+        }
+        const float axis_length = glm::length(axis);
+        if (axis_length < 1.0e-6f) {
             return;
         }
-        axis /= axis_len;
-        const float angle = accum * navigator.screen_x_sign();
-        const glm::mat4 orbit = glm::translate(glm::mat4{1.0f}, pivot)
-            * glm::rotate(glm::mat4{1.0f}, angle, axis)
-            * glm::translate(glm::mat4{1.0f}, -pivot);
-        const glm::quat delta = glm::angleAxis(angle, axis);
+        axis /= axis_length;
 
         std::size_t i = 0;
         for (const auto& ref : selection.refs()) {
@@ -146,6 +242,26 @@ private:
                 ++i;
                 continue;
             }
+
+            const glm::vec3 object_axis =
+                constraint.space == TransformSpace::Screen
+                ? axis
+                : constraint.space == TransformSpace::World
+                ? transform_axis_vector(constraint.axis)
+                : starts[i].local_axes[
+                    static_cast<std::size_t>(constraint.axis_index())];
+            const float object_axis_length = glm::length(object_axis);
+            if (object_axis_length < 1.0e-6f) {
+                ++i;
+                continue;
+            }
+            const glm::vec3 normalized_object_axis =
+                object_axis / object_axis_length;
+            const glm::mat4 orbit = glm::translate(glm::mat4{1.0f}, pivot)
+                * glm::rotate(glm::mat4{1.0f}, angle, normalized_object_axis)
+                * glm::translate(glm::mat4{1.0f}, -pivot);
+            const glm::quat delta =
+                glm::angleAxis(angle, normalized_object_axis);
             if (attr.has_world_matrix()) {
                 attr.set_world_matrix(orbit * starts[i].matrix);
             }
@@ -165,10 +281,11 @@ private:
     CameraNavigator& navigator;
     vkkk::WindowBackend* window = nullptr;
     bool engaged = false;
-    float accum = 0.0f;
     float grab_angle = 0.0f;
     glm::vec3 pivot{0.0f};
     glm::vec2 pivot_screen{0.0f};
+    glm::vec2 grab_screen{0.0f};
+    TransformConstraint constraint;
     std::vector<Start> starts;
 };
 

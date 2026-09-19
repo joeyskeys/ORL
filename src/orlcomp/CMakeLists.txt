@@ -21,6 +21,7 @@ set(ORLCOMP_CODEGEN_SOURCES
     orl_codegen.cpp
     orl_intrinsics.cpp
     orl_optimizer.cpp
+    orl_cache.cpp
     orl_jit.cpp
     orl_gpu.cpp
     orl_parallel_runtime.cpp
@@ -31,6 +32,7 @@ set(ORLCOMP_CODEGEN_HEADERS
     orl_codegen.h
     orl_intrinsics.h
     orl_optimizer.h
+    orl_cache.h
     orl_jit.h
     orl_gpu.h
     orl_parallel_runtime.h

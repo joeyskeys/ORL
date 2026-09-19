@@ -9,10 +9,11 @@ use joint;
 use weight;
 
 export int deformer_lbs_capture_bind [[ string stage = "deformer" ]]
-    (Joint joints[], matrix inverse_binds[], int joint_count) {
+    (matrix inverse_binds[]) {
+    int joint_count = solver_context.joint_count;
     int j = 0;
     while (j < joint_count) {
-        matrix world = joint_world_matrix(joints, j);
+        matrix world = joint_world_matrix(solver_context.joints, j);
         inverse_binds[j] = mat_inverse(world);
         j = j + 1;
     }
@@ -22,11 +23,9 @@ export int deformer_lbs_capture_bind [[ string stage = "deformer" ]]
 export int deformer_lbs [[ string stage = "deformer" ]]
     (point bind_positions[],
                  point output_positions[],
-                 Joint joints[],
                  matrix inverse_binds[],
                  Weight weights[],
                  int vertex_count,
-                 int joint_count,
                  int weight_cnt) {
     parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
         point bind = bind_positions[vertex];
@@ -35,8 +34,10 @@ export int deformer_lbs [[ string stage = "deformer" ]]
         while (i < weight_cnt) {
             Weight cell = weights[vertex * weight_cnt + i];
             if (cell.joint >= 0) {
-                matrix world = joint_world_matrix(joints, cell.joint);
-                matrix skin = joint_skin_matrix(world, inverse_binds[cell.joint]);
+                matrix world = joint_world_matrix(
+                    solver_context.joints, cell.joint);
+                matrix skin = joint_skin_matrix(
+                    world, inverse_binds[cell.joint]);
                 skinned = skinned + cell.weight * (skin * bind);
             }
             i = i + 1;

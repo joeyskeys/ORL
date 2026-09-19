@@ -106,8 +106,12 @@ private:
 
         vkkk::ShaderModule vert_module;
         vkkk::ShaderModule frag_module;
-        if (!vert_module.load(shader_dir / "ortho_grid.vert", vk::ShaderStageFlagBits::eVertex)
-            || !frag_module.load(shader_dir / "ortho_grid.frag", vk::ShaderStageFlagBits::eFragment))
+        if (!context.load_shader(
+                vert_module, shader_dir / "ortho_grid.vert",
+                vk::ShaderStageFlagBits::eVertex)
+            || !context.load_shader(
+                frag_module, shader_dir / "ortho_grid.frag",
+                vk::ShaderStageFlagBits::eFragment))
         {
             return false;
         }

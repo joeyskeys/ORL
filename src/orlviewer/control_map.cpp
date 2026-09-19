@@ -175,6 +175,38 @@ InputSpec parse_input_spec(const rapidjson::Value& value) {
     return spec;
 }
 
+BindingScope parse_binding_scope(
+    const rapidjson::Value& binding, std::string& panel)
+{
+    panel.clear();
+    if (!binding.HasMember("scope")) {
+        // Preserve compatibility with older control maps. New maps should
+        // declare the scope explicitly so focus behavior is visible in JSON.
+        return BindingScope::Window;
+    }
+    if (!binding["scope"].IsString()) {
+        throw std::runtime_error("binding 'scope' must be a string");
+    }
+
+    const auto scope = to_lower(binding["scope"].GetString());
+    if (scope == "window" || scope == "global") {
+        return BindingScope::Window;
+    }
+    if (scope != "panel") {
+        throw std::runtime_error(
+            "unknown binding scope '" + scope
+            + "' (expected 'window' or 'panel')");
+    }
+    if (!binding.HasMember("panel") || !binding["panel"].IsString()
+        || binding["panel"].GetStringLength() == 0)
+    {
+        throw std::runtime_error(
+            "panel-scoped bindings require a non-empty 'panel' string");
+    }
+    panel = binding["panel"].GetString();
+    return BindingScope::Panel;
+}
+
 } // namespace
 
 int ControlMap::parse_key(std::string_view name) {
@@ -375,6 +407,19 @@ void ControlMap::set_operation_scope_handler(
     operation_scope_handler_ = std::move(handler);
 }
 
+void ControlMap::set_active_panel(std::string panel) {
+    active_panel_provider_ = {};
+    active_panel_ = std::move(panel);
+}
+
+void ControlMap::set_active_panel_provider(ActivePanelProvider provider) {
+    active_panel_provider_ = std::move(provider);
+}
+
+std::string ControlMap::active_panel() const {
+    return active_panel_provider_ ? active_panel_provider_() : active_panel_;
+}
+
 void ControlMap::unbind_op(std::string_view op) {
     if (modal == op) {
         if (modal_scope_active_ && operation_scope_handler_) {
@@ -394,12 +439,25 @@ bool ControlMap::has_op(std::string_view op) const {
         [op](const BoundOp& bound) { return bound.name == op; });
 }
 
-void ControlMap::map(InputSpec input, std::string op) {
-    map(input, std::vector<std::string>{std::move(op)});
+void ControlMap::map(InputSpec input, std::string op,
+    BindingScope scope, std::string panel)
+{
+    map(input, std::vector<std::string>{std::move(op)},
+        scope, std::move(panel));
 }
 
-void ControlMap::map(InputSpec input, std::vector<std::string> ops) {
-    bindings_.push_back(ControlBinding{input, std::move(ops)});
+void ControlMap::map(InputSpec input, std::vector<std::string> ops,
+    BindingScope scope, std::string panel)
+{
+    if (scope == BindingScope::Panel && panel.empty()) {
+        throw std::invalid_argument(
+            "panel-scoped control bindings require a panel name");
+    }
+    if (scope == BindingScope::Window) {
+        panel.clear();
+    }
+    bindings_.push_back(ControlBinding{
+        input, std::move(ops), scope, std::move(panel)});
 }
 
 void ControlMap::unmap(const InputSpec& input) {
@@ -477,7 +535,10 @@ void ControlMap::load_config(const std::filesystem::path& path, ControlMapLoadMo
         if (ops.empty()) {
             throw std::runtime_error("each binding needs at least one op");
         }
-        map(parse_input_spec(binding["input"]), std::move(ops));
+        std::string panel;
+        const auto scope = parse_binding_scope(binding, panel);
+        map(parse_input_spec(binding["input"]), std::move(ops),
+            scope, std::move(panel));
     }
 }
 
@@ -680,6 +741,9 @@ void ControlMap::dispatch(const InputEvent& event) {
     }
 
     for (const auto& binding : bindings_) {
+        if (!scope_matches(binding)) {
+            continue;
+        }
         if (!matches(binding.input, event)) {
             continue;
         }
@@ -790,6 +854,13 @@ ControlMap::BoundOp* ControlMap::find_op(
         return &op;
     }
     return nullptr;
+}
+
+bool ControlMap::scope_matches(const ControlBinding& binding) const {
+    if (binding.scope == BindingScope::Window) {
+        return true;
+    }
+    return !binding.panel.empty() && binding.panel == active_panel();
 }
 
 bool ControlMap::matches(const InputSpec& spec, const InputEvent& event) const {

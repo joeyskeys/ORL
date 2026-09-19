@@ -22,6 +22,7 @@
 #include "orlrig/graph_resources.hpp"
 #if ORL_USE_QT6
 #include "gui/qt_backend.hpp"
+#include <QApplication>
 #include <QKeySequence>
 #include <QString>
 #include <QShortcut>
@@ -36,8 +37,10 @@
 #include "ops/create_joint_op.hpp"
 #include "ops/create_locator_op.hpp"
 #include "ops/cycle_controller_curve_op.hpp"
+#include "ops/delete_op.hpp"
 #include "ops/display_mode_switch.hpp"
 #include "ops/load_model_op.hpp"
+#include "ops/mirror_op.hpp"
 #include "ops/move_op.hpp"
 #include "ops/rotate_op.hpp"
 #include "ops/scale_op.hpp"
@@ -58,6 +61,7 @@
 #include "vp/ortho_grid_feature.hpp"
 #include "vp/runtime_hud_feature.hpp"
 #include "vp/scene_mesh_feature.hpp"
+#include "vp/transform_guide_feature.hpp"
 #include "vp/viewport.hpp"
 
 namespace {
@@ -124,15 +128,42 @@ vkkk::vp::CoordinateSystem make_coordinate_system(const ViewportFrame& viewport_
     };
 }
 
+struct StartupOptions {
+    bool force_recompile = false;
+};
+
+StartupOptions parse_startup_options(int argc, char** argv) {
+    StartupOptions options;
+    for (int index = 1; index < argc; ++index) {
+        const std::string_view argument{argv[index]};
+        if (argument == "--recompile"
+            || argument == "--recompile-shaders")
+        {
+            options.force_recompile = true;
+        }
+    }
+    return options;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    const auto startup = parse_startup_options(argc, argv);
+    const auto working_directory = std::filesystem::current_path();
+    const auto spirv_cache_directory =
+        working_directory / ".orlviewer_spirv_cache";
+    const auto pipeline_cache_path =
+        working_directory / "orlviewer.pipeline.cache";
 #if ORL_USE_QT6
     vkkk::QtBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport");
 #else
     vkkk::GlfwBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport", true);
 #endif
     vkkk::Context context;
+    context.set_shader_cache(
+        spirv_cache_directory, startup.force_recompile);
+    context.set_pipeline_cache_path(
+        pipeline_cache_path, startup.force_recompile);
     context.init(window_backend,
                  "ORL",
                  VK_MAKE_VERSION(0, 1, 0),
@@ -222,7 +253,8 @@ int main() {
         ORL::DeformerFeature,
         ORL::LocatorFeature,
         vkkk::vp::FrameAxisFeature,
-        ORL::RuntimeHudFeature>;
+        ORL::RuntimeHudFeature,
+        ORL::TransformGuideFeature>;
     Viewport viewport(context);
     const std::filesystem::path font_path =
         std::filesystem::path{ORL_VKKK_SOURCE_DIR} / "resource/font/Roboto-Light.ttf";
@@ -243,7 +275,7 @@ int main() {
         scene_graph, components, selection);
     const auto deformer_handle = viewport.add_feature<ORL::DeformerFeature>(
         scene_graph, deformer_id, weight_id, selection);
-    viewport.add_feature<ORL::JointFeature>(
+    const auto joint_feature_handle = viewport.add_feature<ORL::JointFeature>(
         scene_graph, components, camera,
         std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     viewport.add_feature<ORL::LocatorFeature>(
@@ -263,8 +295,14 @@ int main() {
     ORL::LoadModelOp load_model(scene, context, &window_backend, world_frame);
     ORL::ClearSceneOp clear_scene(scene, context, components, selection, weight_id, deformer_id);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, &window_backend, selection);
+    ORL::ExtendJointChainOp extend_joint_chain(create_joint);
+    if (auto* joint_feature = viewport.find_feature(joint_feature_handle)) {
+        joint_feature->set_preview_source(create_joint);
+    }
     ORL::CreateLocatorOp create_locator(
         components, navigator, &window_backend, selection);
+    ORL::DeleteOp delete_op(components, scene, selection);
+    ORL::MirrorOp mirror_op(components, selection);
     ORL::ToggleControllerAttachmentOp toggle_controller_attachment(
         components, selection);
     ORL::CycleControllerCurveOp cycle_controller_curve(components, selection);
@@ -285,6 +323,9 @@ int main() {
     ORL::MoveOp move_op(selection, navigator, &window_backend);
     ORL::RotateOp rotate_op(selection, navigator, &window_backend);
     ORL::ScaleOp scale_op(selection, navigator, &window_backend);
+    viewport.add_feature<ORL::TransformGuideFeature>(
+        move_op, rotate_op, scale_op, camera,
+        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     if (auto* csr = viewport.find_feature(csr_handle)) {
         clear_scene.set_csr(*csr);
     }
@@ -314,6 +355,25 @@ int main() {
     ORL::ControlMap controls;
     std::size_t edit_scope_depth = 0;
     bool edit_scope_was_enabled = false;
+#if ORL_USE_QT6
+    const auto panel_has_focus = [](QWidget* panel) {
+        auto* focused = QApplication::focusWidget();
+        return panel != nullptr && focused != nullptr
+            && (focused == panel || panel->isAncestorOf(focused));
+    };
+    controls.set_active_panel_provider(
+        [node_graph_editor, property_editor, panel_has_focus] {
+            if (panel_has_focus(node_graph_editor)) {
+                return std::string{"node_graph"};
+            }
+            if (panel_has_focus(property_editor)) {
+                return std::string{"properties"};
+            }
+            return std::string{"viewport"};
+        });
+#else
+    controls.set_active_panel("viewport");
+#endif
     controls.set_operation_scope_handler(
         [&](std::string_view, bool entering) {
             if (entering) {
@@ -340,9 +400,9 @@ int main() {
         });
 #if ORL_USE_QT6
     controls.bind_op_variant("graph_stage_solver",
-        [node_graph_editor](const ORL::InputEvent& event) {
+        [node_graph_editor, panel_has_focus](const ORL::InputEvent& event) {
             return node_graph_editor != nullptr
-                && node_graph_editor->hasFocus()
+                && panel_has_focus(node_graph_editor)
                 && event.key == vkkk::Key::Digit1;
         },
         [node_graph_editor](const ORL::InputEvent&) {
@@ -351,9 +411,9 @@ int main() {
             }
         });
     controls.bind_op_variant("graph_stage_deformer",
-        [node_graph_editor](const ORL::InputEvent& event) {
+        [node_graph_editor, panel_has_focus](const ORL::InputEvent& event) {
             return node_graph_editor != nullptr
-                && node_graph_editor->hasFocus()
+                && panel_has_focus(node_graph_editor)
                 && event.key == vkkk::Key::Digit2;
         },
         [node_graph_editor](const ORL::InputEvent&) {
@@ -362,9 +422,9 @@ int main() {
             }
         });
     controls.bind_op_variant("display_mode_switch",
-        [node_graph_editor](const ORL::InputEvent&) {
+        [node_graph_editor, panel_has_focus](const ORL::InputEvent&) {
             return node_graph_editor == nullptr
-                || !node_graph_editor->hasFocus();
+                || !panel_has_focus(node_graph_editor);
         },
         [&](const ORL::InputEvent& event) {
             display_mode.eval(event);
@@ -395,7 +455,10 @@ int main() {
     controls.bind_edit_op("load_model", load_model);
     controls.bind_edit_op("clear_scene", clear_scene);
     controls.bind_edit_op("create_joint", create_joint);
+    controls.bind_edit_op("extend_joint_chain", extend_joint_chain);
     controls.bind_edit_op("create_locator", create_locator);
+    controls.bind_edit_op("delete_selection", delete_op);
+    controls.bind_edit_op("mirror", mirror_op);
     const auto has_target_for_controller_toggle =
         [&selection](const ORL::InputEvent& event) {
             if (event.key != vkkk::Key::C
@@ -541,6 +604,10 @@ int main() {
     }
 
     context.wait_idle();
+    if (!context.save_pipeline_cache(pipeline_cache_path)) {
+        std::cerr << "Failed to save viewer pipeline cache to "
+                  << pipeline_cache_path << '\n';
+    }
     controls.detach();
     return 0;
 }

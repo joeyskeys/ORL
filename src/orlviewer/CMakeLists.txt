@@ -19,6 +19,8 @@ add_executable(orl_viewer
     ops/load_model_op.cpp
     ops/clear_scene_op.cpp
     ops/create_joint_op.cpp
+    ops/mirror_op.cpp
+    ops/delete_op.cpp
     ops/create_locator_op.hpp
     ops/toggle_controller_attachment_op.hpp
     vp/mesh_csr_feature.cpp

@@ -113,6 +113,7 @@ public:
 
     bool destroy(ComponentId id);
     bool destroy(std::string_view name);
+    bool destroy_joint_recursive(ComponentId root);
     void destroy_kind(ComponentKind kind);
     bool rename(ComponentId id, std::string new_name);
 

@@ -73,6 +73,9 @@ public:
                                        OrlOptimizationLevel level = OrlOptimizationLevel::O2);
 
     void SetDeviceCode(std::string device_code);
+    // Sets a driver-loadable CUDA image, such as a cubin returned by
+    // cuLinkComplete. This bypasses PTX generation and driver linking.
+    void SetDeviceBinary(std::vector<std::uint8_t> device_binary);
     bool LoadToDriver();
     void UnloadDriverModule();
     std::optional<OrlGpuBuffer> AllocateBuffer(std::size_t bytes);
@@ -107,11 +110,14 @@ public:
                              std::uint32_t blocks = 1,
                              std::uint32_t threads_per_block = 1);
     bool ReadCudaGlobalInt32(const std::string &symbol_name, std::int32_t *value);
+    void SetCudaEntryParameters(
+        std::vector<OrlGpuKernelParameter> parameters);
 
     OrlGpuBackend Backend() const;
     bool IsDriverModuleLoaded() const;
     const std::vector<OrlGpuKernelParameter> &CudaEntryParameters() const;
     const std::string &DeviceCode() const;
+    const std::vector<std::uint8_t> &DeviceBinary() const;
     const std::vector<std::string> &Errors() const;
 
 private:

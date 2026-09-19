@@ -362,8 +362,8 @@ TEST_CASE("llvm codegen lowers remaining auto-weight algorithms", "[orl][codegen
 TEST_CASE("llvm codegen lowers stdlib FK solver", "[orl][codegen][stdlib][solver]") {
     const std::string src =
         "use solver/fk;\n"
-        "int solve(Joint joints[], matrix world[]) {\n"
-        "    return solver_fk(joints, world);\n"
+        "int solve(matrix world[]) {\n"
+        "    return solver_fk(world);\n"
         "}\n";
 
     Parser parser(src);
@@ -384,14 +384,14 @@ TEST_CASE("llvm codegen lowers advanced IK solvers", "[orl][codegen][stdlib][sol
         "use solver/hd_id;\n"
         "use solver/spline_ik;\n"
         "use solver/full_body_ik;\n"
-        "int solve_hd(Joint joints[], Joint history[], int root, int end, matrix target[], int iterations) {\n"
-        "    return solver_hd_id(joints, history, root, end, target, iterations);\n"
+        "int solve_hd(Joint history[], int root, int end, int target_index, int iterations) {\n"
+        "    return solver_hd_id(history, root, end, target_index, iterations);\n"
         "}\n"
-        "int solve_spline(Joint joints[], int chain[], point spline[], int chain_count, int point_count) {\n"
-        "    return solver_spline_ik(joints, chain, spline, chain_count, point_count);\n"
+        "int solve_spline(int chain[], point spline[], int chain_count, int point_count) {\n"
+        "    return solver_spline_ik(chain, spline, chain_count, point_count);\n"
         "}\n"
-        "int solve_body(Joint joints[], int effectors[], matrix targets[], int effector_count, int iterations) {\n"
-        "    return solver_full_body_ik(joints, effectors, targets, effector_count, iterations);\n"
+        "int solve_body(int effectors[], int target_indices[], int effector_count, int iterations) {\n"
+        "    return solver_full_body_ik(effectors, target_indices, effector_count, iterations);\n"
         "}\n";
 
     Parser parser(src);
@@ -497,9 +497,9 @@ TEST_CASE("llvm codegen lowers transform constraints", "[orl][codegen][stdlib][c
 TEST_CASE("llvm codegen lowers lbs deformer", "[orl][codegen][stdlib][deformer]") {
     const std::string src =
         "use deformer/lbs;\n"
-        "int skin(point bind[], point out[], Joint joints[], matrix inverse_binds[],\n"
-        "         Weight weights[], int vcount, int jcount, int wcnt) {\n"
-        "    return deformer_lbs(bind, out, joints, inverse_binds, weights, vcount, jcount, wcnt);\n"
+        "int skin(point bind[], point out[], matrix inverse_binds[],\n"
+        "         Weight weights[], int vcount, int wcnt) {\n"
+        "    return deformer_lbs(bind, out, inverse_binds, weights, vcount, wcnt);\n"
         "}\n";
 
     Parser parser(src);

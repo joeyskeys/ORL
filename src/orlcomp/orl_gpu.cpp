@@ -221,6 +221,7 @@ struct OrlGpuEngine::Impl {
         std::unique_ptr<llvm::Module> module = std::move(incoming_module);
         errors_.clear();
         device_code_.clear();
+        device_binary_.clear();
         UnloadDriverModule();
 
         const auto fail = [&]() {
@@ -311,8 +312,9 @@ struct OrlGpuEngine::Impl {
 
     bool LoadToDriver() {
         errors_.clear();
-        if (device_code_.empty()) {
-            errors_.push_back("No compiled device code. Call CompileModule first.");
+        if (device_code_.empty() && device_binary_.empty()) {
+            errors_.push_back(
+                "No compiled device code or cached device binary is available");
             return false;
         }
         if (backend_ == OrlGpuBackend::Rocm) {
@@ -371,6 +373,14 @@ struct OrlGpuEngine::Impl {
     using CuDevicePrimaryCtxRetainFn = CUresult(CUDAAPI *)(CUcontext *, CUdevice);
     using CuDevicePrimaryCtxReleaseFn = CUresult(CUDAAPI *)(CUdevice);
     using CuModuleLoadDataExFn = CUresult(CUDAAPI *)(CUmodule *, const void *, unsigned int, CUjit_option *, void **);
+    using CuLinkCreateFn = CUresult(CUDAAPI *)(
+        unsigned int, CUjit_option *, void **, CUlinkState *);
+    using CuLinkAddDataFn = CUresult(CUDAAPI *)(
+        CUlinkState, CUjitInputType, void *, size_t, const char *,
+        unsigned int, CUjit_option *, void **);
+    using CuLinkCompleteFn = CUresult(CUDAAPI *)(
+        CUlinkState, void **, size_t *);
+    using CuLinkDestroyFn = CUresult(CUDAAPI *)(CUlinkState);
     using CuModuleUnloadFn = CUresult(CUDAAPI *)(CUmodule);
     using CuModuleGetFunctionFn = CUresult(CUDAAPI *)(CUfunction *, CUmodule, const char *);
     using CuLaunchKernelFn = CUresult(CUDAAPI *)(CUfunction,
@@ -702,6 +712,52 @@ struct OrlGpuEngine::Impl {
         return ActivateCudaContext();
     }
 
+    bool LinkCudaDeviceCode() {
+        if (!link_api_available_ || device_code_.empty()) {
+            return false;
+        }
+
+        CUlinkState state = nullptr;
+        CUresult rc = cuLinkCreate_(0, nullptr, nullptr, &state);
+        if (rc != CUDA_SUCCESS) {
+            AddCudaError("cuLinkCreate failed", rc);
+            return false;
+        }
+
+        rc = cuLinkAddData_(
+            state,
+            CU_JIT_INPUT_PTX,
+            const_cast<char*>(device_code_.data()),
+            device_code_.size(),
+            "orl_module.ptx",
+            0,
+            nullptr,
+            nullptr);
+        if (rc != CUDA_SUCCESS) {
+            AddCudaError("cuLinkAddData failed", rc);
+            cuLinkDestroy_(state);
+            return false;
+        }
+
+        void *cubin = nullptr;
+        std::size_t cubin_bytes = 0;
+        rc = cuLinkComplete_(state, &cubin, &cubin_bytes);
+        if (rc != CUDA_SUCCESS || cubin == nullptr || cubin_bytes == 0) {
+            if (rc != CUDA_SUCCESS) {
+                AddCudaError("cuLinkComplete failed", rc);
+            } else {
+                errors_.push_back("cuLinkComplete returned an empty CUDA binary");
+            }
+            cuLinkDestroy_(state);
+            return false;
+        }
+
+        device_binary_.resize(cubin_bytes);
+        std::memcpy(device_binary_.data(), cubin, cubin_bytes);
+        cuLinkDestroy_(state);
+        return true;
+    }
+
     bool LoadCudaDriverModule() {
         if (!EnsureCudaApiLoaded()) {
             return false;
@@ -715,7 +771,20 @@ struct OrlGpuEngine::Impl {
             cuda_module_ = nullptr;
         }
 
-        const CUresult rc = cuModuleLoadDataEx_(&cuda_module_, device_code_.data(), 0, nullptr, nullptr);
+        if (device_binary_.empty()) {
+            const bool linked = LinkCudaDeviceCode();
+            if (!linked) {
+                // Driver linking is optional. Older drivers can still load
+                // the generated PTX directly, so retain that fallback.
+                errors_.clear();
+            }
+        }
+
+        const void *image = !device_binary_.empty()
+            ? static_cast<const void*>(device_binary_.data())
+            : static_cast<const void*>(device_code_.data());
+        const CUresult rc = cuModuleLoadDataEx_(
+            &cuda_module_, image, 0, nullptr, nullptr);
         if (rc != CUDA_SUCCESS) {
             AddCudaError("cuModuleLoadDataEx failed", rc);
             cuda_module_ = nullptr;
@@ -784,6 +853,13 @@ struct OrlGpuEngine::Impl {
             return false;
         }
 
+        link_api_available_ =
+            LoadCudaSymbolAny(
+                cuLinkCreate_, "cuLinkCreate", "cuLinkCreate_v2")
+            && LoadCudaSymbolAny(
+                cuLinkAddData_, "cuLinkAddData", "cuLinkAddData_v2")
+            && LoadCudaSymbol(cuLinkComplete_, "cuLinkComplete")
+            && LoadCudaSymbol(cuLinkDestroy_, "cuLinkDestroy");
         cuda_loaded_ = true;
         return true;
     }
@@ -806,6 +882,14 @@ struct OrlGpuEngine::Impl {
         return true;
     }
 
+    template <typename T>
+    bool LoadCudaSymbolAny(
+        T& function, const char* first, const char* second)
+    {
+        return LoadCudaSymbol(function, first)
+            || LoadCudaSymbol(function, second);
+    }
+
     void CloseCudaLibrary() {
         if (cuda_library_ == nullptr) {
             return;
@@ -817,6 +901,7 @@ struct OrlGpuEngine::Impl {
 #endif
         cuda_library_ = nullptr;
         cuda_loaded_ = false;
+        link_api_available_ = false;
     }
 #endif
 
@@ -827,11 +912,13 @@ struct OrlGpuEngine::Impl {
     std::unique_ptr<llvm::LLVMContext> context_;
     std::unique_ptr<llvm::Module> module_;
     std::string device_code_;
+    std::vector<std::uint8_t> device_binary_;
     std::vector<std::string> errors_;
 
 #if ORL_HAS_CUDA_HEADERS
     void *cuda_library_ = nullptr;
     bool cuda_loaded_ = false;
+    bool link_api_available_ = false;
     CUdevice cuda_device_ = 0;
     CUcontext cuda_context_ = nullptr;
     CUmodule cuda_module_ = nullptr;
@@ -847,6 +934,10 @@ struct OrlGpuEngine::Impl {
     CuDevicePrimaryCtxRetainFn cuDevicePrimaryCtxRetain_ = nullptr;
     CuDevicePrimaryCtxReleaseFn cuDevicePrimaryCtxRelease_ = nullptr;
     CuModuleLoadDataExFn cuModuleLoadDataEx_ = nullptr;
+    CuLinkCreateFn cuLinkCreate_ = nullptr;
+    CuLinkAddDataFn cuLinkAddData_ = nullptr;
+    CuLinkCompleteFn cuLinkComplete_ = nullptr;
+    CuLinkDestroyFn cuLinkDestroy_ = nullptr;
     CuModuleUnloadFn cuModuleUnload_ = nullptr;
     CuModuleGetFunctionFn cuModuleGetFunction_ = nullptr;
     CuLaunchKernelFn cuLaunchKernel_ = nullptr;
@@ -885,7 +976,15 @@ bool OrlGpuEngine::CompileModuleWithOptimization(std::unique_ptr<llvm::Module> m
 void OrlGpuEngine::SetDeviceCode(std::string device_code) {
     impl_->errors_.clear();
     impl_->UnloadDriverModule();
+    impl_->device_binary_.clear();
     impl_->device_code_ = std::move(device_code);
+}
+
+void OrlGpuEngine::SetDeviceBinary(std::vector<std::uint8_t> device_binary) {
+    impl_->errors_.clear();
+    impl_->UnloadDriverModule();
+    impl_->device_code_.clear();
+    impl_->device_binary_ = std::move(device_binary);
 }
 
 bool OrlGpuEngine::LoadToDriver() {
@@ -1131,6 +1230,12 @@ const std::vector<OrlGpuKernelParameter> &OrlGpuEngine::CudaEntryParameters() co
     return impl_->cuda_entry_parameters_;
 }
 
+void OrlGpuEngine::SetCudaEntryParameters(
+    std::vector<OrlGpuKernelParameter> parameters)
+{
+    impl_->cuda_entry_parameters_ = std::move(parameters);
+}
+
 bool OrlGpuEngine::RunCudaInt32AddKernel(const std::string &kernel_name,
                                          std::vector<std::int32_t> *values,
                                          std::int32_t addend,
@@ -1340,6 +1445,10 @@ const std::string &OrlGpuEngine::DeviceCode() const {
     return impl_->device_code_;
 }
 
+const std::vector<std::uint8_t> &OrlGpuEngine::DeviceBinary() const {
+    return impl_->device_binary_;
+}
+
 const std::vector<std::string> &OrlGpuEngine::Errors() const {
     return impl_->errors_;
 }
@@ -1378,6 +1487,7 @@ struct OrlGpuEngine::Impl {
     std::string cuda_entry_function_ = "compute";
     std::vector<OrlGpuKernelParameter> cuda_entry_parameters_;
     std::string device_code_;
+    std::vector<std::uint8_t> device_binary_;
     std::vector<std::string> errors_;
 };
 
@@ -1400,7 +1510,14 @@ bool OrlGpuEngine::CompileModuleWithOptimization(std::unique_ptr<llvm::Module> m
 
 void OrlGpuEngine::SetDeviceCode(std::string device_code) {
     impl_->errors_.clear();
+    impl_->device_binary_.clear();
     impl_->device_code_ = std::move(device_code);
+}
+
+void OrlGpuEngine::SetDeviceBinary(std::vector<std::uint8_t> device_binary) {
+    impl_->errors_.clear();
+    impl_->device_code_.clear();
+    impl_->device_binary_ = std::move(device_binary);
 }
 
 bool OrlGpuEngine::LoadToDriver() {
@@ -1499,6 +1616,12 @@ const std::vector<OrlGpuKernelParameter> &OrlGpuEngine::CudaEntryParameters() co
     return impl_->cuda_entry_parameters_;
 }
 
+void OrlGpuEngine::SetCudaEntryParameters(
+    std::vector<OrlGpuKernelParameter> parameters)
+{
+    impl_->cuda_entry_parameters_ = std::move(parameters);
+}
+
 bool OrlGpuEngine::RunCudaInt32AddKernel(const std::string &,
                                          std::vector<std::int32_t> *,
                                          std::int32_t,
@@ -1522,6 +1645,10 @@ bool OrlGpuEngine::ReadCudaGlobalInt32(const std::string &, std::int32_t *) {
 
 const std::string &OrlGpuEngine::DeviceCode() const {
     return impl_->device_code_;
+}
+
+const std::vector<std::uint8_t> &OrlGpuEngine::DeviceBinary() const {
+    return impl_->device_binary_;
 }
 
 const std::vector<std::string> &OrlGpuEngine::Errors() const {

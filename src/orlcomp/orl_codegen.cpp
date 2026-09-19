@@ -116,11 +116,19 @@ struct LlvmIrCodegen::Impl {
             context_type->setBody({
                 builder_.getInt64Ty(),
                 builder_.getInt64Ty(),
+                builder_.getInt64Ty(),
+                builder_.getInt64Ty(),
+                builder_.getInt64Ty(),
+                builder_.getInt64Ty(),
             }, false);
             struct_types_.emplace("SolverContext", context_type);
             struct_field_indices_["SolverContext"] = {
                 {"joint_count", 0},
                 {"controller_count", 1},
+                {"locator_count", 2},
+                {"joints_offset", 3},
+                {"controllers_offset", 4},
+                {"locators_offset", 5},
             };
         }
         if (uses_hierarchy_context_) {
@@ -1129,6 +1137,83 @@ struct LlvmIrCodegen::Impl {
     }
 
     llvm::Value *GenerateIndexAddress(const IndexExpression &index, llvm::Type **element_type) {
+        if (const auto *base_component =
+                dynamic_cast<const ComponentExpression *>(index.base.get()))
+        {
+            const auto *context_identifier =
+                dynamic_cast<const IdentifierExpression *>(
+                    base_component->base.get());
+            if (context_identifier != nullptr
+                && context_identifier->name == "solver_context"
+                && (base_component->component == "joints"
+                    || base_component->component == "controllers"
+                    || base_component->component == "locators"))
+            {
+                if (!uses_solver_context_
+                    || solver_context_argument_ == nullptr)
+                {
+                    AddError(
+                        "SolverContext is unavailable outside an ORL function");
+                    return nullptr;
+                }
+
+                llvm::Type *context_type = MapTypeName("SolverContext");
+                auto *struct_type =
+                    llvm::dyn_cast_or_null<llvm::StructType>(context_type);
+                if (struct_type == nullptr) {
+                    AddError("Internal error: SolverContext type is unavailable");
+                    return nullptr;
+                }
+
+                const std::string offset_field =
+                    base_component->component == "joints"
+                    ? "joints_offset"
+                    : base_component->component == "controllers"
+                        ? "controllers_offset" : "locators_offset";
+                unsigned int offset_index = 0;
+                if (!FindStructField(
+                        struct_type, offset_field, &offset_index))
+                {
+                    return nullptr;
+                }
+
+                llvm::Value *offset_address = builder_.CreateStructGEP(
+                    struct_type, solver_context_argument_, offset_index,
+                    "solver.context.offset.address");
+                llvm::Value *offset = CreatePackedLoad(
+                    builder_.getInt64Ty(), offset_address,
+                    "solver.context.offset");
+                llvm::Value *base_address = builder_.CreateInBoundsGEP(
+                    builder_.getInt8Ty(), solver_context_argument_, offset,
+                    "solver.context.buffer");
+
+                const std::string element_name =
+                    base_component->component == "joints"
+                    ? "Joint"
+                    : base_component->component == "controllers"
+                        ? "matrix" : "Locator";
+                *element_type = MapTypeName(element_name);
+                if (*element_type == nullptr) {
+                    AddError(
+                        "Internal error: SolverContext buffer element type "
+                        "is unavailable");
+                    return nullptr;
+                }
+
+                llvm::Value *index_value = GenerateExpression(*index.index);
+                index_value = CastValue(
+                    index_value, builder_.getInt64Ty(),
+                    "solver context buffer index");
+                if (index_value == nullptr) {
+                    return nullptr;
+                }
+                return builder_.CreateInBoundsGEP(
+                    *element_type, base_address, index_value,
+                    context_identifier->name + "."
+                        + base_component->component + ".element");
+            }
+        }
+
         const auto *base_identifier = dynamic_cast<const IdentifierExpression *>(index.base.get());
         if (base_identifier == nullptr) {
             AddError("Array indexing currently requires an array variable");
@@ -1244,6 +1329,50 @@ struct LlvmIrCodegen::Impl {
     }
 
     llvm::Value *GenerateComponent(const ComponentExpression &component) {
+        const auto *context_identifier =
+            dynamic_cast<const IdentifierExpression *>(
+                component.base.get());
+        if (context_identifier != nullptr
+            && context_identifier->name == "solver_context"
+            && (component.component == "joints"
+                || component.component == "controllers"
+                || component.component == "locators"))
+        {
+            if (!uses_solver_context_
+                || solver_context_argument_ == nullptr)
+            {
+                AddError(
+                    "SolverContext is unavailable outside an ORL function");
+                return nullptr;
+            }
+            auto *struct_type = llvm::dyn_cast_or_null<llvm::StructType>(
+                MapTypeName("SolverContext"));
+            if (struct_type == nullptr) {
+                AddError("Internal error: SolverContext type is unavailable");
+                return nullptr;
+            }
+            const std::string offset_field =
+                component.component == "joints"
+                ? "joints_offset"
+                : component.component == "controllers"
+                    ? "controllers_offset" : "locators_offset";
+            unsigned int offset_index = 0;
+            if (!FindStructField(
+                    struct_type, offset_field, &offset_index))
+            {
+                return nullptr;
+            }
+            llvm::Value *offset_address = builder_.CreateStructGEP(
+                struct_type, solver_context_argument_, offset_index,
+                "solver.context.offset.address");
+            llvm::Value *offset = CreatePackedLoad(
+                builder_.getInt64Ty(), offset_address,
+                "solver.context.offset");
+            return builder_.CreateInBoundsGEP(
+                builder_.getInt8Ty(), solver_context_argument_, offset,
+                "solver.context.buffer");
+        }
+
         llvm::Value *value = GenerateExpression(*component.base);
         if (value == nullptr) {
             return nullptr;

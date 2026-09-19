@@ -487,8 +487,6 @@ bool GraphSceneRuntime::prepare_lbs_inputs(std::string* error)
             "bind_positions",
             orlrig::scene_mesh_positions_binding(object_name), error)
         || !graph_context_.map_input_by_binding(
-            "joints", std::string{orlrig::kSceneJointsBinding}, error)
-        || !graph_context_.map_input_by_binding(
             "weights",
             orlrig::scene_weight_buffer_binding(weight_meta->name), error))
     {
@@ -1567,29 +1565,24 @@ bool GraphSceneRuntime::execute_orl_segment(
         }
     }
 
-    // A solver graph uses the scene joints input as its in-place working
-    // buffer. Keep the solver-owned CUDA allocation available to the
-    // deformer through the implicit computed-joints binding.
-    for (const auto& [id, input] : segment.graph.inputs()) {
-        if (input.binding != orlrig::kSceneJointsBinding) {
-            continue;
+    // Solver joints now live in the implicit packed SolverContext arena.
+    // Keep its device subrange available to the deformer without forcing a
+    // graph-level joints socket or a host readback.
+    if (solver_device_evaluation) {
+        const auto device = graph_context_.scene_inputs()
+            .solver_joints_device_view(execution);
+        if (!device.has_value()) {
+            std::cerr << "Deformer: implicit solver joints device buffer is "
+                         "unavailable\n";
+            return false;
         }
-        const std::string parameter =
-            input.name.empty() ? id.value : input.name;
-        if (execution.backend() == exec::Backend::Cuda) {
-            const auto device = execution.device_buffer_view(parameter);
-            if (!device.has_value()) {
-                std::cerr << "Deformer: computed joints device buffer is "
-                             "unavailable\n";
-                return false;
-            }
-            graph_context_.set_computed_joints_device(
-                device, graph_context_.scene_inputs()
-                    .computed_joints_buffer().count());
-        } else {
-            graph_context_.clear_computed_joints_device();
-        }
-        break;
+        graph_context_.set_computed_joints_device(
+            device, graph_context_.scene_inputs()
+                .computed_joints_buffer().count());
+    } else if (stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver)
+    {
+        graph_context_.clear_computed_joints_device();
     }
 
     if (solver_device_evaluation) {

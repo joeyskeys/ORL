@@ -40,9 +40,16 @@ struct InputSpec {
     std::uint32_t mods = 0;
 };
 
+enum class BindingScope {
+    Window,
+    Panel,
+};
+
 struct ControlBinding {
     InputSpec input;
     std::vector<std::string> ops;
+    BindingScope scope = BindingScope::Window;
+    std::string panel;
 };
 
 enum class ControlMapLoadMode {
@@ -60,6 +67,7 @@ enum class OpMode {
 // `op` may be a string or an array; one trigger invokes every named op
 // in order. Operation handlers are registered in code and invoked from
 // GLFW callbacks or Qt per-frame polling, depending on the viewer backend.
+// Each binding may target the whole window or a named focused panel.
 // A named operation may also have ordered predicate-based overloads; the
 // first overload whose predicate accepts the event is invoked.
 class ControlMap {
@@ -68,6 +76,7 @@ public:
     using OpPredicate = std::function<bool(const InputEvent&)>;
     using OperationScopeHandler =
         std::function<void(std::string_view operation, bool entering)>;
+    using ActivePanelProvider = std::function<std::string()>;
 
     ControlMap() = default;
     ControlMap(const ControlMap&) = delete;
@@ -89,6 +98,12 @@ public:
     // Register a callback around operations that mutate viewport authoring
     // data. Modal operations keep the scope open until they confirm/cancel.
     void set_operation_scope_handler(OperationScopeHandler handler);
+
+    // Window-scoped bindings always participate. Panel-scoped bindings only
+    // participate when their named panel is active.
+    void set_active_panel(std::string panel);
+    void set_active_panel_provider(ActivePanelProvider provider);
+    std::string active_panel() const;
 
     // Bind any viewport operation that exposes eval(const InputEvent&),
     // including VpOperation<Derived> CRTP types. Modal ops also expose
@@ -152,8 +167,12 @@ public:
     void unbind_op(std::string_view op);
     bool has_op(std::string_view op) const;
 
-    void map(InputSpec input, std::string op);
-    void map(InputSpec input, std::vector<std::string> ops);
+    void map(InputSpec input, std::string op,
+        BindingScope scope = BindingScope::Window,
+        std::string panel = {});
+    void map(InputSpec input, std::vector<std::string> ops,
+        BindingScope scope = BindingScope::Window,
+        std::string panel = {});
     void unmap(const InputSpec& input);
     void unmap_op(std::string_view op);
     void clear_bindings();
@@ -192,6 +211,7 @@ private:
     void end_operation_scope(BoundOp& op);
     BoundOp* find_op(std::string_view name,
         const InputEvent* event = nullptr);
+    bool scope_matches(const ControlBinding& binding) const;
     bool matches(const InputSpec& spec, const InputEvent& event) const;
     std::uint32_t current_mods() const;
     void sync_cursor();
@@ -221,6 +241,8 @@ private:
     std::vector<ControlBinding> bindings_;
     std::vector<BoundOp> ops;
     OperationScopeHandler operation_scope_handler_;
+    ActivePanelProvider active_panel_provider_;
+    std::string active_panel_ = "viewport";
     std::string modal;
     bool modal_scope_active_ = false;
     std::string modal_scope_operation_;

@@ -2,15 +2,22 @@
 
 #if ORL_USE_QT6
 
+#include <cmath>
+
 #include <QFormLayout>
 #include <QFrame>
 #include <QGroupBox>
+#include <QDoubleValidator>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QStringList>
 #include <QVBoxLayout>
 
 #include <glm/common.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #ifndef GLM_ENABLE_EXPERIMENTAL
 #define GLM_ENABLE_EXPERIMENTAL
@@ -26,11 +33,28 @@ namespace ORL
 namespace
 {
 
-QLabel* make_value_label(QWidget* parent) {
-    auto* label = new QLabel(parent);
-    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    return label;
+bool decompose_transform(const glm::mat4& matrix,
+    glm::vec3& scale, glm::quat& rotation, glm::vec3& translation)
+{
+    glm::vec3 skew{0.0f};
+    glm::vec4 perspective{0.0f};
+    if (!glm::decompose(
+            matrix, scale, rotation, translation, skew, perspective))
+    {
+        return false;
+    }
+    if (glm::length(rotation) < 1.0e-6f) {
+        return false;
+    }
+    rotation = glm::normalize(rotation);
+    return true;
+}
+
+glm::quat euler_rotation(const glm::vec3& degrees) {
+    const glm::quat rotation{glm::radians(degrees)};
+    return glm::length(rotation) < 1.0e-6f
+        ? glm::quat{1.0f, 0.0f, 0.0f, 0.0f}
+        : glm::normalize(rotation);
 }
 
 } // namespace
@@ -69,18 +93,90 @@ PropertyEditor::PropertyEditor(const Selection& selection,
     auto* transform_layout = new QFormLayout(transform_group_);
     transform_source_ = new QLabel(transform_group_);
     transform_source_->setWordWrap(true);
-    translation_value_ = make_value_label(transform_group_);
-    rotation_value_ = make_value_label(transform_group_);
-    scale_value_ = make_value_label(transform_group_);
+
+    const auto make_vector_editor = [this](const char* const labels[3]) {
+        VectorEditor editor;
+        editor.widget = new QWidget(transform_group_);
+        auto* layout = new QHBoxLayout(editor.widget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(4);
+        for (int index = 0; index < 3; ++index) {
+            auto* label = new QLabel(
+                QString::fromLatin1(labels[index]), editor.widget);
+            label->setAlignment(Qt::AlignCenter);
+            auto* field = new QLineEdit(editor.widget);
+            field->setAlignment(Qt::AlignRight);
+            field->setSizePolicy(
+                QSizePolicy::Expanding, QSizePolicy::Preferred);
+            auto* validator = new QDoubleValidator(
+                -1.0e12, 1.0e12, 6, field);
+            validator->setNotation(QDoubleValidator::ScientificNotation);
+            field->setValidator(validator);
+            layout->addWidget(label);
+            layout->addWidget(field);
+            editor.fields[static_cast<std::size_t>(index)] = field;
+        }
+        return editor;
+    };
+
+    constexpr const char* kVectorLabels[] = {"X", "Y", "Z"};
+    translation_editor_ = make_vector_editor(kVectorLabels);
+    rotation_editor_ = make_vector_editor(kVectorLabels);
+    scale_editor_ = make_vector_editor(kVectorLabels);
     transform_layout->addRow(QStringLiteral("Source"), transform_source_);
-    transform_layout->addRow(QStringLiteral("Translation"), translation_value_);
-    transform_layout->addRow(QStringLiteral("Rotation (deg)"), rotation_value_);
-    transform_layout->addRow(QStringLiteral("Scale"), scale_value_);
+    transform_layout->addRow(
+        QStringLiteral("Translation"), translation_editor_.widget);
+    transform_layout->addRow(
+        QStringLiteral("Rotation (deg)"), rotation_editor_.widget);
+    transform_layout->addRow(QStringLiteral("Scale"), scale_editor_.widget);
+
+    for (std::size_t index = 0;
+         index < translation_editor_.fields.size(); ++index)
+    {
+        auto* field = translation_editor_.fields[index];
+        QObject::connect(field, &QLineEdit::editingFinished, this,
+            [this, field, index] {
+                if (!field->isModified()) {
+                    return;
+                }
+                apply_vector_edit(
+                    VectorProperty::Translation, static_cast<int>(index));
+                field->setModified(false);
+            });
+    }
+    for (std::size_t index = 0;
+         index < rotation_editor_.fields.size(); ++index)
+    {
+        auto* field = rotation_editor_.fields[index];
+        QObject::connect(field, &QLineEdit::editingFinished, this,
+            [this, field, index] {
+                if (!field->isModified()) {
+                    return;
+                }
+                apply_vector_edit(
+                    VectorProperty::Rotation, static_cast<int>(index));
+                field->setModified(false);
+            });
+    }
+    for (std::size_t index = 0;
+         index < scale_editor_.fields.size(); ++index)
+    {
+        auto* field = scale_editor_.fields[index];
+        QObject::connect(field, &QLineEdit::editingFinished, this,
+            [this, field, index] {
+                if (!field->isModified()) {
+                    return;
+                }
+                apply_vector_edit(
+                    VectorProperty::Scale, static_cast<int>(index));
+                field->setModified(false);
+            });
+    }
     content_layout->addWidget(transform_group_);
 
     auto* draft_note = new QLabel(
-        QStringLiteral("Draft property editor\n"
-                       "Values are read-only for now."),
+        QStringLiteral("Edit a component and press Enter or leave the field "
+                       "to write it back to the selected element."),
         content);
     draft_note->setWordWrap(true);
     draft_note->setStyleSheet(QStringLiteral("color: palette(mid);"));
@@ -121,10 +217,166 @@ void PropertyEditor::refresh() {
     }
 
     transform_source_->setText(source);
-    translation_value_->setText(format_vector(values.translation));
-    rotation_value_->setText(format_vector(values.rotation_degrees));
-    scale_value_->setText(format_vector(values.scale));
+    set_vector_editor(translation_editor_, values.translation, true);
+    const bool has_trs = focus->kind != SelectionRef::Kind::Vector;
+    set_vector_editor(
+        rotation_editor_, values.rotation_degrees, has_trs);
+    set_vector_editor(scale_editor_, values.scale, has_trs);
     transform_group_->setVisible(true);
+}
+
+bool PropertyEditor::read_vector_component(
+    const VectorEditor& editor, int component, float& value) const
+{
+    if (component < 0
+        || static_cast<std::size_t>(component) >= editor.fields.size())
+    {
+        return false;
+    }
+    bool ok = false;
+    const double parsed = editor.fields[static_cast<std::size_t>(component)]
+        ->text().toDouble(&ok);
+    if (!ok || !std::isfinite(parsed)) {
+        return false;
+    }
+    value = static_cast<float>(parsed);
+    return true;
+}
+
+void PropertyEditor::set_vector_editor(const VectorEditor& editor,
+    const glm::vec3& value, bool enabled, bool preserve_focus)
+{
+    editor.widget->setEnabled(enabled);
+    for (int index = 0; index < 3; ++index) {
+        auto* field = editor.fields[static_cast<std::size_t>(index)];
+        if (preserve_focus && field->hasFocus()) {
+            continue;
+        }
+        const QSignalBlocker blocker(field);
+        field->setText(QString::number(
+            value[static_cast<std::size_t>(index)], 'f', 3));
+    }
+}
+
+glm::vec3& PropertyEditor::vector_value(
+    TransformValues& values, VectorProperty property)
+{
+    switch (property) {
+    case VectorProperty::Translation:
+        return values.translation;
+    case VectorProperty::Rotation:
+        return values.rotation_degrees;
+    case VectorProperty::Scale:
+        return values.scale;
+    }
+    return values.translation;
+}
+
+void PropertyEditor::apply_vector_edit(
+    VectorProperty property, int component)
+{
+    const auto* focus = selection_.focus();
+    if (focus == nullptr) {
+        return;
+    }
+
+    auto attr = selection_.dest(*focus);
+    TransformValues current;
+    QString source;
+    if (!attr || !make_transform(*focus, current, source)) {
+        refresh();
+        return;
+    }
+
+    const VectorEditor* editor = nullptr;
+    switch (property) {
+    case VectorProperty::Translation:
+        editor = &translation_editor_;
+        break;
+    case VectorProperty::Rotation:
+        editor = &rotation_editor_;
+        break;
+    case VectorProperty::Scale:
+        editor = &scale_editor_;
+        break;
+    }
+
+    glm::vec3 edited = vector_value(current, property);
+    float component_value = 0.0f;
+    if (editor == nullptr
+        || !read_vector_component(*editor, component, component_value))
+    {
+        if (editor != nullptr) {
+            if (component >= 0
+                && static_cast<std::size_t>(component)
+                    < editor->fields.size())
+            {
+                auto* field = editor->fields[
+                    static_cast<std::size_t>(component)];
+                const QSignalBlocker blocker(field);
+                field->setText(QString::number(
+                    vector_value(current, property)[component], 'f', 3));
+            }
+        }
+        return;
+    }
+    edited[component] = component_value;
+
+    bool written = false;
+    if (focus->kind == SelectionRef::Kind::Joint) {
+        switch (property) {
+        case VectorProperty::Translation:
+            attr.set_world_position(edited);
+            written = true;
+            break;
+        case VectorProperty::Rotation:
+            attr.set_local_rotation(euler_rotation(edited));
+            written = true;
+            break;
+        case VectorProperty::Scale:
+            attr.set_local_scale(edited);
+            written = true;
+            break;
+        }
+    }
+    else if (attr.has_world_matrix()) {
+        glm::vec3 scale{1.0f};
+        glm::vec3 translation{0.0f};
+        glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+        if (!decompose_transform(
+                attr.world_matrix(), scale, rotation, translation))
+        {
+            refresh();
+            return;
+        }
+        switch (property) {
+        case VectorProperty::Translation:
+            translation = edited;
+            break;
+        case VectorProperty::Rotation:
+            rotation = euler_rotation(edited);
+            break;
+        case VectorProperty::Scale:
+            scale = edited;
+            break;
+        }
+        const glm::mat4 world = glm::translate(glm::mat4{1.0f}, translation)
+            * glm::mat4_cast(rotation)
+            * glm::scale(glm::mat4{1.0f}, scale);
+        written = attr.set_world_matrix(world);
+    }
+    else if (focus->kind == SelectionRef::Kind::Vector
+        && property == VectorProperty::Translation)
+    {
+        attr.set_world_position(edited);
+        written = true;
+    }
+
+    if (!written) {
+        refresh();
+        return;
+    }
+    refresh();
 }
 
 bool PropertyEditor::make_transform(const SelectionRef& ref,
@@ -135,32 +387,28 @@ bool PropertyEditor::make_transform(const SelectionRef& ref,
         return false;
     }
 
-    if (attr.has_world_matrix()) {
-        glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
-        glm::vec3 skew{0.0f};
-        glm::vec4 perspective{0.0f};
-        if (!glm::decompose(attr.world_matrix(), values.scale, orientation,
-                values.translation, skew, perspective))
-        {
-            return false;
-        }
-        if (glm::length(orientation) < 1.0e-6f) {
-            return false;
-        }
-        values.rotation_degrees = glm::degrees(
-            glm::eulerAngles(glm::normalize(orientation)));
-        source = ref.kind == SelectionRef::Kind::Controller
-            ? QStringLiteral("Controller matrix converted to TRS for display")
-            : QStringLiteral("World transform");
-        return true;
-    }
-
     if (ref.kind == SelectionRef::Kind::Joint) {
         values.translation = attr.world_position();
         values.rotation_degrees = glm::degrees(
             glm::eulerAngles(attr.local_rotation()));
         values.scale = attr.local_scale();
         source = QStringLiteral("Joint transform");
+        return true;
+    }
+
+    if (attr.has_world_matrix()) {
+        glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
+        if (!decompose_transform(
+                attr.world_matrix(), values.scale, orientation,
+                values.translation))
+        {
+            return false;
+        }
+        values.rotation_degrees = glm::degrees(
+            glm::eulerAngles(orientation));
+        source = ref.kind == SelectionRef::Kind::Controller
+            ? QStringLiteral("Controller matrix converted to TRS for display")
+            : QStringLiteral("World transform");
         return true;
     }
 
@@ -191,13 +439,6 @@ QString PropertyEditor::kind_name(SelectionRef::Kind kind) {
         return QStringLiteral("None");
     }
     return QStringLiteral("Unknown");
-}
-
-QString PropertyEditor::format_vector(const glm::vec3& value) {
-    return QStringLiteral("(%1, %2, %3)")
-        .arg(QString::number(value.x, 'f', 3))
-        .arg(QString::number(value.y, 'f', 3))
-        .arg(QString::number(value.z, 'f', 3));
 }
 
 QString PropertyEditor::component_name(const SelectionRef& ref,

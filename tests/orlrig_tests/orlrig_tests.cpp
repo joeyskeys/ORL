@@ -892,8 +892,8 @@ TEST_CASE("evaluation plan resolves typed solver footprints and dirty levels",
     REQUIRE(connect("find.root", "handle", "root"));
     REQUIRE(connect("find.mid", "handle", "mid"));
     REQUIRE(connect("find.end", "handle", "end"));
-    REQUIRE(connect("find.target", "handle", "target"));
-    REQUIRE(connect("find.pole", "handle", "pole"));
+    REQUIRE(connect("find.target", "index", "target_index"));
+    REQUIRE(connect("find.pole", "index", "pole_index"));
 
     const auto hierarchy = orlrig::compile_hierarchy_plan(store);
     REQUIRE(hierarchy);

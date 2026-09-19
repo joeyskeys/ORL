@@ -5,6 +5,7 @@
 #include <orlgraph/orlgraph.hpp>
 
 #include <algorithm>
+#include <filesystem>
 #include <utility>
 
 #if defined(ORLGRAPH_HAS_IO)
@@ -463,6 +464,41 @@ TEST_CASE("oro serialization preserves partial evaluation footprints",
     REQUIRE(result != nullptr);
     REQUIRE(result->partial_footprint.has_value());
     REQUIRE(*result->partial_footprint == footprint);
+}
+
+TEST_CASE("graph IR cache round trips a content-addressed oro document",
+    "[orlgraph][oro][cache]")
+{
+    NodeRegistry registry;
+    REQUIRE(registry.register_definition(make_passthrough_definition()));
+
+    GraphModule module;
+    module.module_id = "oro.cache";
+
+    const auto cache_directory =
+        std::filesystem::temp_directory_path() / "orl_graph_ir_cache_test";
+    std::error_code error;
+    std::filesystem::remove_all(cache_directory, error);
+
+    std::string content_hash;
+    OrlGraphIrCache cache({cache_directory, false});
+    REQUIRE(cache.save(module, registry, &content_hash));
+    REQUIRE_FALSE(content_hash.empty());
+    REQUIRE(std::filesystem::exists(cache.path(content_hash)));
+
+    const auto loaded = cache.load(content_hash);
+    for (const auto& diagnostic : loaded.diagnostics) {
+        INFO(diagnostic.code << ": " << diagnostic.message);
+    }
+    REQUIRE(loaded.ok);
+    REQUIRE(loaded.module.module_id == module.module_id);
+    REQUIRE(loaded.module.nodes().size() == module.nodes().size());
+    REQUIRE(loaded.registry.find(StableId{"builtin.pass"}) != nullptr);
+
+    OrlGraphIrCache forced({cache_directory, true});
+    REQUIRE_FALSE(forced.load(content_hash).ok);
+
+    std::filesystem::remove_all(cache_directory, error);
 }
 
 TEST_CASE("editable graph JSON is deterministic and round trips",

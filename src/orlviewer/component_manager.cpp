@@ -103,6 +103,84 @@ bool ComponentManager::destroy(std::string_view name) {
     return comp != nullptr && destroy(comp->id);
 }
 
+bool ComponentManager::destroy_joint_recursive(ComponentId root) {
+    const auto* meta = find(root);
+    if (meta == nullptr || meta->kind != ComponentKind::Joint) {
+        return false;
+    }
+
+    const auto ids = store.packed_joint_ids();
+    const auto packed = store.packed_joints();
+    const auto root_index = store.joint_index(root);
+    if (root_index < 0
+        || static_cast<std::size_t>(root_index) >= packed.size()
+        || packed.size() != ids.size())
+    {
+        return false;
+    }
+
+    std::vector<bool> removed(packed.size(), false);
+    removed[static_cast<std::size_t>(root_index)] = true;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (std::size_t index = 0; index < packed.size(); ++index) {
+            if (removed[index]) {
+                continue;
+            }
+            const auto parent = packed[index].parent;
+            if (parent >= 0
+                && static_cast<std::size_t>(parent) < removed.size()
+                && removed[static_cast<std::size_t>(parent)])
+            {
+                removed[index] = true;
+                changed = true;
+            }
+        }
+    }
+
+    std::vector<std::int64_t> remapped(packed.size(), -1);
+    std::int64_t next_index = 0;
+    for (std::size_t index = 0; index < packed.size(); ++index) {
+        if (!removed[index]) {
+            remapped[index] = next_index++;
+        }
+    }
+
+    // Destroy by stable IDs, in reverse packed order so descendants are
+    // removed before their parents without depending on shifting indices.
+    for (std::size_t index = packed.size(); index-- > 0;) {
+        if (removed[index] && !destroy(ids[index])) {
+            return false;
+        }
+    }
+
+    // Joint::parent stores a packed-array index, not a stable ComponentId.
+    // Rebuild it after the deletion so surviving joints still address the
+    // correct parent in the compacted buffer.
+    for (std::size_t index = 0; index < packed.size(); ++index) {
+        if (removed[index]) {
+            continue;
+        }
+        auto* joint_value = joint(ids[index]);
+        if (joint_value == nullptr || joint_value->parent < 0) {
+            if (joint_value != nullptr) {
+                joint_value->parent = -1;
+            }
+            continue;
+        }
+        const auto parent = joint_value->parent;
+        if (static_cast<std::size_t>(parent) >= packed.size()
+            || removed[static_cast<std::size_t>(parent)])
+        {
+            joint_value->parent = -1;
+            continue;
+        }
+        joint_value->parent = remapped[static_cast<std::size_t>(parent)];
+    }
+    return true;
+}
+
 void ComponentManager::destroy_kind(ComponentKind kind) {
     std::vector<ComponentId> ids;
     for (const auto& [_, meta] : metadata) {

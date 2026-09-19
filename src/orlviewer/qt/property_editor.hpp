@@ -2,6 +2,8 @@
 
 #if ORL_USE_QT6
 
+#include <array>
+
 #include <QString>
 #include <QWidget>
 
@@ -11,6 +13,7 @@
 
 class QGroupBox;
 class QLabel;
+class QLineEdit;
 class QScrollArea;
 
 namespace ORL
@@ -18,9 +21,6 @@ namespace ORL
 
 class ComponentManager;
 
-// Draft property panel for the current viewport selection. Values are
-// intentionally read-only until property editing has a defined undo/runtime
-// model.
 class PropertyEditor final : public QWidget {
 public:
     PropertyEditor(const Selection& selection,
@@ -29,16 +29,34 @@ public:
     void refresh();
 
 private:
+    enum class VectorProperty {
+        Translation,
+        Rotation,
+        Scale,
+    };
+
     struct TransformValues {
         glm::vec3 translation{0.0f};
         glm::vec3 rotation_degrees{0.0f};
         glm::vec3 scale{1.0f};
     };
 
+    struct VectorEditor {
+        QWidget* widget = nullptr;
+        std::array<QLineEdit*, 3> fields{};
+    };
+
     bool make_transform(const SelectionRef& ref,
         TransformValues& values, QString& source) const;
+    bool read_vector_component(const VectorEditor& editor,
+        int component, float& value) const;
+    void set_vector_editor(const VectorEditor& editor,
+        const glm::vec3& value, bool enabled,
+        bool preserve_focus = true);
+    void apply_vector_edit(VectorProperty property, int component);
+    static glm::vec3& vector_value(
+        TransformValues& values, VectorProperty property);
     static QString kind_name(SelectionRef::Kind kind);
-    static QString format_vector(const glm::vec3& value);
     static QString component_name(const SelectionRef& ref,
         const ComponentManager& components);
 
@@ -48,9 +66,9 @@ private:
     QLabel* selected_items_ = nullptr;
     QGroupBox* transform_group_ = nullptr;
     QLabel* transform_source_ = nullptr;
-    QLabel* translation_value_ = nullptr;
-    QLabel* rotation_value_ = nullptr;
-    QLabel* scale_value_ = nullptr;
+    VectorEditor translation_editor_;
+    VectorEditor rotation_editor_;
+    VectorEditor scale_editor_;
     QScrollArea* scroll_area_ = nullptr;
 };
 

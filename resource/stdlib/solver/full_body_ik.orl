@@ -1,12 +1,14 @@
 // Full-body inverse kinematics.
 //   use solver/full_body_ik;
 //
-// effectors[] and targets[] describe multiple end-effectors in world space.
+// effectors[] and target_indices[] select multiple end-effectors and
+// locators from solver_context.
 // The solver performs sequential CCD over every ancestor of each
 // effector for the requested number of passes. It updates local rotations
 // while preserving translations, hierarchy, and scale.
 
 use joint;
+use locator;
 
 vector solver_full_body_ik_any_perpendicular(vector axis) {
     vector up(0.0, 1.0, 0.0);
@@ -42,9 +44,8 @@ quat solver_full_body_ik_quat_from_to(vector from, vector to) {
 }
 
 export int solver_full_body_ik [[ string stage = "solver" ]]
-    (Joint joints[],
-                        int effectors[],
-                        matrix targets[],
+    (int effectors[],
+                        int target_indices[],
                         int effector_count,
                         int iterations) {
     int joint_count = solver_context.joint_count;
@@ -60,6 +61,11 @@ export int solver_full_body_ik [[ string stage = "solver" ]]
         if (effectors[effector] < 0 || effectors[effector] >= joint_count) {
             return 0;
         }
+        if (target_indices[effector] < 0
+            || target_indices[effector] >= solver_context.locator_count)
+        {
+            return 0;
+        }
         effector = effector + 1;
     }
 
@@ -68,13 +74,16 @@ export int solver_full_body_ik [[ string stage = "solver" ]]
         effector = 0;
         while (effector < effector_count) {
             int end = effectors[effector];
-            point target = targets[effector] * point(0.0, 0.0, 0.0);
-            int pivot = joints[end].parent;
+            point target = solver_context.locators[target_indices[effector]].xform
+                * point(0.0, 0.0, 0.0);
+            int pivot = solver_context.joints[end].parent;
             int depth = 0;
             while (pivot >= 0 && pivot < joint_count && depth < joint_count) {
-                point end_position = joint_world_matrix(joints, end)
+                point end_position = joint_world_matrix(
+                        solver_context.joints, end)
                     * point(0.0, 0.0, 0.0);
-                point pivot_position = joint_world_matrix(joints, pivot)
+                point pivot_position = joint_world_matrix(
+                        solver_context.joints, pivot)
                     * point(0.0, 0.0, 0.0);
                 vector current_world = end_position - pivot_position;
                 vector desired_world = target - pivot_position;
@@ -82,13 +91,14 @@ export int solver_full_body_ik [[ string stage = "solver" ]]
                 if (length(current_world) > 0.000001
                     && length(desired_world) > 0.000001)
                 {
-                    int parent = joints[pivot].parent;
+                    int parent = solver_context.joints[pivot].parent;
                     point current_local = end_position;
                     point pivot_local = pivot_position;
                     point target_local = target;
                     if (parent >= 0 && parent < joint_count) {
                         matrix parent_inverse = mat_inverse(
-                            joint_world_matrix(joints, parent));
+                            joint_world_matrix(
+                                solver_context.joints, parent));
                         current_local = parent_inverse * end_position;
                         pivot_local = parent_inverse * pivot_position;
                         target_local = parent_inverse * target;
@@ -98,12 +108,12 @@ export int solver_full_body_ik [[ string stage = "solver" ]]
                     vector desired_local_direction = target_local - pivot_local;
                     quat delta = solver_full_body_ik_quat_from_to(
                         current_local_direction, desired_local_direction);
-                    Joint solved = joints[pivot];
+                    Joint solved = solver_context.joints[pivot];
                     solved.rotation = quat_normalize(quat_mul(delta, solved.rotation));
-                    joints[pivot] = solved;
+                    solver_context.joints[pivot] = solved;
                 }
 
-                pivot = joints[pivot].parent;
+                pivot = solver_context.joints[pivot].parent;
                 depth = depth + 1;
             }
             effector = effector + 1;

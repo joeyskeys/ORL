@@ -101,9 +101,12 @@ private:
 
         vkkk::ShaderModule vert_module;
         vkkk::ShaderModule frag_module;
-        if (!vert_module.load(vkkk::phong_vert, vk::ShaderStageFlagBits::eVertex, "orl_scene_phong_vert")
-            || !frag_module.load(vkkk::phong_frag, vk::ShaderStageFlagBits::eFragment,
-                "orl_scene_phong_frag"))
+        if (!context.load_shader(
+                vert_module, vkkk::phong_vert,
+                vk::ShaderStageFlagBits::eVertex, "orl_scene_phong_vert")
+            || !context.load_shader(
+                frag_module, vkkk::phong_frag,
+                vk::ShaderStageFlagBits::eFragment, "orl_scene_phong_frag"))
         {
             return false;
         }
@@ -129,9 +132,12 @@ private:
 
         vkkk::ShaderModule vert_module;
         vkkk::ShaderModule frag_module;
-        if (!vert_module.load(vkkk::phong_vert, vk::ShaderStageFlagBits::eVertex, "orl_scene_wire_vert")
-            || !frag_module.load(vkkk::phong_frag, vk::ShaderStageFlagBits::eFragment,
-                "orl_scene_wire_frag"))
+        if (!context.load_shader(
+                vert_module, vkkk::phong_vert,
+                vk::ShaderStageFlagBits::eVertex, "orl_scene_wire_vert")
+            || !context.load_shader(
+                frag_module, vkkk::phong_frag,
+                vk::ShaderStageFlagBits::eFragment, "orl_scene_wire_frag"))
         {
             return false;
         }
@@ -159,8 +165,10 @@ private:
         const auto frag_path = shader_dir / "xray.frag";
         vkkk::ShaderModule vert_module;
         vkkk::ShaderModule frag_module;
-        if (!vert_module.load(vert_path, vk::ShaderStageFlagBits::eVertex)
-            || !frag_module.load(frag_path, vk::ShaderStageFlagBits::eFragment))
+        if (!context.load_shader(
+                vert_module, vert_path, vk::ShaderStageFlagBits::eVertex)
+            || !context.load_shader(
+                frag_module, frag_path, vk::ShaderStageFlagBits::eFragment))
         {
             return false;
         }

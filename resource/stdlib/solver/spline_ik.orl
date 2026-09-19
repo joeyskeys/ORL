@@ -77,8 +77,7 @@ quat solver_spline_ik_quat_from_to(vector from, vector to) {
 }
 
 export int solver_spline_ik [[ string stage = "solver" ]]
-    (Joint joints[],
-                     int chain[],
+    (int chain[],
                      point spline[],
                      int chain_count,
                      int point_count) {
@@ -95,7 +94,8 @@ export int solver_spline_ik [[ string stage = "solver" ]]
         }
         if (index > 0) {
             int parent_index = chain[index - 1];
-            if (joints[joint_index].parent != parent_index) {
+            if (solver_context.joints[joint_index].parent
+                != parent_index) {
                 return 0;
             }
         }
@@ -113,21 +113,22 @@ export int solver_spline_ik [[ string stage = "solver" ]]
         vector tangent = curve_end - curve_start;
 
         if (length(tangent) > 0.000001) {
-            int parent_index = joints[pivot_index].parent;
+            int parent_index = solver_context.joints[pivot_index].parent;
             vector desired = tangent;
             if (parent_index >= 0 && parent_index < joint_count) {
                 matrix parent_inverse = mat_inverse(
-                    joint_world_matrix(joints, parent_index));
+                    joint_world_matrix(
+                        solver_context.joints, parent_index));
                 point local_start = parent_inverse * curve_start;
                 point local_end = parent_inverse * curve_end;
                 desired = local_end - local_start;
             }
 
-            Joint child = joints[child_index];
+            Joint child = solver_context.joints[child_index];
             vector offset(child.translation.x, child.translation.y, child.translation.z);
-            Joint pivot = joints[pivot_index];
+            Joint pivot = solver_context.joints[pivot_index];
             pivot.rotation = solver_spline_ik_quat_from_to(offset, desired);
-            joints[pivot_index] = pivot;
+            solver_context.joints[pivot_index] = pivot;
         }
         index = index + 1;
     }

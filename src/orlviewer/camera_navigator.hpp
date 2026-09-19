@@ -77,16 +77,19 @@ struct CameraNavigator {
     // Hit the view plane through pivot with a window-space cursor. Uses the
     // live view/proj (current Frame handedness, ortho/persp, Vulkan Y flip)
     // so screen motion matches what is drawn.
-    bool view_plane_hit(double cursor_x, double cursor_y, int width, int height,
-        const glm::vec3& pivot, glm::vec3& world) const
+    bool window_ray(double cursor_x, double cursor_y, int width, int height,
+        glm::vec3& origin, glm::vec3& direction) const
     {
         if (width <= 0 || height <= 0) {
             return false;
         }
 
-        const float ndc_x = static_cast<float>(2.0 * cursor_x / static_cast<double>(width) - 1.0);
-        const float ndc_y = static_cast<float>(2.0 * cursor_y / static_cast<double>(height) - 1.0);
-        const glm::mat4 inv = glm::inverse(camera.ubo_data.proj * camera.ubo_data.view);
+        const float ndc_x = static_cast<float>(
+            2.0 * cursor_x / static_cast<double>(width) - 1.0);
+        const float ndc_y = static_cast<float>(
+            2.0 * cursor_y / static_cast<double>(height) - 1.0);
+        const glm::mat4 inv = glm::inverse(
+            camera.ubo_data.proj * camera.ubo_data.view);
 
         const auto unproject = [&](float ndc_z, glm::vec3& out) {
             glm::vec4 clip = inv * glm::vec4{ndc_x, ndc_y, ndc_z, 1.0f};
@@ -97,27 +100,57 @@ struct CameraNavigator {
             return true;
         };
 
-        glm::vec3 ray_origin{};
         glm::vec3 ray_far{};
-        if (!unproject(-1.0f, ray_origin) || !unproject(1.0f, ray_far)) {
+        if (!unproject(-1.0f, origin) || !unproject(1.0f, ray_far)) {
             return false;
         }
 
-        glm::vec3 ray_dir = ray_far - ray_origin;
-        const float ray_len = glm::length(ray_dir);
-        if (ray_len < 1e-8f) {
+        direction = ray_far - origin;
+        const float ray_length = glm::length(direction);
+        if (ray_length < 1e-8f) {
             return false;
         }
-        ray_dir /= ray_len;
+        direction /= ray_length;
+        return true;
+    }
 
-        const glm::vec3 normal = glm::normalize(camera.front);
-        const float denom = glm::dot(ray_dir, normal);
-        if (std::abs(denom) < 1e-6f) {
+    bool plane_hit(double cursor_x, double cursor_y, int width, int height,
+        const glm::vec3& point, const glm::vec3& plane_normal,
+        glm::vec3& world) const
+    {
+        const float normal_length = glm::length(plane_normal);
+        if (normal_length < 1.0e-6f) {
             return false;
         }
 
-        const float t = glm::dot(pivot - ray_origin, normal) / denom;
-        world = ray_origin + ray_dir * t;
+        glm::vec3 ray_origin{};
+        glm::vec3 ray_direction{};
+        if (!window_ray(cursor_x, cursor_y, width, height,
+                ray_origin, ray_direction))
+        {
+            return false;
+        }
+
+        const glm::vec3 normal = plane_normal / normal_length;
+        const float denominator = glm::dot(ray_direction, normal);
+        if (std::abs(denominator) < 1.0e-6f) {
+            return false;
+        }
+
+        const float distance =
+            glm::dot(point - ray_origin, normal) / denominator;
+        world = ray_origin + ray_direction * distance;
+        return true;
+    }
+
+    bool view_plane_hit(double cursor_x, double cursor_y, int width, int height,
+        const glm::vec3& pivot, glm::vec3& world) const
+    {
+        if (!plane_hit(cursor_x, cursor_y, width, height,
+                pivot, camera.front, world))
+        {
+            return false;
+        }
         return glm::dot(world - camera.pos, camera.front) > 0.0f;
     }
 

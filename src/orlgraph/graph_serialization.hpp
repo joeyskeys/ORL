@@ -4,6 +4,7 @@
 #include "graph_validation.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -77,6 +78,52 @@ bool save_oro(const std::string& path, const GraphModule& module,
     const NodeRegistry& registry, std::vector<Diagnostic>* diagnostics = nullptr);
 
 OroDocument load_oro(const std::string& path);
+
+// Content-addressed cache helpers for complete graph IR documents. The cache
+// uses the existing versioned .oro representation and therefore preserves the
+// graph, registry definitions, ABI metadata, and content hash together.
+// LLVM IR is not stored here: a cache miss still runs oro -> LLVM IR ->
+// machine code through the ordinary compile path.
+struct GraphIrCacheOptions {
+    std::filesystem::path directory;
+    bool force_recompile = false;
+};
+
+class OrlGraphIrCache final {
+public:
+    explicit OrlGraphIrCache(GraphIrCacheOptions options = {});
+
+    bool enabled() const;
+    bool force_recompile() const {
+        return options_.force_recompile;
+    }
+
+    std::filesystem::path path(std::string_view content_hash) const;
+    bool save(const GraphModule& module, const NodeRegistry& registry,
+        std::string* content_hash = nullptr,
+        std::vector<Diagnostic>* diagnostics = nullptr) const;
+    OroDocument load(std::string_view content_hash) const;
+
+private:
+    GraphIrCacheOptions options_;
+};
+
+std::filesystem::path graph_ir_cache_path(
+    const std::filesystem::path& directory,
+    std::string_view content_hash);
+bool save_graph_ir_cache(const std::filesystem::path& directory,
+    const GraphModule& module, const NodeRegistry& registry,
+    std::string* content_hash = nullptr,
+    std::vector<Diagnostic>* diagnostics = nullptr);
+OroDocument load_graph_ir_cache(
+    const std::filesystem::path& directory,
+    std::string_view content_hash);
+bool save_graph_ir_cache(const GraphIrCacheOptions& options,
+    const GraphModule& module, const NodeRegistry& registry,
+    std::string* content_hash = nullptr,
+    std::vector<Diagnostic>* diagnostics = nullptr);
+OroDocument load_graph_ir_cache(const GraphIrCacheOptions& options,
+    std::string_view content_hash);
 
 std::string oro_content_hash(std::string_view canonical_text);
 

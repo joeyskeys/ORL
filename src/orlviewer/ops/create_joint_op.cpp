@@ -1,6 +1,7 @@
 #include "create_joint_op.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <string>
 
@@ -44,6 +45,11 @@ void CreateJointOp::on_eval(const InputEvent& event) {
         return;
     }
 
+    if (active_ && event.kind == InputEvent::Kind::MouseMove) {
+        update_preview(event.x, event.y);
+        return;
+    }
+
     if (active_ && event.kind == InputEvent::Kind::MouseButton
         && event.button == vkkk::MouseButton::Left && event.action == vkkk::InputAction::Press)
     {
@@ -54,12 +60,35 @@ void CreateJointOp::on_eval(const InputEvent& event) {
 void CreateJointOp::begin_session() {
     active_ = true;
     last_in_chain = {};
+    refresh_preview();
     std::cout << "Joint create: click to place, Enter to finish\n";
+}
+
+bool CreateJointOp::begin_extension() {
+    const auto& refs = selection.refs();
+    if (refs.size() != 1
+        || refs.front().kind != SelectionRef::Kind::Joint
+        || !refs.front().component
+        || components.joint(refs.front().component) == nullptr)
+    {
+        active_ = false;
+        last_in_chain = {};
+        preview_ = {};
+        std::cout << "Joint extend: select exactly one existing joint first\n";
+        return false;
+    }
+
+    active_ = true;
+    last_in_chain = refs.front().component;
+    refresh_preview();
+    std::cout << "Joint extend: click to place, Enter to finish\n";
+    return true;
 }
 
 void CreateJointOp::exit() {
     active_ = false;
     last_in_chain = {};
+    preview_ = {};
     std::cout << "Joint create: done\n";
 }
 
@@ -72,6 +101,7 @@ void CreateJointOp::on_cancel() {
 void CreateJointOp::place(double cursor_x, double cursor_y) {
     glm::vec3 world{};
     if (!hit_pivot_plane(cursor_x, cursor_y, world)) {
+        update_preview(cursor_x, cursor_y);
         return;
     }
 
@@ -94,6 +124,25 @@ void CreateJointOp::place(double cursor_x, double cursor_y) {
     if (const auto* created = components.find(id)) {
         std::cout << "Created '" << created->name << "'\n";
     }
+    update_preview(cursor_x, cursor_y);
+}
+
+void CreateJointOp::update_preview(double cursor_x, double cursor_y) {
+    preview_ = {};
+    if (!active_ || !hit_pivot_plane(cursor_x, cursor_y, preview_.world)) {
+        return;
+    }
+    preview_.visible = true;
+    preview_.parent = last_in_chain;
+}
+
+void CreateJointOp::refresh_preview() {
+    if (window == nullptr) {
+        preview_ = {};
+        return;
+    }
+    const auto pointer = window->pointer();
+    update_preview(pointer.x, pointer.y);
 }
 
 bool CreateJointOp::hit_pivot_plane(double cursor_x, double cursor_y, glm::vec3& world) const {

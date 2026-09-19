@@ -99,7 +99,8 @@ public:
     OrlGraphExecution() = default;
 
     static OrlGraphExecution Create(const OrlGraphProgram& program,
-        Backend backend = Backend::Cpu);
+        Backend backend = Backend::Cpu,
+        orlcomp::OrlBinaryCacheOptions cache = {});
 
     bool valid() const;
     bool bind_buffer(std::string_view parameter, OrlBuffer& buffer);
@@ -109,6 +110,8 @@ public:
     bool bind_float(std::string_view parameter, double value);
     bool set_solver_context(
         std::int64_t joint_count, std::int64_t controller_count);
+    bool set_solver_context(const orlrig::SolverContext& context);
+    bool bind_solver_context(const PackedBufferView& view);
     bool set_hierarchy_context(const orlrig::HierarchyContext& context);
     bool bind_hierarchy_data(OrlBuffer& buffer);
     bool bind_graph_inputs(const orlgraph::GraphModule& module,

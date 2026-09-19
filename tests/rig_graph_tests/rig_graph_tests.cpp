@@ -26,7 +26,7 @@ TEST_CASE("standard LBS rig graph exposes resources and dependencies",
     REQUIRE(graph.module.outputs().contains(graph.resources.posed_positions));
     REQUIRE(graph.module.input(graph.resources.bind_positions)->binding
         == "bind_positions");
-    REQUIRE(graph.module.input(graph.resources.joints)->binding == "joints");
+    REQUIRE(graph.module.input(graph.resources.joints) == nullptr);
     REQUIRE(graph.module.input(graph.resources.weights)->binding == "weights");
 }
 
@@ -139,6 +139,7 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
             REQUIRE(definition->outputs.front().name == "status");
             if (name.rfind("orlrig.solver.", 0) == 0) {
                 REQUIRE(definition->parameter("joint_count") == nullptr);
+                REQUIRE(definition->input("joints") == nullptr);
             }
         }
     }

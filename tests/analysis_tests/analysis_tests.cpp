@@ -77,7 +77,8 @@ TEST_CASE("semantic analysis rejects solver context shadowing",
     "[orl][analysis][solver_context][error]")
 {
     Parser parser(R"(
-        int invalid(int solver_context) {
+        int invalid() {
+            int solver_context = 1;
             return solver_context;
         }
     )");
@@ -193,7 +194,7 @@ TEST_CASE("export metadata imports a partial evaluation footprint",
         export int solve [[
             string stage = "solver",
             string partial_propagation = "descendants",
-            string partial_read_locator_ports = "target,pole",
+            string partial_read_locator_ports = "target_index,pole_index",
             int partial_sparse = 1
         ]] (int value) {
             return value;
@@ -210,7 +211,7 @@ TEST_CASE("export metadata imports a partial evaluation footprint",
     REQUIRE(solve->partial_footprint->propagation
         == orlgraph::PartialPropagation::Descendants);
     REQUIRE(solve->partial_footprint->read_locator_ports
-        == std::vector<std::string>{"target", "pole"});
+        == std::vector<std::string>{"target_index", "pole_index"});
 }
 
 TEST_CASE("semantic analysis rejects unresolved calls and unsupported types",

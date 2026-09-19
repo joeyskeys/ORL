@@ -7,6 +7,8 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <span>
 #include <string>
 
 #include <glm/vec3.hpp>
@@ -35,6 +37,145 @@ OrlProgram RequireProgram() {
 }
 
 } // namespace
+
+TEST_CASE("ORL binary cache round trips backend artifacts",
+    "[orl][cache]")
+{
+    const auto directory =
+        std::filesystem::temp_directory_path() / "orl_binary_cache_test";
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+
+    orlcomp::OrlBinaryCache cache({directory, false});
+    const std::string key = "cpu-cache-key";
+    const std::vector<std::uint8_t> expected{0, 1, 2, 127, 255};
+    REQUIRE(cache.save(
+        orlcomp::OrlBinaryKind::CpuObject,
+        key,
+        std::span<const std::uint8_t>(expected.data(), expected.size())));
+
+    std::vector<std::uint8_t> actual;
+    REQUIRE(cache.load(orlcomp::OrlBinaryKind::CpuObject, key, actual));
+    REQUIRE(actual == expected);
+
+    orlcomp::OrlBinaryCache forced({directory, true});
+    REQUIRE_FALSE(forced.load(
+        orlcomp::OrlBinaryKind::CpuObject, key, actual));
+
+    std::filesystem::remove_all(directory, error);
+}
+
+TEST_CASE("CPU execution stores and reloads its object cache",
+    "[orl][cache][cpu]")
+{
+    const auto directory =
+        std::filesystem::temp_directory_path() / "orl_cpu_object_cache_test";
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+
+    const auto program = RequireProgram();
+    const orlcomp::OrlBinaryCacheOptions options{directory, false};
+    auto execution = OrlExecution::Create(program, Backend::Cpu, options);
+    REQUIRE(execution.valid());
+
+    OrlBuffer input("int", sizeof(std::int64_t));
+    OrlBuffer output("int", sizeof(std::int64_t));
+    REQUIRE(input.resize(1));
+    REQUIRE(output.resize(1));
+    const std::int64_t input_value = 3;
+    REQUIRE(input.write(0, input_value));
+    REQUIRE(execution.bind_buffer("input", input));
+    REQUIRE(execution.bind_buffer("output", output));
+    REQUIRE(execution.bind_int("count", 1));
+    REQUIRE(execution.evaluate(1).has_value());
+    std::int64_t output_value = 0;
+    REQUIRE(output.read(0, &output_value));
+    REQUIRE(output_value == 4);
+
+    bool object_exists = false;
+    if (std::filesystem::exists(directory / "cpu")) {
+        for (const auto& entry :
+            std::filesystem::directory_iterator(directory / "cpu"))
+        {
+            object_exists |= entry.path().extension() == ".obj";
+        }
+    }
+    REQUIRE(object_exists);
+
+    auto cached = OrlExecution::Create(program, Backend::Cpu, options);
+    REQUIRE(cached.valid());
+    REQUIRE(cached.ir().empty());
+    REQUIRE(cached.bind_buffer("input", input));
+    REQUIRE(cached.bind_buffer("output", output));
+    REQUIRE(cached.bind_int("count", 1));
+    REQUIRE(cached.evaluate(1).has_value());
+    REQUIRE(output.read(0, &output_value));
+    REQUIRE(output_value == 4);
+
+    orlcomp::OrlBinaryCacheOptions forced{directory, true};
+    auto recompiled = OrlExecution::Create(program, Backend::Cpu, forced);
+    REQUIRE(recompiled.valid());
+    REQUIRE_FALSE(recompiled.ir().empty());
+
+    std::filesystem::remove_all(directory, error);
+}
+
+TEST_CASE("CUDA execution persists a device binary or PTX cache",
+    "[orl][cache][cuda]")
+{
+    const auto directory =
+        std::filesystem::temp_directory_path() / "orl_cuda_binary_cache_test";
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+
+    const auto program = RequireProgram();
+    const orlcomp::OrlBinaryCacheOptions options{directory, false};
+    auto execution = OrlExecution::Create(program, Backend::Cuda, options);
+    if (!execution.valid()) {
+        if (execution.errors().empty()) {
+            WARN("CUDA execution runtime unavailable in this environment");
+        } else {
+            WARN(execution.errors().back());
+        }
+        return;
+    }
+
+    OrlBuffer input("int", sizeof(std::int64_t));
+    OrlBuffer output("int", sizeof(std::int64_t));
+    REQUIRE(input.resize(1));
+    REQUIRE(output.resize(1));
+    const std::int64_t input_value = 5;
+    REQUIRE(input.write(0, input_value));
+    REQUIRE(execution.bind_buffer("input", input));
+    REQUIRE(execution.bind_buffer("output", output));
+    REQUIRE(execution.bind_int("count", 1));
+    REQUIRE(execution.evaluate(1).has_value());
+
+    bool device_cache_exists = false;
+    for (const auto kind :
+        {orlcomp::OrlBinaryKind::CudaCubin,
+         orlcomp::OrlBinaryKind::CudaPtx})
+    {
+        const auto kind_directory =
+            kind == orlcomp::OrlBinaryKind::CudaCubin
+                ? directory / "cuda_cubin"
+                : directory / "cuda_ptx";
+        if (std::filesystem::exists(kind_directory)) {
+            device_cache_exists |= !std::filesystem::is_empty(kind_directory);
+        }
+    }
+    REQUIRE(device_cache_exists);
+
+    auto cached = OrlExecution::Create(program, Backend::Cuda, options);
+    REQUIRE(cached.valid());
+    REQUIRE(cached.ir().empty());
+    REQUIRE(cached.bind_buffer("input", input));
+    REQUIRE(cached.bind_buffer("output", output));
+    REQUIRE(cached.bind_int("count", 1));
+    REQUIRE(cached.evaluate(1).has_value());
+
+    std::filesystem::remove_all(directory, error);
+}
 
 TEST_CASE("orlexec evaluates locator-fed aim constraint on CPU",
     "[orl][exec][constraint][locator][cpu]")
@@ -224,6 +365,74 @@ TEST_CASE("orlexec binds implicit solver context without a graph socket",
     REQUIRE(*gpu_result == 11);
 }
 
+TEST_CASE("orlexec exposes packed rig buffers through solver context",
+    "[orl][exec][solver_context][buffers][cpu]")
+{
+    const auto program = OrlProgram::Compile(R"(
+        use joint;
+        use locator;
+        int read_context() {
+            Joint joint = solver_context.joints[0];
+            Locator locator = solver_context.locators[0];
+            matrix controller = solver_context.controllers[0];
+            point locator_position = locator.xform * point(0.0, 0.0, 0.0);
+            point controller_position = controller * point(0.0, 0.0, 0.0);
+            int result = joint.parent;
+            if (locator_position.x > 1.0) {
+                result = result + 10;
+            }
+            if (controller_position.x > 2.0) {
+                result = result + 100;
+            }
+            return result;
+        }
+    )", {.entry_function = "read_context"});
+    REQUIRE(program.valid());
+
+    constexpr std::size_t joints_offset = sizeof(orlrig::SolverContext);
+    constexpr std::size_t locators_offset =
+        joints_offset + orlrig::kJointStride;
+    constexpr std::size_t controllers_offset =
+        locators_offset + orlrig::kLocatorStride;
+    OrlBuffer storage(orlrig::kSolverContextOrlType, 1);
+    REQUIRE(storage.resize(
+        controllers_offset + orlrig::kMatrixStride));
+
+    std::int64_t parent = 7;
+    std::memcpy(
+        static_cast<std::byte*>(storage.data()) + joints_offset,
+        &parent, sizeof(parent));
+    double locator[16] = {};
+    locator[0] = locator[5] = locator[10] = locator[15] = 1.0;
+    locator[3] = 2.0;
+    std::memcpy(
+        static_cast<std::byte*>(storage.data()) + locators_offset,
+        locator, sizeof(locator));
+    double controller[16] = {};
+    controller[0] = controller[5] = controller[10] = controller[15] = 1.0;
+    controller[3] = 3.0;
+    std::memcpy(
+        static_cast<std::byte*>(storage.data()) + controllers_offset,
+        controller, sizeof(controller));
+
+    const orlrig::SolverContext context{
+        1, 1, 1,
+        static_cast<std::int64_t>(joints_offset),
+        static_cast<std::int64_t>(controllers_offset),
+        static_cast<std::int64_t>(locators_offset)};
+    std::memcpy(storage.data(), &context, sizeof(context));
+
+    auto execution = OrlExecution::Create(program, Backend::Cpu);
+    REQUIRE(execution.valid());
+    REQUIRE(execution.bind_solver_context(PackedBufferView{
+        storage.data(), storage.byte_size(), 0, storage.byte_size(),
+        storage.version()}));
+    REQUIRE(execution.set_solver_context(context));
+    const auto result = execution.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 117);
+}
+
 TEST_CASE("orlexec binds implicit hierarchy context and data",
     "[orl][exec][hierarchy][cpu]")
 {
@@ -266,9 +475,9 @@ TEST_CASE("orlexec binds implicit hierarchy context and data",
 
     auto gpu = OrlExecution::Create(program, Backend::Cuda);
     if (!gpu.valid()) {
-        WARN(gpu.errors().empty()
+        WARN((gpu.errors().empty()
             ? "CUDA execution runtime unavailable in this environment"
-            : gpu.errors().back());
+            : gpu.errors().back()));
         return;
     }
     REQUIRE(gpu.set_hierarchy_context(context));

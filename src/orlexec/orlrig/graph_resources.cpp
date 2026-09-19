@@ -55,13 +55,9 @@ orlgraph::NodeDefinition make_capture_definition(
     definition.allowed_stages = orlgraph::GraphStageMask::Deformer;
     definition.implementation.kind = orlgraph::ImplementationKind::Runtime;
     definition.implementation.runtime_name = definition.qualified_name;
-    definition.inputs.push_back(buffer_port(
-        "joints", "joints", orlgraph::LogicalType::struct_type("Joint"),
-        orlgraph::PortDirection::Input));
     definition.outputs.push_back(buffer_port(
         "inverse_binds", "inverse_binds", orlgraph::LogicalType::matrix(),
         orlgraph::PortDirection::Output, orlgraph::Domain::buffer(), false));
-    definition.inputs.front().shape = orlgraph::Shape::one("joint_count");
     definition.outputs.front().shape = orlgraph::Shape::one("joint_count");
     definition.effects = {
         {resources.joints, orlgraph::AccessMode::Read, false},
@@ -84,8 +80,6 @@ orlgraph::NodeDefinition make_deform_definition(
     definition.inputs = {
         buffer_port("bind_positions", "bind_positions",
             orlgraph::LogicalType::point(), orlgraph::PortDirection::Input),
-        buffer_port("joints", "joints", orlgraph::LogicalType::struct_type("Joint"),
-            orlgraph::PortDirection::Input),
         buffer_port("inverse_binds", "inverse_binds",
             orlgraph::LogicalType::matrix(), orlgraph::PortDirection::Input),
         buffer_port("weights", "weights", orlgraph::LogicalType::struct_type("Weight"),
@@ -95,8 +89,7 @@ orlgraph::NodeDefinition make_deform_definition(
         "posed_positions", "posed_positions", orlgraph::LogicalType::point(),
         orlgraph::PortDirection::Output, orlgraph::Domain::buffer(), false));
     definition.inputs[1].shape = orlgraph::Shape::one("joint_count");
-    definition.inputs[2].shape = orlgraph::Shape::one("joint_count");
-    definition.inputs[3].shape = orlgraph::Shape::one("weight_count");
+    definition.inputs[2].shape = orlgraph::Shape::one("weight_count");
     definition.effects = {
         {resources.bind_positions, orlgraph::AccessMode::Read, false},
         {resources.joints, orlgraph::AccessMode::Read, false},
@@ -417,7 +410,7 @@ orlgraph::NodeDefinition make_stdlib_definition(std::string category,
             orlgraph::PartialPropagation::Descendants;
         footprint.read_joint_ports = {"root", "mid", "end"};
         footprint.write_joint_ports = {"root", "mid"};
-        footprint.read_locator_ports = {"target", "pole"};
+        footprint.read_locator_ports = {"target_index", "pole_index"};
         definition.partial_footprint = std::move(footprint);
     } else if (category == "solver") {
         // The remaining solvers currently read/write broad buffers or carry
@@ -537,6 +530,13 @@ std::vector<orlgraph::NodeDefinition> make_solver_definitions() {
         port.semantic = std::string{kSceneArrayIndexSemantic};
         return port;
     };
+    const auto index_buffer = [](std::string name, std::string shape) {
+        auto port = stdlib_buffer_port(
+            std::move(name), orlgraph::LogicalType::int64(),
+            std::move(shape));
+        port.semantic = std::string{kSceneArrayIndexSemantic};
+        return port;
+    };
     const auto read_write_buffer = [](
         std::string name, orlgraph::LogicalType element,
         std::string shape) {
@@ -545,55 +545,36 @@ std::vector<orlgraph::NodeDefinition> make_solver_definitions() {
         port.access = orlgraph::AccessMode::ReadWrite;
         return port;
     };
-    const auto untyped_buffer = [](
-        std::string name, orlgraph::LogicalType element,
-        std::string shape) {
-        auto port = stdlib_buffer_port(
-            std::move(name), std::move(element), std::move(shape));
-        port.semantic.clear();
-        return port;
-    };
     return {
         make_stdlib_definition("solver", "fk",
             {
-                stdlib_buffer_port("joints",
-                    orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
                 read_write_buffer("world",
                     orlgraph::LogicalType::matrix(), "joint_count"),
             },
-            parameter_effects("solver_fk", {"joints"}, {"world"}, {}), false),
+            parameter_effects("solver_fk", {}, {"world"}, {}), false),
         make_stdlib_definition("solver", "ik_two_bone",
             {
-                read_write_buffer("joints",
-                    orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
                 index_port("root"),
                 index_port("mid"),
                 index_port("end"),
-                untyped_buffer("target",
-                    orlgraph::LogicalType::struct_type("Locator"), "one"),
-                untyped_buffer("pole",
-                    orlgraph::LogicalType::struct_type("Locator"), "one"),
+                index_port("target_index"),
+                index_port("pole_index"),
             },
             parameter_effects("solver_ik_two_bone",
-                {"target", "pole"}, {}, {"joints"}), false),
+                {"target_index", "pole_index"}, {}, {}), false),
         make_stdlib_definition("solver", "hd_id",
             {
-                read_write_buffer("joints",
-                    orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
                 read_write_buffer("history",
                     orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
                 index_port("root"),
                 index_port("end"),
-                untyped_buffer("target",
-                    orlgraph::LogicalType::matrix(), "one"),
+                index_port("target_index"),
                 stdlib_scalar_port("iterations", orlgraph::LogicalType::int64()),
             },
-            parameter_effects("solver_hd_id", {"target"}, {}, {"joints", "history"}),
+            parameter_effects("solver_hd_id", {"target_index"}, {}, {"history"}),
             false, true),
         make_stdlib_definition("solver", "spline_ik",
             {
-                read_write_buffer("joints",
-                    orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
                 stdlib_buffer_port("chain",
                     orlgraph::LogicalType::int64(), "chain_count"),
                 stdlib_buffer_port("spline",
@@ -602,20 +583,17 @@ std::vector<orlgraph::NodeDefinition> make_solver_definitions() {
                 stdlib_scalar_port("point_count", orlgraph::LogicalType::int64()),
             },
             parameter_effects("solver_spline_ik",
-                {"chain", "spline"}, {}, {"joints"}), false),
+                {"chain", "spline"}, {}, {}), false),
         make_stdlib_definition("solver", "full_body_ik",
             {
-                read_write_buffer("joints",
-                    orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
                 stdlib_buffer_port("effectors",
                     orlgraph::LogicalType::int64(), "effector_count"),
-                untyped_buffer("targets",
-                    orlgraph::LogicalType::matrix(), "effector_count"),
+                index_buffer("target_indices", "effector_count"),
                 stdlib_scalar_port("effector_count", orlgraph::LogicalType::int64()),
                 stdlib_scalar_port("iterations", orlgraph::LogicalType::int64()),
             },
             parameter_effects("solver_full_body_ik",
-                {"effectors", "targets"}, {}, {"joints"}), false),
+                {"effectors", "target_indices"}, {}, {}), false),
     };
 }
 
@@ -849,9 +827,6 @@ RigGraph make_lbs_graph() {
     add_interface_input(graph.module, graph.resources.bind_positions,
         "bind_positions", orlgraph::LogicalType::buffer(orlgraph::LogicalType::point()),
         "vertex_count");
-    add_interface_input(graph.module, graph.resources.joints,
-        "joints", orlgraph::LogicalType::buffer(orlgraph::LogicalType::struct_type("Joint")),
-        "joint_count");
     add_interface_input(graph.module, graph.resources.weights,
         "weights", orlgraph::LogicalType::buffer(orlgraph::LogicalType::struct_type("Weight")),
         "weight_count");
@@ -871,17 +846,9 @@ RigGraph make_lbs_graph() {
         "deform", {}, {}, orlgraph::InlinePolicy::Never});
 
     graph.module.add_connection(orlgraph::Connection{
-        orlgraph::Endpoint::graph_input(graph.resources.joints),
-        orlgraph::Endpoint::node_port(
-            StableId{"capture_bind"}, StableId{"joints"})});
-    graph.module.add_connection(orlgraph::Connection{
         orlgraph::Endpoint::graph_input(graph.resources.bind_positions),
         orlgraph::Endpoint::node_port(
             StableId{"deform"}, StableId{"bind_positions"})});
-    graph.module.add_connection(orlgraph::Connection{
-        orlgraph::Endpoint::graph_input(graph.resources.joints),
-        orlgraph::Endpoint::node_port(
-            StableId{"deform"}, StableId{"joints"})});
     graph.module.add_connection(orlgraph::Connection{
         orlgraph::Endpoint::graph_input(graph.resources.weights),
         orlgraph::Endpoint::node_port(

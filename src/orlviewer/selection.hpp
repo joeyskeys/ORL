@@ -112,6 +112,18 @@ struct XformAttr {
         }
     }
 
+    glm::vec3 local_axis(int index) const {
+        if (index < 0 || index > 2) {
+            return {};
+        }
+        const glm::mat4 basis = has_world_matrix()
+            ? world_matrix()
+            : to_world * glm::mat4_cast(local_rotation());
+        const glm::vec3 axis{basis[index]};
+        const float length = glm::length(axis);
+        return length < 1.0e-6f ? glm::vec3{} : axis / length;
+    }
+
     glm::quat local_rotation() const {
         if (rotation == nullptr) {
             return glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
@@ -399,6 +411,21 @@ private:
                 attr.to_world = orlviewer::joint_world_matrix(
                     packed, packed[static_cast<std::size_t>(index)].parent);
             }
+            attr.read_world = [this, id = ref.component] {
+                const auto packed = components.packed_joints();
+                return orlviewer::joint_world_matrix(
+                    packed, components.joint_index(id));
+            };
+            attr.write_world = [this, id = ref.component](
+                                   const glm::mat4& world) {
+                auto* value = components.joint(id);
+                if (value == nullptr) {
+                    return false;
+                }
+                const auto packed = components.packed_joints();
+                return orlrig::write_joint_world_matrix(
+                    packed, components.joint_index(id), world, *value);
+            };
             return attr;
         }
         if (ref.kind == SelectionRef::Kind::SceneObject) {
