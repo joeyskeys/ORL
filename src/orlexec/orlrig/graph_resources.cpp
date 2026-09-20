@@ -287,46 +287,8 @@ orlgraph::NodeDefinition make_find_definition(
     return definition;
 }
 
-orlgraph::NodeDefinition make_scene_buffer_definition(
-    std::string element, orlgraph::LogicalType element_type,
-    orlgraph::Domain domain, std::string count_symbol,
-    std::string semantic, std::string coordinate_space)
-{
-    const std::string qualified_name = "orlrig.input." + element;
-    orlgraph::NodeDefinition definition;
-    definition.id = orlgraph::StableId{qualified_name};
-    definition.qualified_name = qualified_name;
-    definition.allowed_stages = orlgraph::GraphStageMask::All;
-    definition.implementation.kind = orlgraph::ImplementationKind::Runtime;
-    definition.implementation.runtime_name = qualified_name;
-
-    auto output = buffer_port(
-        element, element, std::move(element_type),
-        orlgraph::PortDirection::Output, std::move(domain), false);
-    output.shape = orlgraph::Shape::one(std::move(count_symbol));
-    output.semantic = std::move(semantic);
-    output.coordinate_space = std::move(coordinate_space);
-    definition.outputs.push_back(std::move(output));
-    definition.capabilities = {"runtime", "scene"};
-    definition.operation = "input";
-    definition.pure = false;
-    definition.inline_policy = orlgraph::InlinePolicy::Never;
-    return definition;
-}
-
 std::vector<orlgraph::NodeDefinition> make_input_definitions() {
     return {
-        make_scene_buffer_definition(
-            "joints", orlgraph::LogicalType::struct_type("Joint"),
-            orlgraph::Domain::joint(), "joint_count", "joints", "world"),
-        make_scene_buffer_definition(
-            "controllers", orlgraph::LogicalType::matrix(),
-            orlgraph::Domain::rig(), "controller_count",
-            "controllers", "world"),
-        make_scene_buffer_definition(
-            "locators", orlgraph::LogicalType::struct_type("Locator"),
-            orlgraph::Domain::rig(), "locator_count",
-            "locators", "world"),
         make_find_definition("joint",
             std::string{kSceneJointHandleSemantic}),
         make_find_definition("controller",

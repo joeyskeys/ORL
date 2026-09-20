@@ -144,7 +144,11 @@ private:
     void draw_grid(QPainter& painter) const;
     void draw_link(QPainter& painter, const Link& link) const;
     void draw_pending_connection(QPainter& painter) const;
+    void draw_selection_box(QPainter& painter) const;
     void draw_node(QPainter& painter, int index) const;
+    bool node_is_selected(int index) const;
+    void select_only(int index);
+    void apply_box_selection();
 
     QVector<Node> nodes_;
     QVector<Link> links_;
@@ -153,8 +157,12 @@ private:
     QPoint last_mouse_position_;
     double zoom_ = 1.0;
     int selected_node_ = -1;
+    QVector<int> selectedNodes;
     int dragging_node_ = -1;
     bool panning_ = false;
+    bool boxSelecting = false;
+    QPointF boxSelectOrigin;
+    QPointF boxSelectCurrent;
     PendingConnection pending_connection_;
     orlgraph::GraphModule solver_graph_storage_;
     orlgraph::GraphModule deformer_graph_storage_;

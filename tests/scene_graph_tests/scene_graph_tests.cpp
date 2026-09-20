@@ -227,9 +227,6 @@ TEST_CASE("scene graph context owns the active LBS graph",
     REQUIRE(context.validate().ok());
     REQUIRE(context.has_runtime_node("orlrig.deformer.lbs.capture_bind"));
     REQUIRE(context.has_runtime_node("orlrig.deformer.lbs.evaluate"));
-    REQUIRE(context.registry().find("orlrig.input.joints") != nullptr);
-    REQUIRE(context.registry().find("orlrig.input.controllers") != nullptr);
-    REQUIRE(context.registry().find("orlrig.input.locators") != nullptr);
     REQUIRE(context.registry().find("orlrig.input.find_mesh") != nullptr);
     const auto* find_controller =
         context.registry().find("orlrig.input.find_controller");

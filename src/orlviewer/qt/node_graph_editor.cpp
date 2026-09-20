@@ -266,7 +266,9 @@ void NodeGraphEditor::rebuild_view()
     nodes_.clear();
     links_.clear();
     selected_node_ = -1;
+    selectedNodes.clear();
     dragging_node_ = -1;
+    boxSelecting = false;
     pending_connection_ = {};
 
     const auto restore_position = [&previous_positions](Node& node) {
@@ -526,7 +528,7 @@ void NodeGraphEditor::create_node(const orlgraph::StableId& definition_id,
         nodes_[index].position = scene_position_value
             - QPointF{nodes_[index].size.width() * 0.5,
                 nodes_[index].size.height() * 0.5};
-        selected_node_ = index;
+        select_only(index);
         break;
     }
     update();
@@ -580,7 +582,7 @@ void NodeGraphEditor::create_graph_input(
         nodes_[index].position = scene_position_value
             - QPointF{nodes_[index].size.width() * 0.5,
                 nodes_[index].size.height() * 0.5};
-        selected_node_ = index;
+        select_only(index);
         break;
     }
     update();
@@ -1067,13 +1069,63 @@ void NodeGraphEditor::draw_pending_connection(QPainter& painter) const
     painter.drawPath(path);
 }
 
+void NodeGraphEditor::draw_selection_box(QPainter& painter) const
+{
+    if (!boxSelecting) {
+        return;
+    }
+    const QRectF box = QRectF(boxSelectOrigin, boxSelectCurrent).normalized();
+    if (box.width() <= 0.0 && box.height() <= 0.0) {
+        return;
+    }
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor{QStringLiteral("#f2c14e")}, 1.0 / zoom_,
+        Qt::DashLine));
+    painter.drawRect(box);
+}
+
+bool NodeGraphEditor::node_is_selected(int index) const
+{
+    return selectedNodes.contains(index);
+}
+
+void NodeGraphEditor::select_only(int index)
+{
+    selected_node_ = index;
+    selectedNodes.clear();
+    if (index >= 0) {
+        selectedNodes.push_back(index);
+    }
+}
+
+void NodeGraphEditor::apply_box_selection()
+{
+    const QPointF viewport_delta =
+        (boxSelectCurrent - boxSelectOrigin) * zoom_;
+    if (std::hypot(viewport_delta.x(), viewport_delta.y()) < 4.0) {
+        select_only(-1);
+        return;
+    }
+
+    const QRectF box = QRectF(boxSelectOrigin, boxSelectCurrent).normalized();
+    selectedNodes.clear();
+    selected_node_ = -1;
+    for (int index = 0; index < nodes_.size(); ++index) {
+        if (!node_rect(nodes_[index]).intersects(box)) {
+            continue;
+        }
+        selectedNodes.push_back(index);
+        selected_node_ = index;
+    }
+}
+
 void NodeGraphEditor::draw_node(QPainter& painter, int index) const
 {
     const Node& node = nodes_[index];
     const QRectF rect = node_rect(node);
     const QRectF header(rect.topLeft(), QSizeF(rect.width(), 30.0));
 
-    painter.setPen(QPen(index == selected_node_
+    painter.setPen(QPen(node_is_selected(index)
             ? QColor{QStringLiteral("#f2c14e")}
             : QColor{QStringLiteral("#121212")}, 2.0 / zoom_));
     painter.setBrush(QColor{QStringLiteral("#242424")});
@@ -1145,6 +1197,7 @@ void NodeGraphEditor::paintEvent(QPaintEvent*)
     for (int index = 0; index < nodes_.size(); ++index) {
         draw_node(painter, index);
     }
+    draw_selection_box(painter);
     painter.restore();
 
     painter.setPen(QColor{QStringLiteral("#f6f6f6")});
@@ -1173,18 +1226,27 @@ void NodeGraphEditor::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::LeftButton) {
         const Socket socket = socket_at(scene);
         if (socket.valid()) {
-            selected_node_ = socket.node;
+            select_only(socket.node);
             dragging_node_ = -1;
+            boxSelecting = false;
             pending_connection_ = PendingConnection{
                 socket, scene, false, false};
             update();
             event->accept();
             return;
         }
-        selected_node_ = node_at(scene);
-        dragging_node_ = selected_node_;
-        if (dragging_node_ >= 0) {
+        const int hit = node_at(scene);
+        if (hit >= 0) {
+            select_only(hit);
+            dragging_node_ = hit;
+            boxSelecting = false;
             drag_offset_ = scene - nodes_[dragging_node_].position;
+        } else {
+            select_only(-1);
+            dragging_node_ = -1;
+            boxSelecting = true;
+            boxSelectOrigin = scene;
+            boxSelectCurrent = scene;
         }
         update();
         event->accept();
@@ -1217,6 +1279,12 @@ void NodeGraphEditor::mouseMoveEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    if (boxSelecting && (event->buttons() & Qt::LeftButton) != 0) {
+        boxSelectCurrent = scene_position(event->position());
+        update();
+        event->accept();
+        return;
+    }
     if (dragging_node_ >= 0 && (event->buttons() & Qt::LeftButton) != 0) {
         nodes_[dragging_node_].position = scene_position(event->position()) - drag_offset_;
         position_find_controls();
@@ -1244,6 +1312,15 @@ void NodeGraphEditor::mouseReleaseEvent(QMouseEvent* event)
                 add_connection(pending_connection_.start, target);
             }
             pending_connection_ = {};
+            dragging_node_ = -1;
+            update();
+            event->accept();
+            return;
+        }
+        if (boxSelecting) {
+            boxSelectCurrent = scene_position(event->position());
+            apply_box_selection();
+            boxSelecting = false;
             dragging_node_ = -1;
             update();
             event->accept();
@@ -1288,8 +1365,12 @@ void NodeGraphEditor::keyPressEvent(QKeyEvent* event)
         && (event->key() == Qt::Key_Delete
             || event->key() == Qt::Key_Backspace))
     {
-        if (selected_node_ >= 0 && selected_node_ < nodes_.size()) {
-            const Node& selected = nodes_[selected_node_];
+        bool removed_any = false;
+        for (int index : selectedNodes) {
+            if (index < 0 || index >= nodes_.size()) {
+                continue;
+            }
+            const Node& selected = nodes_[index];
             std::string error;
             bool removed = false;
             if (selected.kind == Node::Kind::GraphInput) {
@@ -1308,9 +1389,12 @@ void NodeGraphEditor::keyPressEvent(QKeyEvent* event)
                 std::cerr << "Node graph: failed to delete node: "
                           << error << '\n';
             } else {
-                notify_graph_changed();
-                rebuild_view();
+                removed_any = true;
             }
+        }
+        if (removed_any) {
+            notify_graph_changed();
+            rebuild_view();
         }
         event->accept();
         return;

@@ -278,9 +278,6 @@ void GraphSceneRuntime::register_runtime_adapters() {
         std::string{orlrig::kComputedJointsNodeDefinition},
         &GraphSceneRuntime::execute_computed_joints_adapter);
     for (const std::string_view runtime_name : {
-             std::string_view{"orlrig.input.joints"},
-             std::string_view{"orlrig.input.controllers"},
-             std::string_view{"orlrig.input.locators"},
              std::string_view{"orlrig.input.find_joint"},
              std::string_view{"orlrig.input.find_controller"},
              std::string_view{"orlrig.input.find_locator"},
@@ -742,26 +739,13 @@ bool GraphSceneRuntime::resolve_scene_input_node(
         definition.implementation.runtime_name;
     graph_context_.refresh_scene_inputs();
 
-    if (runtime_name == "orlrig.input.joints"
-        || runtime_name == "orlrig.input.controllers"
-        || runtime_name == "orlrig.input.locators"
-        || runtime_name
+    if (runtime_name
             == std::string{orlrig::kComputedJointsNodeDefinition})
     {
-        const bool is_computed_joints =
-            runtime_name
-                == std::string{orlrig::kComputedJointsNodeDefinition};
-        const std::string_view binding = is_computed_joints
-            ? orlrig::kComputedJointsBinding
-            : runtime_name == "orlrig.input.joints"
-                ? orlrig::kSceneJointsBinding
-                : runtime_name == "orlrig.input.locators"
-                    ? orlrig::kSceneLocatorsBinding
-                    : orlrig::kSceneControllersBinding;
         exec::GraphInputBinding resolved;
         std::string error;
         if (!graph_context_.scene_inputs().resolve_binding(
-                binding, resolved, &error))
+                orlrig::kComputedJointsBinding, resolved, &error))
         {
             std::cerr << "Deformer: scene input node resolution failed: "
                 << error << '\n';
@@ -997,42 +981,6 @@ bool GraphSceneRuntime::prepare_runtime_output_expressions(
                         orlgraph::Domain::joint(),
                         orlgraph::Shape::one("joint_count"),
                         "joints", "world", &output_expression, error))
-                {
-                    return false;
-                }
-            } else if (runtime_name == "orlrig.input.joints"
-                && output.name == "joints")
-            {
-                if (!add_scene_execution_input(
-                        module, orlrig::kSceneJointsBinding, "joints",
-                        orlgraph::LogicalType::struct_type("Joint"),
-                        orlgraph::Domain::joint(),
-                        orlgraph::Shape::one("joint_count"),
-                        "joints", "world", &output_expression, error))
-                {
-                    return false;
-                }
-            } else if (runtime_name == "orlrig.input.controllers"
-                && output.name == "controllers")
-            {
-                if (!add_scene_execution_input(
-                        module, orlrig::kSceneControllersBinding, "controllers",
-                        orlgraph::LogicalType::matrix(),
-                        orlgraph::Domain::rig(),
-                        orlgraph::Shape::one("controller_count"),
-                        "controllers", "world", &output_expression, error))
-                {
-                    return false;
-                }
-            } else if (runtime_name == "orlrig.input.locators"
-                && output.name == "locators")
-            {
-                if (!add_scene_execution_input(
-                        module, orlrig::kSceneLocatorsBinding, "locators",
-                        orlgraph::LogicalType::struct_type("Locator"),
-                        orlgraph::Domain::rig(),
-                        orlgraph::Shape::one("locator_count"),
-                        "locators", "world", &output_expression, error))
                 {
                     return false;
                 }
