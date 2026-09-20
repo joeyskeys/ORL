@@ -64,9 +64,9 @@
       "scope": "window",
       "input": {
         "type": "key",
-        "key": "O",
+        "key": "I",
         "action": "press",
-        "mods": ["ctrl", "shift"]
+        "mods": ["ctrl"]
       }
     },
     {
