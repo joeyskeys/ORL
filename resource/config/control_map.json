@@ -60,6 +60,26 @@
       }
     },
     {
+      "op": "save_project",
+      "scope": "window",
+      "input": {
+        "type": "key",
+        "key": "S",
+        "action": "press",
+        "mods": ["ctrl"]
+      }
+    },
+    {
+      "op": "save_project_as",
+      "scope": "window",
+      "input": {
+        "type": "key",
+        "key": "S",
+        "action": "press",
+        "mods": ["ctrl", "shift"]
+      }
+    },
+    {
       "op": "load_model",
       "scope": "window",
       "input": {

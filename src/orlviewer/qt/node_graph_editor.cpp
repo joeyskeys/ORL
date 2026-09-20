@@ -11,14 +11,12 @@
 #include <QFontMetrics>
 #include <QHash>
 #include <QKeyEvent>
-#include <QKeySequence>
 #include <QMouseEvent>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
 #include <QSignalBlocker>
-#include <QShortcut>
 #include <QStringList>
 #include <QWheelEvent>
 
@@ -77,20 +75,6 @@ NodeGraphEditor::NodeGraphEditor(QWidget* parent)
     setMinimumSize(480, 320);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
-
-    auto* save_shortcut = new QShortcut(
-        QKeySequence(QStringLiteral("Ctrl+S")), this);
-    save_shortcut->setContext(Qt::WidgetWithChildrenShortcut);
-    connect(save_shortcut, &QShortcut::activated, this, [this] {
-        save_graph_file(false);
-    });
-
-    auto* save_as_shortcut = new QShortcut(
-        QKeySequence(QStringLiteral("Ctrl+Shift+S")), this);
-    save_as_shortcut->setContext(Qt::WidgetWithChildrenShortcut);
-    connect(save_as_shortcut, &QShortcut::activated, this, [this] {
-        save_graph_file(true);
-    });
 }
 
 void NodeGraphEditor::set_graph(const orlgraph::GraphModule& module,
@@ -448,7 +432,7 @@ void NodeGraphEditor::rebuild_view()
     update();
 }
 
-bool NodeGraphEditor::save_graph_file(bool save_as)
+bool NodeGraphEditor::save_project_file(bool save_as)
 {
     QString path;
     if (!save_as && graph_file_path_.has_value()) {

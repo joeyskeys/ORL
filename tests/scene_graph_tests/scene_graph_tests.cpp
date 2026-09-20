@@ -489,6 +489,60 @@ TEST_CASE("control map separates window and panel bindings",
     REQUIRE(graph_calls == 1);
 }
 
+TEST_CASE("control map keeps camera navigation live during modal ops",
+    "[controls][modal]")
+{
+    struct ModalOp : ORL::VpOperation<ModalOp> {
+        static constexpr ORL::OpMode kMode = ORL::OpMode::Modal;
+        bool engaged = false;
+        int evals = 0;
+        void on_enter() { engaged = true; }
+        void on_eval(const ORL::InputEvent&) { ++evals; }
+        bool is_active() const { return engaged; }
+        void on_confirm() { engaged = false; }
+        void on_cancel() { engaged = false; }
+    } modal;
+
+    int pans = 0;
+    int others = 0;
+    ORL::ControlMap controls;
+    controls.bind_op("create_joint", modal);
+    controls.bind_op("camera_pan",
+        [&pans](const ORL::InputEvent&) { ++pans; });
+    controls.bind_op("select",
+        [&others](const ORL::InputEvent&) { ++others; });
+
+    controls.map(ORL::InputSpec{
+        ORL::InputSpec::Type::Key,
+        static_cast<int>(vkkk::Key::J),
+        static_cast<int>(vkkk::InputAction::Press),
+        0,
+    }, "create_joint");
+    const ORL::InputSpec drag{
+        ORL::InputSpec::Type::MouseDrag,
+        static_cast<int>(vkkk::MouseButton::Middle),
+        static_cast<int>(vkkk::InputAction::Press),
+        0,
+    };
+    controls.map(drag, "camera_pan");
+    controls.map(drag, "select");
+
+    ORL::InputEvent enter;
+    enter.kind = ORL::InputEvent::Kind::Key;
+    enter.action = vkkk::InputAction::Press;
+    enter.key = vkkk::Key::J;
+    controls.dispatch_event(enter);
+    REQUIRE(modal.engaged);
+
+    ORL::InputEvent move;
+    move.kind = ORL::InputEvent::Kind::MouseDrag;
+    move.button = vkkk::MouseButton::Middle;
+    controls.dispatch_event(move);
+    REQUIRE(pans == 1);
+    REQUIRE(others == 0);
+    REQUIRE(modal.evals == 1);
+}
+
 TEST_CASE("controller attachments preserve target-local transforms",
     "[scene-graph][attachment]")
 {

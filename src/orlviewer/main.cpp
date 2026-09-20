@@ -23,9 +23,6 @@
 #if ORL_USE_QT6
 #include "gui/qt_backend.hpp"
 #include <QApplication>
-#include <QKeySequence>
-#include <QString>
-#include <QShortcut>
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
 #else
@@ -222,16 +219,6 @@ int main(int argc, char** argv) {
     if (node_graph_editor != nullptr) {
         node_graph_editor->set_selection(&selection);
     }
-    auto* open_project_shortcut = new QShortcut(
-        QKeySequence(QStringLiteral("Ctrl+O")),
-        window_backend.main_window());
-    open_project_shortcut->setContext(Qt::ApplicationShortcut);
-    QObject::connect(open_project_shortcut, &QShortcut::activated,
-        [node_graph_editor] {
-            if (node_graph_editor != nullptr) {
-                node_graph_editor->load_project_file();
-            }
-        });
     auto* property_editor = new ORL::PropertyEditor(selection, components);
     if (window_backend.set_hud_panel(property_editor, "Properties") < 0) {
         delete property_editor;
@@ -452,6 +439,26 @@ int main(int argc, char** argv) {
     controls.bind_op("camera_zoom", [&](const ORL::InputEvent& event) {
         navigator.zoom(static_cast<float>(event.scroll_y));
     });
+#if ORL_USE_QT6
+    controls.bind_op("open_project",
+        [node_graph_editor](const ORL::InputEvent&) {
+            if (node_graph_editor != nullptr) {
+                node_graph_editor->load_project_file();
+            }
+        });
+    controls.bind_op("save_project",
+        [node_graph_editor](const ORL::InputEvent&) {
+            if (node_graph_editor != nullptr) {
+                node_graph_editor->save_project_file(false);
+            }
+        });
+    controls.bind_op("save_project_as",
+        [node_graph_editor](const ORL::InputEvent&) {
+            if (node_graph_editor != nullptr) {
+                node_graph_editor->save_project_file(true);
+            }
+        });
+#endif
     controls.bind_edit_op("load_model", load_model);
     controls.bind_edit_op("clear_scene", clear_scene);
     controls.bind_edit_op("create_joint", create_joint);
@@ -594,6 +601,9 @@ int main(int argc, char** argv) {
         camera.ratio = static_cast<float>(extent.width) /
                        static_cast<float>(extent.height == 0 ? 1 : extent.height);
         navigator.update_ubo();
+        if (create_joint.is_active()) {
+            create_joint.refresh_preview();
+        }
         if (auto* grid = viewport.find_feature(grid_handle)) {
             grid->visible = show_grid && !navigator.orthographic;
         }

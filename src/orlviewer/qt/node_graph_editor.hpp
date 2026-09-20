@@ -46,6 +46,7 @@ public:
         ComponentId weight_id, ComponentId deformer_id);
     void set_selection(Selection* selection) { project_selection = selection; }
     bool load_project_file();
+    bool save_project_file(bool save_as);
     void set_stage(orlgraph::GraphStage stage);
     orlgraph::GraphStage stage() const { return stage_; }
     void set_scene_input_catalog(const SceneInputCatalog* catalog);
@@ -126,7 +127,6 @@ private:
     const orlgraph::NodeRegistry& active_registry() const { return *registry_; }
     void notify_graph_changed();
     void rebuild_view();
-    bool save_graph_file(bool save_as);
     void create_node(const orlgraph::StableId& definition_id, const QPointF& scene_position);
     void create_graph_input(const orlgraph::StableId& template_id,
         const QPointF& scene_position);

@@ -715,11 +715,21 @@ bool validate_component_references(const SavedComponents& components,
     std::unordered_map<std::uint64_t, ComponentKind> kinds;
     for (const auto& value : components.joints) {
         kinds.emplace(value.id, ComponentKind::Joint);
-        if (value.value.parent < -1
-            || value.value.parent
-                >= static_cast<std::int64_t>(components.joints.size()))
+    }
+    for (const auto& value : components.joints) {
+        if (value.value.parent == -1) {
+            continue;
+        }
+        if (value.value.parent <= 0
+            || static_cast<std::uint64_t>(value.value.parent) == value.id)
         {
-            errors.emplace_back("Project joint parent index is invalid");
+            errors.emplace_back("Project joint parent id is invalid");
+            continue;
+        }
+        const auto found = kinds.find(
+            static_cast<std::uint64_t>(value.value.parent));
+        if (found == kinds.end() || found->second != ComponentKind::Joint) {
+            errors.emplace_back("Project joint parent id is invalid");
         }
     }
     for (const auto& value : components.locators) {
@@ -785,15 +795,27 @@ Json serialize_components(const ComponentManager& components,
     Json result(rapidjson::kObjectType);
 
     Json joints(rapidjson::kArrayType);
-    for (const ComponentId id : components.packed_joint_ids()) {
+    const auto packed_joint_ids = components.packed_joint_ids();
+    for (const ComponentId id : packed_joint_ids) {
         const auto* meta = components.find(id);
         const auto* value = components.joint(id);
         if (meta == nullptr || value == nullptr) {
             continue;
         }
+        auto joint = *value;
+        if (joint.parent >= 0
+            && static_cast<std::size_t>(joint.parent)
+                < packed_joint_ids.size())
+        {
+            joint.parent = static_cast<std::int64_t>(
+                packed_joint_ids[static_cast<std::size_t>(joint.parent)]
+                    .value);
+        } else {
+            joint.parent = -1;
+        }
         Json entry(rapidjson::kObjectType);
         add_component_header(entry, id.value, meta->name, allocator);
-        add_joint(entry, "value", *value, allocator);
+        add_joint(entry, "value", joint, allocator);
         joints.PushBack(std::move(entry), allocator);
     }
     add(result, "joints", std::move(joints), allocator);
@@ -974,8 +996,26 @@ bool apply_components(const SavedComponents& saved,
     ComponentId deformer_id, std::vector<std::string>& errors)
 {
     std::unordered_map<std::uint64_t, ComponentId> id_map;
+    std::unordered_map<std::uint64_t, std::int64_t> joint_packed;
+    for (std::size_t index = 0; index < saved.joints.size(); ++index) {
+        joint_packed.emplace(
+            saved.joints[index].id, static_cast<std::int64_t>(index));
+    }
     for (const auto& value : saved.joints) {
-        const auto id = components.create_joint(value.name, value.value);
+        auto joint = value.value;
+        if (joint.parent == -1) {
+            // Root.
+        } else {
+            const auto found = joint_packed.find(
+                static_cast<std::uint64_t>(joint.parent));
+            if (found == joint_packed.end()) {
+                errors.emplace_back(
+                    "Unable to restore joint '" + value.name + "'");
+                return false;
+            }
+            joint.parent = found->second;
+        }
+        const auto id = components.create_joint(value.name, joint);
         if (!id) {
             errors.emplace_back("Unable to restore joint '" + value.name + "'");
             return false;

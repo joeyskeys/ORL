@@ -236,10 +236,11 @@ struct CameraNavigator {
 
     // Place the camera on the semantic "from" axis, looking at the pivot.
     // Numpad 1/3/7: front (from in), right (from right), top (from up).
+    // Top uses world +Z as camera up so look-at rebuilds right as +X.
     // Pressing the same view key again returns to perspective.
     void look_front() { toggle_look(OrthoView::Front, semantic_in, semantic_up); }
     void look_right() { toggle_look(OrthoView::Right, semantic_right, semantic_up); }
-    void look_top() { toggle_look(OrthoView::Top, semantic_up, semantic_in); }
+    void look_top() { toggle_look(OrthoView::Top, semantic_up, {0.0f, 0.0f, 1.0f}); }
 
     void look_from(glm::vec3 from, glm::vec3 up) {
         const float from_len = glm::length(from);

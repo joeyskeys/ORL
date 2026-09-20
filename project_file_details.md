@@ -32,10 +32,10 @@ This is the usual source of bad generated files.
 
 | Integer | Meaning | Where it appears | Example |
 |---|---|---|---|
-| **Component ID** | File-local stable handle for one component | `joints[].id`, `locators[].id`, `controllers[].id`, `constraints[].id`, constraint `root` / `mid` / `end` / `target` / `pole`, attachment `controller` / `target` | `"id": 7` |
-| **Packed index** | Position of a **live** joint (or locator) in the packed array | `joints[].value.parent`, weight `values[].joint` | `"parent": 0` |
+| **Component ID** | File-local stable handle for one component | `joints[].id`, `joints[].value.parent`, `locators[].id`, `controllers[].id`, `constraints[].id`, constraint `root` / `mid` / `end` / `target` / `pole`, attachment `controller` / `target` | `"id": 7` |
+| **Packed index** | Position of a **live** joint (or locator) in the packed array | weight `values[].joint`; runtime `Joint.parent` after load | `"joint": 0` |
 
-They are not interchangeable.
+They are not interchangeable. The file stores parent as a component ID. The loader rewrites it to a packed index for the runtime joint buffer.
 
 ### Component ID
 
@@ -51,38 +51,34 @@ They are not interchangeable.
 
 ### Packed index
 
-- Signed integer. `-1` means “no parent”.
-- For joints, it is an index into **`components.joints` as written in the
-  file**, which is also the packed creation order after load.
-- `parent` is **not** a component ID. If the parent joint has `"id": 7` but
-  sits at array slot 0, children must store `"parent": 0`, not `7`.
-- The loader validates `parent` against `joints.length`, not against IDs:
-  `-1 <= parent < joints.size()`.
-- After a joint is deleted in the viewer, packed indices are compacted and
-  surviving `parent` values are rewritten. Generated files should already
-  be compacted: no holes in the packed range, parents pointing only at
-  earlier-or-any live slots that exist in the array.
+- Signed integer used at **runtime** after load (`Joint.parent`) and in
+  weight `values[].joint`.
+- `-1` means “no parent”.
+- For joints, it is an index into the live packed joint array, which is
+  the `components.joints` array order after load.
+- Do **not** write a packed index into `joints[].value.parent` in the
+  file. Write the parent joint's component ID instead.
 
 Correct pair:
 
 ```json
 "joints": [
   { "id": 10, "name": "root",  "value": { "parent": -1, "...": "..." } },
-  { "id": 20, "name": "spine", "value": { "parent": 0,  "...": "..." } }
+  { "id": 20, "name": "spine", "value": { "parent": 10, "...": "..." } }
 ]
 ```
 
-`spine.parent == 0` because `root` is `joints[0]`. `id` 10/20 are only for
-constraints and attachments.
+`spine.parent == 10` because `root` has `"id": 10`. Load maps that ID to
+packed slot 0.
 
 Wrong:
 
 ```json
-{ "id": 20, "name": "spine", "value": { "parent": 10 } }
+{ "id": 20, "name": "spine", "value": { "parent": 0 } }
 ```
 
-That says “packed slot 10 is the parent”. Load rejects it unless there are
-at least 11 joints.
+`0` is not a valid component ID. The second joint would appear to parent
+to a missing id rather than to the joint with `"id": 1`.
 
 ---
 
@@ -141,7 +137,7 @@ those. Generated names must not collide with them.
 Load order:
 
 1. Validate graphs against the registry.
-2. Validate component IDs, names, parent indices, constraint refs,
+2. Validate component IDs, names, parent IDs, constraint refs,
    attachment refs.
 3. Destroy existing joints, locators, controllers, constraints, and curves.
 4. Recreate joints **in array order**, then locators, then controllers.
@@ -149,9 +145,9 @@ Load order:
 6. Optionally overwrite the persistent weight / deformer buffers.
 7. Install solver + deformer graphs.
 
-Packed joint order after load **is the `joints` array order**. Put parents
-before children if you want parent indices to be smaller, but the only hard
-rule is that `parent` indexes a slot that exists in that array.
+Packed joint order after load **is the `joints` array order**. File
+`parent` values are component IDs of joints in that array; load converts
+them to packed indices.
 
 ### 3.1 Joint
 
@@ -173,7 +169,7 @@ rule is that `parent` indexes a slot that exists in that array.
 |---|---|---|
 | `id` | uint64 `>= 1` | File component ID. Remapped on load. |
 | `name` | non-empty string | Unique. Graph `find_joint` matches this name. |
-| `value.parent` | int64 | Packed index into `joints[]`, or `-1`. |
+| `value.parent` | int64 | Parent joint **component ID**, or `-1`. |
 | `value.selected` | int64 | Optional; default 0. Viewer selection flag. |
 | `value.translation` | 3 floats | **Parent-local** translation. Root is world. |
 | `value.rotation` | 4 floats | Quaternion `x, y, z, w`. Identity is `[0,0,0,1]`. |
@@ -301,10 +297,9 @@ controller world xform).
 
 `bound: true` is required for the fallback solver to evaluate the chain.
 
-`root` / `mid` / `end` packed parents must form a two-bone chain:
-`joints[end].parent == mid_index` and `joints[mid].parent == root_index`.
-The component IDs of those three joints are what go in the constraint, not
-those packed indices.
+`root` / `mid` / `end` must form a two-bone chain in the file:
+the end joint's `parent` ID is `mid`, and the mid joint's `parent` ID is
+`root`. The same component IDs go in the constraint.
 
 This component path runs only when the solver graph is empty. A populated
 solver graph must encode the same IK with `orlrig.solver.ik_two_bone` and
@@ -324,8 +319,8 @@ Omitted in a skeleton-only file.
 }
 ```
 
-`values[].joint` is a **packed joint index**, same namespace as
-`joints[].value.parent`. Layout is vertex-major:
+`values[].joint` is a **packed joint index**, not a component ID.
+Layout is vertex-major:
 `values[vertex * weight_count + slot]`. Default `weight_count` is 5.
 These integers are **not** remapped on load.
 
@@ -527,8 +522,9 @@ Constant values wrap a type plus a tagged payload:
 
 5. **Packed buffers are rebuilt from live objects**  
    Deleting a joint frees it and removes it from `joint_order`. File IDs
-   are never reused in a running session, but that does not matter in the
-   file as long as IDs are unique and `parent` is a packed index.
+   are never reused in a running session. Save writes `parent` as the
+   parent joint's runtime component ID; load maps that ID back to a packed
+   index.
 
 ---
 
@@ -536,7 +532,7 @@ Constant values wrap a type plus a tagged payload:
 
 1. List joints in the packed order you want after load.
 2. Assign each a unique `id >= 1` and a unique `name`.
-3. Set `value.parent` to the **array index** of the parent joint, or `-1`.
+3. Set `value.parent` to the parent joint's **component ID**, or `-1`.
 4. Store local translation/rotation/scale, not world, except for the root.
 5. Give locators their own IDs. Put IK targets at the end-joint **world**
    position; poles via the two-bone pole vector of root/mid/end world
@@ -555,7 +551,7 @@ Worked IDs (illustrative, not required values):
 
 ```
 joints packed:  [0]=root id=1, [1]=mid id=2, [2]=end id=3
-parents:        root -1, mid 0, end 1
+file parents:   root -1, mid 1, end 2
 locator ids:    target=10, pole=11
 controller ids: fk_root=20, ik_target=21, ik_pole=22
 constraint:     root=1, mid=2, end=3, target=10, pole=11

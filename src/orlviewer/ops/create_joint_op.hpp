@@ -38,6 +38,7 @@ public:
     bool is_active() const { return active_; }
     void on_cancel();
     const Preview& preview() const { return preview_; }
+    void refresh_preview();
 
 private:
     // Keep this distinct from VpOperation::enter(), which ControlMap
@@ -46,7 +47,6 @@ private:
     void exit();
     void place(double cursor_x, double cursor_y);
     void update_preview(double cursor_x, double cursor_y);
-    void refresh_preview();
     bool hit_pivot_plane(double cursor_x, double cursor_y, glm::vec3& world) const;
     std::string unique_joint_name() const;
 

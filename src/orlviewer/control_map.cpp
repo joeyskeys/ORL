@@ -729,6 +729,7 @@ void ControlMap::dispatch(const InputEvent& event) {
             modal.clear();
         }
         else {
+            dispatch_view_navigation(event);
             invoke_modal(*current, event);
             if (current->active && !current->active()) {
                 if (modal_scope_active_) {
@@ -772,6 +773,26 @@ void ControlMap::dispatch(const InputEvent& event) {
                 op->eval(event);
                 end_operation_scope(*op);
             }
+        }
+    }
+}
+
+void ControlMap::dispatch_view_navigation(const InputEvent& event) {
+    for (const auto& binding : bindings_) {
+        if (!scope_matches(binding) || !matches(binding.input, event)) {
+            continue;
+        }
+        for (const auto& name : binding.ops) {
+            if (name != "camera_orbit" && name != "camera_pan"
+                && name != "camera_zoom")
+            {
+                continue;
+            }
+            auto* op = find_op(name, &event);
+            if (op == nullptr || op->mode == OpMode::Modal || !op->eval) {
+                continue;
+            }
+            op->eval(event);
         }
     }
 }

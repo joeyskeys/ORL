@@ -206,6 +206,7 @@ private:
     };
 
     void dispatch(const InputEvent& event);
+    void dispatch_view_navigation(const InputEvent& event);
     void invoke_modal(BoundOp& op, const InputEvent& event);
     void begin_operation_scope(BoundOp& op);
     void end_operation_scope(BoundOp& op);
