@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <rapidjson/document.h>
+#include <rapidjson/prettywriter.h>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
 
@@ -203,6 +204,14 @@ void add_deformer_buffer(Json& object, const exec::OrlBuffer& buffer,
 std::string write_json(const Json& value) {
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    value.Accept(writer);
+    return buffer.GetString();
+}
+
+std::string write_pretty_json(const Json& value) {
+    rapidjson::StringBuffer buffer;
+    rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+    writer.SetIndent(' ', 2);
     value.Accept(writer);
     return buffer.GetString();
 }
@@ -1146,7 +1155,7 @@ ProjectIoResult save_project_json(
     if (!output.is_open()) {
         return failure("Unable to open project output file: " + path);
     }
-    output << write_json(document);
+    output << write_pretty_json(document);
     if (!output) {
         return failure("Unable to write project output file: " + path);
     }
