@@ -44,6 +44,36 @@ bool create_node(orlgraph::GraphModule& graph, const orlgraph::NodeRegistry& reg
 bool delete_node(orlgraph::GraphModule& graph, const orlgraph::StableId& node_id,
     std::string* error = nullptr);
 
+inline constexpr double kFramePadding = 20.0;
+inline constexpr double kFrameHeader = 32.0;
+inline constexpr double kFrameCollapsedHeight = 36.0;
+inline constexpr double kFrameCollapsedMinWidth = 160.0;
+
+struct FrameMemberBounds {
+    std::string id;
+    double x = 0.0;
+    double y = 0.0;
+    double width = 0.0;
+    double height = 0.0;
+};
+
+struct FrameDesc {
+    std::string id;
+    std::string title;
+    double x = 0.0;
+    double y = 0.0;
+    double width = 0.0;
+    double height = 0.0;
+    bool collapsed = false;
+    std::vector<std::string> members;
+};
+
+// Build an editor-only frame around the given members. Does not modify
+// GraphModule; the caller stores the result in the node-graph layout.
+bool create_frame(const std::vector<FrameMemberBounds>& members,
+    const std::vector<std::string>& existing_ids, FrameDesc* created,
+    std::string* error = nullptr);
+
 } // namespace ORL::node_graph
 
 #endif

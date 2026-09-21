@@ -94,7 +94,8 @@ to a missing id rather than to the joint with `"id": 1`.
     "evaluate_orl": true
   },
   "graph": { },
-  "components": { }
+  "components": { },
+  "editor": { }
 }
 ```
 
@@ -109,9 +110,66 @@ Optional:
 
 - `evaluation.evaluate_orl` (bool). Default if omitted: `true`.
   When true, the viewer runs solver evaluation after load.
+- `editor` (object). Viewer-only UI state. Not part of GraphModule /
+  orlgraph. Omitted files load with the default node-graph auto-layout.
+  See §2.1.
 
 `header.format_version` and component IDs must parse as JSON integers, not
 floats.
+
+### 2.1 `editor` (optional)
+
+Persists the node-graph canvas so switching solver/deformer and reopening
+the file keep each stage's node positions, pan, and zoom.
+
+```json
+"editor": {
+  "node_graph": {
+    "solver": {
+      "pan": [48.0, 48.0],
+      "zoom": 1.0,
+      "nodes": [
+        { "id": "ik_two_bone_1", "x": 64.0, "y": 80.0 },
+        { "id": "__graph_input__:joints", "x": -280.0, "y": 80.0 }
+      ]
+    },
+    "deformer": {
+      "pan": [48.0, 48.0],
+      "zoom": 1.0,
+      "nodes": []
+    }
+  }
+}
+```
+
+- `editor.node_graph.solver` / `editor.node_graph.deformer` are independent.
+  Missing stages keep the default pan `[48, 48]`, zoom `1`, and auto-placed
+  nodes.
+- `pan`: length-2 array `[x, y]` in canvas pixels.
+- `zoom`: number, typically `0.35`–`2.5`.
+- `nodes[]`: `{ "id", "x", "y" }`. `id` is the graph node id, or
+  `__graph_input__:<port>` / `__graph_output__:<port>` for interface
+  nodes. Unknown ids are ignored. Nodes missing from this list are
+  auto-placed.
+- `frames[]` (optional): editor-only groups around nodes. Missing means
+  no frames. Each entry is:
+
+```json
+{
+  "id": "frame",
+  "title": "Frame",
+  "x": 10.0,
+  "y": 20.0,
+  "width": 400.0,
+  "height": 280.0,
+  "collapsed": false,
+  "members": ["ik_two_bone_1", "__graph_input__:joints"]
+}
+```
+
+  `x`/`y`/`width`/`height` are the expanded canvas rect. `collapsed`
+  hides member nodes and exposes one pseudo input and one pseudo output
+  on the frame. Member ids that do not exist after load are dropped.
 
 ---
 
@@ -564,6 +622,8 @@ constraint:     root=1, mid=2, end=3, target=10, pole=11
 | Topic | Code |
 |---|---|
 | Save / load | `src/orlviewer/project_serialization.cpp` |
+| Node-graph layout (editor-only) | `src/orlviewer/qt/node_graph_editor.cpp` |
+| Node-graph frame create | `src/orlviewer/node_graph/node_ops.cpp` |
 | Component IDs, packed order | `src/orlexec/orlrig/component_store.hpp/.cpp` |
 | Joint local/world, parent index | `src/orlexec/orlrig/joint.hpp` |
 | Attachments | `src/orlviewer/component_manager.hpp/.cpp` |

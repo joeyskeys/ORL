@@ -170,6 +170,17 @@
       }
     },
     {
+      "op": "create_node_frame",
+      "scope": "panel",
+      "panel": "node_graph",
+      "input": {
+        "type": "key",
+        "key": "O",
+        "action": "press",
+        "mods": ["shift"]
+      }
+    },
+    {
       "op": "toggle_orl_evaluation",
       "scope": "window",
       "input": {

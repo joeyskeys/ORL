@@ -408,6 +408,16 @@ int main(int argc, char** argv) {
                 node_graph_editor->set_stage(orlgraph::GraphStage::Deformer);
             }
         });
+    controls.bind_op_variant("create_node_frame",
+        [node_graph_editor, panel_has_focus](const ORL::InputEvent&) {
+            return node_graph_editor != nullptr
+                && panel_has_focus(node_graph_editor);
+        },
+        [node_graph_editor](const ORL::InputEvent&) {
+            if (node_graph_editor != nullptr) {
+                node_graph_editor->create_frame_from_selection();
+            }
+        });
     controls.bind_op_variant("display_mode_switch",
         [node_graph_editor, panel_has_focus](const ORL::InputEvent&) {
             return node_graph_editor == nullptr

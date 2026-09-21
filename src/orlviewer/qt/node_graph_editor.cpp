@@ -11,11 +11,13 @@
 #include <QFontMetrics>
 #include <QHash>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QStringList>
 #include <QWheelEvent>
@@ -89,6 +91,8 @@ void NodeGraphEditor::set_graph(const orlgraph::GraphModule& module,
     scene_graph_context_ = nullptr;
     attached_graph_revision_ = 0;
     graph_file_path_.reset();
+    clear_stage_layouts();
+    nodes_.clear();
     rebuild_view();
 }
 
@@ -104,6 +108,8 @@ void NodeGraphEditor::set_graph(orlgraph::GraphModule& module,
     scene_graph_context_ = nullptr;
     attached_graph_revision_ = 0;
     graph_file_path_.reset();
+    clear_stage_layouts();
+    nodes_.clear();
     rebuild_view();
 }
 
@@ -124,6 +130,8 @@ void NodeGraphEditor::set_scene_graph_context(SceneGraphContext* context)
         attached_graph_revision_ = scene_graph_context_->graph_revision();
     }
     graph_file_path_.reset();
+    clear_stage_layouts();
+    nodes_.clear();
     rebuild_view();
 }
 
@@ -179,6 +187,9 @@ bool NodeGraphEditor::load_project_file()
     scene_graph_context_->refresh_scene_inputs();
     attached_graph_revision_ = scene_graph_context_->graph_revision();
     graph_file_path_ = path;
+    import_node_graph_layout(loaded.node_graph_layout);
+    nodes_.clear();
+    apply_stage_view();
     rebuild_view();
 
     runtime_config.evaluate_orl = loaded.evaluate_orl;
@@ -197,6 +208,8 @@ void NodeGraphEditor::set_stage(orlgraph::GraphStage stage)
     if (stage_ == stage && graph_ != nullptr) {
         return;
     }
+    capture_stage_layout();
+    nodes_.clear();
     stage_ = stage;
     if (scene_graph_context_ != nullptr) {
         scene_graph_context_->ensure_stage_graphs();
@@ -206,6 +219,7 @@ void NodeGraphEditor::set_stage(orlgraph::GraphStage stage)
         graph_ = stage_ == orlgraph::GraphStage::Solver
             ? &solver_graph_storage_ : &deformer_graph_storage_;
     }
+    apply_stage_view();
     rebuild_view();
 }
 
@@ -214,6 +228,72 @@ void NodeGraphEditor::set_scene_input_catalog(
 {
     scene_input_catalog_ = catalog;
     rebuild_view();
+}
+
+void NodeGraphEditor::create_frame_from_selection()
+{
+    if (qobject_cast<QLineEdit*>(focusWidget()) != nullptr
+        || qobject_cast<QComboBox*>(focusWidget()) != nullptr)
+    {
+        return;
+    }
+
+    std::vector<node_graph::FrameMemberBounds> members;
+    members.reserve(static_cast<std::size_t>(selectedNodes.size()));
+    for (int index : selectedNodes) {
+        if (index < 0 || index >= nodes_.size() || node_is_hidden(nodes_[index])) {
+            continue;
+        }
+        const Node& node = nodes_[index];
+        members.push_back({
+            node.id.toStdString(),
+            node.position.x(),
+            node.position.y(),
+            node.size.width(),
+            node.size.height(),
+        });
+    }
+
+    std::vector<std::string> existing_ids;
+    auto& frames = current_frames();
+    existing_ids.reserve(static_cast<std::size_t>(frames.size()));
+    for (const auto& frame : frames) {
+        existing_ids.push_back(frame.id.toStdString());
+    }
+
+    node_graph::FrameDesc created;
+    std::string error;
+    if (!node_graph::create_frame(members, existing_ids, &created, &error)) {
+        return;
+    }
+
+    const QString created_id = QString::fromStdString(created.id);
+    for (auto& frame : frames) {
+        frame.members.erase(std::remove_if(frame.members.begin(),
+            frame.members.end(),
+            [&created](const QString& member) {
+                return std::find(created.members.begin(), created.members.end(),
+                    member.toStdString()) != created.members.end();
+            }), frame.members.end());
+    }
+    frames.erase(std::remove_if(frames.begin(), frames.end(),
+        [](const Frame& frame) { return frame.members.isEmpty(); }),
+        frames.end());
+
+    Frame view;
+    view.id = created_id;
+    view.title = QString::fromStdString(created.title);
+    view.position = QPointF{created.x, created.y};
+    view.size = QSizeF{created.width, created.height};
+    view.collapsed = created.collapsed;
+    for (const auto& member : created.members) {
+        view.members.push_back(QString::fromStdString(member));
+    }
+    frames.push_back(std::move(view));
+    capture_stage_layout();
+    rebuild_frame_controls();
+    select_only_frame(frames.size() - 1);
+    update();
 }
 
 void NodeGraphEditor::refresh_scene_inputs()
@@ -226,6 +306,7 @@ void NodeGraphEditor::refresh_scene_inputs()
     }
     refresh_find_controls();
     position_find_controls();
+    position_frame_controls();
 }
 
 void NodeGraphEditor::notify_graph_changed()
@@ -239,25 +320,134 @@ void NodeGraphEditor::notify_graph_changed()
     }
 }
 
+NodeGraphEditor::StageLayout& NodeGraphEditor::stage_layout(
+    orlgraph::GraphStage stage)
+{
+    return stage == orlgraph::GraphStage::Solver
+        ? solver_layout_ : deformer_layout_;
+}
+
+const NodeGraphEditor::StageLayout& NodeGraphEditor::stage_layout(
+    orlgraph::GraphStage stage) const
+{
+    return stage == orlgraph::GraphStage::Solver
+        ? solver_layout_ : deformer_layout_;
+}
+
+void NodeGraphEditor::capture_stage_layout()
+{
+    auto& layout = stage_layout(stage_);
+    layout.pan = pan_;
+    layout.zoom = zoom_;
+    layout.nodes.clear();
+    for (const auto& node : nodes_) {
+        layout.nodes.insert(node.id, node.position);
+    }
+}
+
+void NodeGraphEditor::apply_stage_view()
+{
+    const auto& layout = stage_layout(stage_);
+    pan_ = layout.pan;
+    zoom_ = layout.zoom;
+}
+
+void NodeGraphEditor::clear_stage_layouts()
+{
+    solver_layout_ = {};
+    deformer_layout_ = {};
+    pan_ = solver_layout_.pan;
+    zoom_ = solver_layout_.zoom;
+}
+
+NodeGraphLayout NodeGraphEditor::export_node_graph_layout()
+{
+    capture_stage_layout();
+    NodeGraphLayout layout;
+    const auto copy_stage = [](const StageLayout& source,
+        NodeGraphStageLayout& destination) {
+        destination.pan_x = source.pan.x();
+        destination.pan_y = source.pan.y();
+        destination.zoom = source.zoom;
+        for (auto it = source.nodes.constBegin();
+             it != source.nodes.constEnd(); ++it)
+        {
+            destination.nodes[it.key().toStdString()] = {
+                it.value().x(), it.value().y()};
+        }
+        for (const auto& frame : source.frames) {
+            NodeGraphFrameLayout saved;
+            saved.id = frame.id.toStdString();
+            saved.title = frame.title.toStdString();
+            saved.x = frame.position.x();
+            saved.y = frame.position.y();
+            saved.width = frame.size.width();
+            saved.height = frame.size.height();
+            saved.collapsed = frame.collapsed;
+            saved.members.reserve(static_cast<std::size_t>(frame.members.size()));
+            for (const auto& member : frame.members) {
+                saved.members.push_back(member.toStdString());
+            }
+            destination.frames.push_back(std::move(saved));
+        }
+    };
+    copy_stage(solver_layout_, layout.solver);
+    copy_stage(deformer_layout_, layout.deformer);
+    return layout;
+}
+
+void NodeGraphEditor::import_node_graph_layout(const NodeGraphLayout& layout)
+{
+    const auto copy_stage = [](const NodeGraphStageLayout& source,
+        StageLayout& destination) {
+        destination.pan = QPointF{source.pan_x, source.pan_y};
+        destination.zoom = source.zoom;
+        destination.nodes.clear();
+        destination.frames.clear();
+        for (const auto& [id, position] : source.nodes) {
+            destination.nodes.insert(
+                QString::fromStdString(id),
+                QPointF{position[0], position[1]});
+        }
+        for (const auto& frame : source.frames) {
+            Frame view;
+            view.id = QString::fromStdString(frame.id);
+            view.title = QString::fromStdString(frame.title);
+            view.position = QPointF{frame.x, frame.y};
+            view.size = QSizeF{frame.width, frame.height};
+            view.collapsed = frame.collapsed;
+            for (const auto& member : frame.members) {
+                view.members.push_back(QString::fromStdString(member));
+            }
+            destination.frames.push_back(std::move(view));
+        }
+    };
+    copy_stage(layout.solver, solver_layout_);
+    copy_stage(layout.deformer, deformer_layout_);
+}
+
 void NodeGraphEditor::rebuild_view()
 {
     clear_find_controls();
-    QHash<QString, QPointF> previous_positions;
+    clear_frame_controls();
+    auto& stored_nodes = stage_layout(stage_).nodes;
     for (const auto& node : nodes_) {
-        previous_positions.insert(node.id, node.position);
+        stored_nodes.insert(node.id, node.position);
     }
 
     nodes_.clear();
     links_.clear();
     selected_node_ = -1;
     selectedNodes.clear();
+    selectedFrames.clear();
     dragging_node_ = -1;
+    draggingFrame = -1;
     boxSelecting = false;
     pending_connection_ = {};
 
-    const auto restore_position = [&previous_positions](Node& node) {
-        if (const auto previous = previous_positions.constFind(node.id);
-            previous != previous_positions.constEnd())
+    const auto restore_position = [&stored_nodes](Node& node) {
+        if (const auto previous = stored_nodes.constFind(node.id);
+            previous != stored_nodes.constEnd())
         {
             node.position = previous.value();
         }
@@ -428,7 +618,9 @@ void NodeGraphEditor::rebuild_view()
                 source_node, source_port, destination_node, destination_port});
         }
     }
+    prune_frames();
     rebuild_find_controls();
+    rebuild_frame_controls();
     update();
 }
 
@@ -457,9 +649,10 @@ bool NodeGraphEditor::save_project_file(bool save_as)
 
     ProjectIoResult saved;
     if (scene_graph_context_ != nullptr && project_components != nullptr) {
+        const NodeGraphLayout layout = export_node_graph_layout();
         saved = save_project_json(path.toStdString(), *scene_graph_context_,
             *project_components, project_weight_id, project_deformer_id,
-            runtime_config.evaluate_orl);
+            runtime_config.evaluate_orl, &layout);
     } else {
         std::vector<orlgraph::Diagnostic> diagnostics;
         if (scene_graph_context_ != nullptr) {
@@ -515,6 +708,7 @@ void NodeGraphEditor::create_node(const orlgraph::StableId& definition_id,
         select_only(index);
         break;
     }
+    capture_stage_layout();
     update();
 }
 
@@ -569,6 +763,7 @@ void NodeGraphEditor::create_graph_input(
         select_only(index);
         break;
     }
+    capture_stage_layout();
     update();
 }
 
@@ -745,7 +940,7 @@ void NodeGraphEditor::position_find_controls()
             [&control](const Node& node) {
                 return node.id == control.node_id;
             });
-        if (node_iterator == nodes_.cend()) {
+        if (node_iterator == nodes_.cend() || node_is_hidden(*node_iterator)) {
             control.combo->setVisible(false);
             continue;
         }
@@ -766,6 +961,108 @@ void NodeGraphEditor::position_find_controls()
     }
 }
 
+void NodeGraphEditor::clear_frame_controls()
+{
+    for (const auto& control : frameControls) {
+        delete control.title;
+    }
+    frameControls.clear();
+}
+
+void NodeGraphEditor::rebuild_frame_controls()
+{
+    clear_frame_controls();
+    auto& frames = current_frames();
+    for (int index = 0; index < frames.size(); ++index) {
+        auto* title = new QLineEdit(this);
+        title->setText(frames[index].title);
+        title->setPlaceholderText(QStringLiteral("Frame"));
+        title->setFrame(false);
+        title->setStyleSheet(QStringLiteral(
+            "QLineEdit { background: transparent; color: #f6f6f6; border: none; }"
+            "QLineEdit:focus { background: #1b1b1b; border: 1px solid #3d3d3d; }"));
+        const QString frame_id = frames[index].id;
+        QObject::connect(title, &QLineEdit::textChanged, this,
+            [this, frame_id](const QString& text) {
+                auto& frames = current_frames();
+                for (auto& frame : frames) {
+                    if (frame.id != frame_id) {
+                        continue;
+                    }
+                    frame.title = text;
+                    capture_stage_layout();
+                    position_frame_controls();
+                    update();
+                    return;
+                }
+            });
+        frameControls.push_back(FrameControl{frame_id, title});
+    }
+    position_frame_controls();
+}
+
+void NodeGraphEditor::position_frame_controls()
+{
+    const auto& frames = current_frames();
+    for (const auto& control : frameControls) {
+        if (control.title == nullptr) {
+            continue;
+        }
+        const auto frame_iterator = std::find_if(frames.cbegin(), frames.cend(),
+            [&control](const Frame& frame) {
+                return frame.id == control.frame_id;
+            });
+        if (frame_iterator == frames.cend()) {
+            control.title->setVisible(false);
+            continue;
+        }
+        const QRectF header = frame_header_rect(*frame_iterator);
+        const QRectF button = collapse_button_rect(*frame_iterator);
+        const QRectF local{
+            button.right() + 8.0,
+            header.top() + 6.0,
+            std::max(40.0, header.right() - 10.0 - (button.right() + 8.0)),
+            header.height() - 12.0};
+        const QRectF viewport{
+            pan_.x() + local.left() * zoom_,
+            pan_.y() + local.top() * zoom_,
+            local.width() * zoom_,
+            std::max(16.0, local.height() * zoom_)};
+        control.title->setGeometry(viewport.toRect());
+        control.title->setVisible(true);
+        control.title->raise();
+    }
+}
+
+void NodeGraphEditor::prune_frames()
+{
+    QSet<QString> node_ids;
+    for (const auto& node : nodes_) {
+        node_ids.insert(node.id);
+    }
+    auto& frames = current_frames();
+    for (auto& frame : frames) {
+        frame.members.erase(std::remove_if(frame.members.begin(),
+            frame.members.end(),
+            [&node_ids](const QString& member) {
+                return !node_ids.contains(member);
+            }), frame.members.end());
+    }
+    frames.erase(std::remove_if(frames.begin(), frames.end(),
+        [](const Frame& frame) { return frame.members.isEmpty(); }),
+        frames.end());
+}
+
+QVector<NodeGraphEditor::Frame>& NodeGraphEditor::current_frames()
+{
+    return stage_layout(stage_).frames;
+}
+
+const QVector<NodeGraphEditor::Frame>& NodeGraphEditor::current_frames() const
+{
+    return stage_layout(stage_).frames;
+}
+
 QPointF NodeGraphEditor::scene_position(const QPointF& viewport_position) const
 {
     return (viewport_position - pan_) / zoom_;
@@ -774,6 +1071,55 @@ QPointF NodeGraphEditor::scene_position(const QPointF& viewport_position) const
 QRectF NodeGraphEditor::node_rect(const Node& node) const
 {
     return QRectF(node.position, node.size);
+}
+
+QRectF NodeGraphEditor::expanded_frame_rect(const Frame& frame) const
+{
+    return QRectF(frame.position, frame.size);
+}
+
+QRectF NodeGraphEditor::collapsed_frame_rect(const Frame& frame) const
+{
+    const QFontMetrics metrics(font());
+    const double title_width = metrics.horizontalAdvance(
+        frame.title.isEmpty() ? QStringLiteral("Frame") : frame.title);
+    const double width = std::max(node_graph::kFrameCollapsedMinWidth,
+        std::min(frame.size.width(), title_width + 56.0));
+    return QRectF(frame.position,
+        QSizeF(width, node_graph::kFrameCollapsedHeight));
+}
+
+QRectF NodeGraphEditor::frame_rect(const Frame& frame) const
+{
+    return frame.collapsed
+        ? collapsed_frame_rect(frame) : expanded_frame_rect(frame);
+}
+
+QRectF NodeGraphEditor::frame_header_rect(const Frame& frame) const
+{
+    const QRectF rect = frame_rect(frame);
+    return QRectF(rect.topLeft(),
+        QSizeF(rect.width(), std::min(rect.height(), node_graph::kFrameHeader)));
+}
+
+QRectF NodeGraphEditor::collapse_button_rect(const Frame& frame) const
+{
+    const QRectF header = frame_header_rect(frame);
+    const double size = 16.0;
+    return QRectF(
+        header.left() + 8.0,
+        header.top() + (header.height() - size) * 0.5,
+        size, size);
+}
+
+QPointF NodeGraphEditor::frame_socket_position(const Frame& frame,
+    bool output) const
+{
+    const QRectF rect = collapsed_frame_rect(frame);
+    return {
+        output ? rect.right() : rect.left(),
+        rect.center().y(),
+    };
 }
 
 QPointF NodeGraphEditor::port_position(const Node& node, bool output, int index) const
@@ -788,11 +1134,52 @@ QPointF NodeGraphEditor::port_position(const Node& node, bool output, int index)
 int NodeGraphEditor::node_at(const QPointF& scene) const
 {
     for (int index = nodes_.size() - 1; index >= 0; --index) {
+        if (node_is_hidden(nodes_[index])) {
+            continue;
+        }
         if (node_rect(nodes_[index]).contains(scene)) {
             return index;
         }
     }
     return -1;
+}
+
+int NodeGraphEditor::frame_at(const QPointF& scene) const
+{
+    const auto& frames = current_frames();
+    for (int index = frames.size() - 1; index >= 0; --index) {
+        if (frame_rect(frames[index]).contains(scene)) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+int NodeGraphEditor::collapse_button_at(const QPointF& scene) const
+{
+    const auto& frames = current_frames();
+    for (int index = frames.size() - 1; index >= 0; --index) {
+        if (collapse_button_rect(frames[index]).contains(scene)) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+int NodeGraphEditor::collapsed_frame_for_node(const QString& node_id) const
+{
+    const auto& frames = current_frames();
+    for (int index = 0; index < frames.size(); ++index) {
+        if (frames[index].collapsed && frames[index].members.contains(node_id)) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+bool NodeGraphEditor::node_is_hidden(const Node& node) const
+{
+    return collapsed_frame_for_node(node.id) >= 0;
 }
 
 int NodeGraphEditor::port_at(const Node& node, bool output,
@@ -814,6 +1201,9 @@ NodeGraphEditor::Socket NodeGraphEditor::socket_at(const QPointF& scene) const
 {
     for (int node_index = nodes_.size() - 1; node_index >= 0; --node_index) {
         const Node& node = nodes_[node_index];
+        if (node_is_hidden(node)) {
+            continue;
+        }
         const int input = port_at(node, false, scene);
         if (input >= 0) {
             return Socket{node_index, input, false};
@@ -823,26 +1213,99 @@ NodeGraphEditor::Socket NodeGraphEditor::socket_at(const QPointF& scene) const
             return Socket{node_index, output, true};
         }
     }
+
+    const auto& frames = current_frames();
+    const double radius = 10.0 / zoom_;
+    for (int index = frames.size() - 1; index >= 0; --index) {
+        if (!frames[index].collapsed) {
+            continue;
+        }
+        const QPointF input = frame_socket_position(frames[index], false);
+        if (std::hypot(input.x() - scene.x(), input.y() - scene.y()) <= radius) {
+            return Socket{-1, 0, false, index};
+        }
+        const QPointF output = frame_socket_position(frames[index], true);
+        if (std::hypot(output.x() - scene.x(), output.y() - scene.y()) <= radius) {
+            return Socket{-1, 0, true, index};
+        }
+    }
     return {};
+}
+
+NodeGraphEditor::Socket NodeGraphEditor::resolve_socket(const Socket& socket,
+    const Socket* other) const
+{
+    if (socket.frame < 0) {
+        return socket;
+    }
+    const auto& frames = current_frames();
+    if (socket.frame >= frames.size()) {
+        return {};
+    }
+    const Frame& frame = frames[socket.frame];
+    Socket fallback;
+    for (const auto& member_id : frame.members) {
+        int node_index = -1;
+        for (int index = 0; index < nodes_.size(); ++index) {
+            if (nodes_[index].id == member_id) {
+                node_index = index;
+                break;
+            }
+        }
+        if (node_index < 0) {
+            continue;
+        }
+        const Node& node = nodes_[node_index];
+        const auto& ports = socket.output ? node.outputs : node.inputs;
+        for (int port = 0; port < ports.size(); ++port) {
+            Socket candidate{node_index, port, socket.output};
+            if (!fallback.valid()) {
+                fallback = candidate;
+            }
+            if (other == nullptr || !other->valid()) {
+                continue;
+            }
+            const Socket resolved_other = other->frame >= 0
+                ? Socket{} : *other;
+            if (!resolved_other.valid()) {
+                continue;
+            }
+            if (sockets_compatible(candidate, resolved_other)) {
+                return candidate;
+            }
+        }
+    }
+    return fallback;
 }
 
 bool NodeGraphEditor::sockets_compatible(const Socket& first,
     const Socket& second) const
 {
     if (!first.valid() || !second.valid()
-        || first.output == second.output
-        || first.node == second.node)
+        || first.output == second.output)
     {
         return false;
     }
-    if (first.node < 0 || first.node >= nodes_.size()
-        || second.node < 0 || second.node >= nodes_.size())
+    if (first.frame >= 0 && first.frame == second.frame) {
+        return false;
+    }
+
+    const Socket resolved_first = resolve_socket(first, &second);
+    const Socket resolved_second = resolve_socket(second, &first);
+    if (!resolved_first.valid() || !resolved_second.valid()
+        || resolved_first.output == resolved_second.output
+        || resolved_first.node == resolved_second.node)
+    {
+        return false;
+    }
+    if (resolved_first.node < 0 || resolved_first.node >= nodes_.size()
+        || resolved_second.node < 0 || resolved_second.node >= nodes_.size())
     {
         return false;
     }
 
-    const Socket source = first.output ? first : second;
-    const Socket destination = first.output ? second : first;
+    const Socket source = resolved_first.output ? resolved_first : resolved_second;
+    const Socket destination = resolved_first.output ? resolved_second : resolved_first;
     const Node& source_node = nodes_[source.node];
     const Node& destination_node = nodes_[destination.node];
     if (source.port < 0 || source.port >= source_node.outputs.size()
@@ -902,8 +1365,10 @@ bool NodeGraphEditor::add_connection(const Socket& first, const Socket& second)
         return false;
     }
 
-    const Socket source = first.output ? first : second;
-    const Socket destination = first.output ? second : first;
+    const Socket resolved_first = resolve_socket(first, &second);
+    const Socket resolved_second = resolve_socket(second, &first);
+    const Socket source = resolved_first.output ? resolved_first : resolved_second;
+    const Socket destination = resolved_first.output ? resolved_second : resolved_first;
     const auto endpoint_for = [this](const Socket& socket, bool source_endpoint) {
         const Node& node = nodes_[socket.node];
         if (source_endpoint && node.kind == Node::Kind::GraphInput) {
@@ -1005,8 +1470,18 @@ void NodeGraphEditor::draw_link(QPainter& painter, const Link& link) const
     {
         return;
     }
-    const QPointF source = port_position(source_node, true, link.source_port);
-    const QPointF destination = port_position(destination_node, false, link.destination_port);
+    const int source_frame = collapsed_frame_for_node(source_node.id);
+    const int destination_frame = collapsed_frame_for_node(destination_node.id);
+    if (source_frame >= 0 && source_frame == destination_frame) {
+        return;
+    }
+    const auto& frames = current_frames();
+    const QPointF source = source_frame >= 0
+        ? frame_socket_position(frames[source_frame], true)
+        : port_position(source_node, true, link.source_port);
+    const QPointF destination = destination_frame >= 0
+        ? frame_socket_position(frames[destination_frame], false)
+        : port_position(destination_node, false, link.destination_port);
     const double distance = std::max(60.0, std::abs(destination.x() - source.x()) * 0.5);
     QPainterPath path(source);
     path.cubicTo(source + QPointF{distance, 0.0},
@@ -1018,23 +1493,37 @@ void NodeGraphEditor::draw_link(QPainter& painter, const Link& link) const
 
 void NodeGraphEditor::draw_pending_connection(QPainter& painter) const
 {
-    if (!pending_connection_.start.valid()
-        || pending_connection_.start.node < 0
-        || pending_connection_.start.node >= nodes_.size())
-    {
-        return;
-    }
-    const Node& node = nodes_[pending_connection_.start.node];
-    const auto& ports = pending_connection_.start.output
-        ? node.outputs : node.inputs;
-    if (pending_connection_.start.port < 0
-        || pending_connection_.start.port >= ports.size())
-    {
+    if (!pending_connection_.start.valid()) {
         return;
     }
 
-    const QPointF start = port_position(node,
-        pending_connection_.start.output, pending_connection_.start.port);
+    QPointF start;
+    if (pending_connection_.start.frame >= 0) {
+        const auto& frames = current_frames();
+        if (pending_connection_.start.frame >= frames.size()
+            || !frames[pending_connection_.start.frame].collapsed)
+        {
+            return;
+        }
+        start = frame_socket_position(frames[pending_connection_.start.frame],
+            pending_connection_.start.output);
+    } else {
+        if (pending_connection_.start.node < 0
+            || pending_connection_.start.node >= nodes_.size())
+        {
+            return;
+        }
+        const Node& node = nodes_[pending_connection_.start.node];
+        const auto& ports = pending_connection_.start.output
+            ? node.outputs : node.inputs;
+        if (pending_connection_.start.port < 0
+            || pending_connection_.start.port >= ports.size())
+        {
+            return;
+        }
+        start = port_position(node,
+            pending_connection_.start.output, pending_connection_.start.port);
+    }
     const QPointF end = pending_connection_.current;
     const double distance = std::max(
         50.0, std::abs(end.x() - start.x()) * 0.5);
@@ -1073,13 +1562,60 @@ bool NodeGraphEditor::node_is_selected(int index) const
     return selectedNodes.contains(index);
 }
 
+bool NodeGraphEditor::frame_is_selected(int index) const
+{
+    return selectedFrames.contains(index);
+}
+
 void NodeGraphEditor::select_only(int index)
 {
     selected_node_ = index;
     selectedNodes.clear();
+    selectedFrames.clear();
     if (index >= 0) {
         selectedNodes.push_back(index);
     }
+}
+
+void NodeGraphEditor::select_only_frame(int index)
+{
+    selected_node_ = -1;
+    selectedNodes.clear();
+    selectedFrames.clear();
+    if (index >= 0) {
+        selectedFrames.push_back(index);
+    }
+}
+
+void NodeGraphEditor::move_frame(int index, const QPointF& delta)
+{
+    auto& frames = current_frames();
+    if (index < 0 || index >= frames.size()) {
+        return;
+    }
+    auto& frame = frames[index];
+    frame.position += delta;
+    for (const auto& member : frame.members) {
+        for (auto& node : nodes_) {
+            if (node.id == member) {
+                node.position += delta;
+                break;
+            }
+        }
+    }
+}
+
+void NodeGraphEditor::toggle_frame_collapsed(int index)
+{
+    auto& frames = current_frames();
+    if (index < 0 || index >= frames.size()) {
+        return;
+    }
+    frames[index].collapsed = !frames[index].collapsed;
+    capture_stage_layout();
+    position_find_controls();
+    position_frame_controls();
+    update();
 }
 
 void NodeGraphEditor::apply_box_selection()
@@ -1093,13 +1629,69 @@ void NodeGraphEditor::apply_box_selection()
 
     const QRectF box = QRectF(boxSelectOrigin, boxSelectCurrent).normalized();
     selectedNodes.clear();
+    selectedFrames.clear();
     selected_node_ = -1;
     for (int index = 0; index < nodes_.size(); ++index) {
-        if (!node_rect(nodes_[index]).intersects(box)) {
+        if (node_is_hidden(nodes_[index])
+            || !node_rect(nodes_[index]).intersects(box))
+        {
             continue;
         }
         selectedNodes.push_back(index);
         selected_node_ = index;
+    }
+    const auto& frames = current_frames();
+    for (int index = 0; index < frames.size(); ++index) {
+        if (frame_rect(frames[index]).intersects(box)) {
+            selectedFrames.push_back(index);
+        }
+    }
+}
+
+void NodeGraphEditor::draw_frame(QPainter& painter, int index) const
+{
+    const auto& frames = current_frames();
+    const Frame& frame = frames[index];
+    const QRectF rect = frame_rect(frame);
+    const QRectF header = frame_header_rect(frame);
+    const QRectF button = collapse_button_rect(frame);
+    const bool selected = frame_is_selected(index);
+
+    painter.setPen(QPen(selected
+            ? QColor{QStringLiteral("#f2c14e")}
+            : QColor{QStringLiteral("#3d3d3d")}, 1.5 / zoom_));
+    painter.setBrush(frame.collapsed
+        ? QColor{36, 36, 36, 220}
+        : QColor{36, 36, 36, 80});
+    painter.drawRoundedRect(rect, 7.0, 7.0);
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor{QStringLiteral("#242424")});
+    painter.drawRoundedRect(header, 7.0, 7.0);
+    if (header.height() > 7.0) {
+        painter.drawRect(QRectF(header.left(), header.top() + 7.0,
+            header.width(), header.height() - 7.0));
+    }
+
+    painter.setPen(QPen(QColor{QStringLiteral("#3d3d3d")}, 1.0 / zoom_));
+    painter.setBrush(QColor{QStringLiteral("#2a2a2a")});
+    painter.drawRoundedRect(button, 3.0, 3.0);
+    painter.setPen(QPen(QColor{QStringLiteral("#d7d7d7")}, 1.5 / zoom_));
+    const QPointF center = button.center();
+    painter.drawLine(QPointF{button.left() + 4.0, center.y()},
+        QPointF{button.right() - 4.0, center.y()});
+    if (frame.collapsed) {
+        painter.drawLine(QPointF{center.x(), button.top() + 4.0},
+            QPointF{center.x(), button.bottom() - 4.0});
+    }
+
+    if (frame.collapsed) {
+        const QPointF input = frame_socket_position(frame, false);
+        const QPointF output = frame_socket_position(frame, true);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor{QStringLiteral("#d7d7d7")});
+        painter.drawEllipse(input, 5.0, 5.0);
+        painter.drawEllipse(output, 5.0, 5.0);
     }
 }
 
@@ -1174,12 +1766,25 @@ void NodeGraphEditor::paintEvent(QPaintEvent*)
     painter.translate(pan_);
     painter.scale(zoom_, zoom_);
     draw_grid(painter);
+    const auto& frames = current_frames();
+    for (int index = 0; index < frames.size(); ++index) {
+        if (!frames[index].collapsed) {
+            draw_frame(painter, index);
+        }
+    }
     for (const auto& link : links_) {
         draw_link(painter, link);
     }
     draw_pending_connection(painter);
     for (int index = 0; index < nodes_.size(); ++index) {
-        draw_node(painter, index);
+        if (!node_is_hidden(nodes_[index])) {
+            draw_node(painter, index);
+        }
+    }
+    for (int index = 0; index < frames.size(); ++index) {
+        if (frames[index].collapsed) {
+            draw_frame(painter, index);
+        }
     }
     draw_selection_box(painter);
     painter.restore();
@@ -1210,8 +1815,13 @@ void NodeGraphEditor::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::LeftButton) {
         const Socket socket = socket_at(scene);
         if (socket.valid()) {
-            select_only(socket.node);
+            if (socket.frame >= 0) {
+                select_only_frame(socket.frame);
+            } else {
+                select_only(socket.node);
+            }
             dragging_node_ = -1;
+            draggingFrame = -1;
             boxSelecting = false;
             pending_connection_ = PendingConnection{
                 socket, scene, false, false};
@@ -1219,18 +1829,35 @@ void NodeGraphEditor::mousePressEvent(QMouseEvent* event)
             event->accept();
             return;
         }
+        const int collapse = collapse_button_at(scene);
+        if (collapse >= 0) {
+            toggle_frame_collapsed(collapse);
+            event->accept();
+            return;
+        }
         const int hit = node_at(scene);
         if (hit >= 0) {
             select_only(hit);
             dragging_node_ = hit;
+            draggingFrame = -1;
             boxSelecting = false;
             drag_offset_ = scene - nodes_[dragging_node_].position;
         } else {
-            select_only(-1);
-            dragging_node_ = -1;
-            boxSelecting = true;
-            boxSelectOrigin = scene;
-            boxSelectCurrent = scene;
+            const int frame = frame_at(scene);
+            if (frame >= 0) {
+                select_only_frame(frame);
+                dragging_node_ = -1;
+                draggingFrame = frame;
+                boxSelecting = false;
+                drag_offset_ = scene - current_frames()[frame].position;
+            } else {
+                select_only(-1);
+                dragging_node_ = -1;
+                draggingFrame = -1;
+                boxSelecting = true;
+                boxSelectOrigin = scene;
+                boxSelectCurrent = scene;
+            }
         }
         update();
         event->accept();
@@ -1249,6 +1876,7 @@ void NodeGraphEditor::mouseMoveEvent(QMouseEvent* event)
             static_cast<qreal>(delta.y())};
         last_mouse_position_ = current;
         position_find_controls();
+        position_frame_controls();
         update();
         event->accept();
         return;
@@ -1269,9 +1897,22 @@ void NodeGraphEditor::mouseMoveEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    if (draggingFrame >= 0 && (event->buttons() & Qt::LeftButton) != 0) {
+        const QPointF next = scene_position(event->position()) - drag_offset_;
+        auto& frames = current_frames();
+        if (draggingFrame < frames.size()) {
+            move_frame(draggingFrame, next - frames[draggingFrame].position);
+        }
+        position_find_controls();
+        position_frame_controls();
+        update();
+        event->accept();
+        return;
+    }
     if (dragging_node_ >= 0 && (event->buttons() & Qt::LeftButton) != 0) {
         nodes_[dragging_node_].position = scene_position(event->position()) - drag_offset_;
         position_find_controls();
+        position_frame_controls();
         update();
         event->accept();
         return;
@@ -1283,6 +1924,7 @@ void NodeGraphEditor::mouseReleaseEvent(QMouseEvent* event)
 {
     if (event->button() == Qt::MiddleButton) {
         panning_ = false;
+        capture_stage_layout();
         event->accept();
         return;
     }
@@ -1297,6 +1939,7 @@ void NodeGraphEditor::mouseReleaseEvent(QMouseEvent* event)
             }
             pending_connection_ = {};
             dragging_node_ = -1;
+            draggingFrame = -1;
             update();
             event->accept();
             return;
@@ -1306,11 +1949,14 @@ void NodeGraphEditor::mouseReleaseEvent(QMouseEvent* event)
             apply_box_selection();
             boxSelecting = false;
             dragging_node_ = -1;
+            draggingFrame = -1;
             update();
             event->accept();
             return;
         }
         dragging_node_ = -1;
+        draggingFrame = -1;
+        capture_stage_layout();
         event->accept();
         return;
     }
@@ -1324,7 +1970,9 @@ void NodeGraphEditor::wheelEvent(QWheelEvent* event)
     const double factor = event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15;
     zoom_ = std::clamp(zoom_ * factor, 0.35, 2.5);
     pan_ = cursor - before * zoom_;
+    capture_stage_layout();
     position_find_controls();
+    position_frame_controls();
     update();
     event->accept();
 }
@@ -1376,10 +2024,34 @@ void NodeGraphEditor::keyPressEvent(QKeyEvent* event)
                 removed_any = true;
             }
         }
+        auto& frames = current_frames();
+        if (!selectedFrames.isEmpty()) {
+            QVector<Frame> kept;
+            kept.reserve(frames.size());
+            for (int index = 0; index < frames.size(); ++index) {
+                if (!selectedFrames.contains(index)) {
+                    kept.push_back(frames[index]);
+                }
+            }
+            frames = std::move(kept);
+            selectedFrames.clear();
+            rebuild_frame_controls();
+            capture_stage_layout();
+            update();
+        }
         if (removed_any) {
             notify_graph_changed();
             rebuild_view();
         }
+        event->accept();
+        return;
+    }
+    if (!event->isAutoRepeat()
+        && event->key() == Qt::Key_O
+        && event->modifiers().testFlag(Qt::ShiftModifier)
+        && !event->modifiers().testFlag(Qt::ControlModifier))
+    {
+        create_frame_from_selection();
         event->accept();
         return;
     }

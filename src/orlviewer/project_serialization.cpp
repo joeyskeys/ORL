@@ -1142,6 +1142,155 @@ bool load_text(const std::string& path, std::string& text,
     return true;
 }
 
+Json serialize_stage_layout(const NodeGraphStageLayout& layout,
+    Allocator& allocator)
+{
+    Json result(rapidjson::kObjectType);
+    Json pan(rapidjson::kArrayType);
+    pan.PushBack(layout.pan_x, allocator);
+    pan.PushBack(layout.pan_y, allocator);
+    add(result, "pan", std::move(pan), allocator);
+    add(result, "zoom", Json{layout.zoom}, allocator);
+    Json nodes(rapidjson::kArrayType);
+    for (const auto& [id, position] : layout.nodes) {
+        Json entry(rapidjson::kObjectType);
+        add(entry, "id", string_value(id, allocator), allocator);
+        add(entry, "x", Json{position[0]}, allocator);
+        add(entry, "y", Json{position[1]}, allocator);
+        nodes.PushBack(std::move(entry), allocator);
+    }
+    add(result, "nodes", std::move(nodes), allocator);
+    Json frames(rapidjson::kArrayType);
+    for (const auto& frame : layout.frames) {
+        Json entry(rapidjson::kObjectType);
+        add(entry, "id", string_value(frame.id, allocator), allocator);
+        add(entry, "title", string_value(frame.title, allocator), allocator);
+        add(entry, "x", Json{frame.x}, allocator);
+        add(entry, "y", Json{frame.y}, allocator);
+        add(entry, "width", Json{frame.width}, allocator);
+        add(entry, "height", Json{frame.height}, allocator);
+        add(entry, "collapsed", Json{frame.collapsed}, allocator);
+        Json members(rapidjson::kArrayType);
+        for (const auto& member : frame.members) {
+            members.PushBack(string_value(member, allocator), allocator);
+        }
+        add(entry, "members", std::move(members), allocator);
+        frames.PushBack(std::move(entry), allocator);
+    }
+    add(result, "frames", std::move(frames), allocator);
+    return result;
+}
+
+Json serialize_editor(const NodeGraphLayout& layout, Allocator& allocator)
+{
+    Json node_graph(rapidjson::kObjectType);
+    add(node_graph, "solver",
+        serialize_stage_layout(layout.solver, allocator), allocator);
+    add(node_graph, "deformer",
+        serialize_stage_layout(layout.deformer, allocator), allocator);
+    Json editor(rapidjson::kObjectType);
+    add(editor, "node_graph", std::move(node_graph), allocator);
+    return editor;
+}
+
+void read_stage_layout(const Json& object, NodeGraphStageLayout& layout)
+{
+    if (!object.IsObject()) {
+        return;
+    }
+    std::vector<std::string> ignored;
+    std::vector<double> pan;
+    if (read_array(object, "pan", 2, pan, ignored)) {
+        layout.pan_x = pan[0];
+        layout.pan_y = pan[1];
+    }
+    read_double(object, "zoom", layout.zoom, ignored);
+    if (const auto* nodes = member<void>(object, "nodes", ignored, false);
+        nodes != nullptr && nodes->IsArray())
+    {
+        for (const auto& entry : nodes->GetArray()) {
+            if (!entry.IsObject()) {
+                continue;
+            }
+            std::string id;
+            if (!read_string(entry, "id", id, ignored) || id.empty()) {
+                continue;
+            }
+            double x = 0.0;
+            double y = 0.0;
+            if (!read_double(entry, "x", x, ignored)
+                || !read_double(entry, "y", y, ignored))
+            {
+                continue;
+            }
+            layout.nodes[id] = {x, y};
+        }
+    }
+    if (const auto* frames = member<void>(object, "frames", ignored, false);
+        frames != nullptr && frames->IsArray())
+    {
+        for (const auto& entry : frames->GetArray()) {
+            if (!entry.IsObject()) {
+                continue;
+            }
+            NodeGraphFrameLayout frame;
+            if (!read_string(entry, "id", frame.id, ignored) || frame.id.empty()) {
+                continue;
+            }
+            read_string(entry, "title", frame.title, ignored, false);
+            if (frame.title.empty()) {
+                frame.title = "Frame";
+            }
+            if (!read_double(entry, "x", frame.x, ignored)
+                || !read_double(entry, "y", frame.y, ignored)
+                || !read_double(entry, "width", frame.width, ignored)
+                || !read_double(entry, "height", frame.height, ignored))
+            {
+                continue;
+            }
+            read_bool(entry, "collapsed", frame.collapsed, ignored, false);
+            if (const auto* members = member<void>(
+                    entry, "members", ignored, false);
+                members != nullptr && members->IsArray())
+            {
+                for (const auto& member_value : members->GetArray()) {
+                    if (!member_value.IsString()) {
+                        continue;
+                    }
+                    std::string id = member_value.GetString();
+                    if (!id.empty()) {
+                        frame.members.push_back(std::move(id));
+                    }
+                }
+            }
+            layout.frames.push_back(std::move(frame));
+        }
+    }
+}
+
+void read_editor_layout(const Json& document, NodeGraphLayout& layout)
+{
+    std::vector<std::string> ignored;
+    const auto* editor = member<void>(document, "editor", ignored, false);
+    if (editor == nullptr || !editor->IsObject()) {
+        return;
+    }
+    const auto* node_graph = member<void>(*editor, "node_graph", ignored, false);
+    if (node_graph == nullptr || !node_graph->IsObject()) {
+        return;
+    }
+    if (const auto* solver = member<void>(
+            *node_graph, "solver", ignored, false))
+    {
+        read_stage_layout(*solver, layout.solver);
+    }
+    if (const auto* deformer = member<void>(
+            *node_graph, "deformer", ignored, false))
+    {
+        read_stage_layout(*deformer, layout.deformer);
+    }
+}
+
 } // namespace
 
 ProjectIoResult save_project_json(
@@ -1150,7 +1299,8 @@ ProjectIoResult save_project_json(
     const ComponentManager& components,
     ComponentId weight_id,
     ComponentId deformer_id,
-    bool evaluate_orl)
+    bool evaluate_orl,
+    const NodeGraphLayout* node_graph_layout)
 {
     graph_context.ensure_stage_graphs();
     const auto serialized_graph = orlgraph::serialize_graph_stages_json(
@@ -1190,6 +1340,10 @@ ProjectIoResult save_project_json(
     add(document, "components",
         serialize_components(components, weight_id, deformer_id, allocator),
         allocator);
+    if (node_graph_layout != nullptr) {
+        add(document, "editor",
+            serialize_editor(*node_graph_layout, allocator), allocator);
+    }
 
     std::ofstream output(path, std::ios::binary);
     if (!output.is_open()) {
@@ -1252,6 +1406,7 @@ ProjectIoResult load_project_json(
         read_bool(*evaluation, "evaluate_orl", result.evaluate_orl,
             result.errors, false);
     }
+    read_editor_layout(document, result.node_graph_layout);
 
     const auto* graph = member<void>(document, "graph", result.errors);
     const auto* component_value =

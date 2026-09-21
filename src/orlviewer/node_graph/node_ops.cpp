@@ -274,6 +274,49 @@ bool delete_node(orlgraph::GraphModule& graph, const orlgraph::StableId& node_id
     return true;
 }
 
+bool create_frame(const std::vector<FrameMemberBounds>& members,
+    const std::vector<std::string>& existing_ids, FrameDesc* created,
+    std::string* error)
+{
+    if (members.empty()) {
+        return set_error(error, "Select at least one node to create a frame");
+    }
+
+    std::string instance_id = "frame";
+    for (std::size_t suffix = 1;; ++suffix) {
+        const bool taken = std::find(existing_ids.begin(), existing_ids.end(),
+            instance_id) != existing_ids.end();
+        if (!taken) {
+            break;
+        }
+        instance_id = "frame_" + std::to_string(suffix);
+    }
+
+    double min_x = members.front().x;
+    double min_y = members.front().y;
+    double max_x = members.front().x + members.front().width;
+    double max_y = members.front().y + members.front().height;
+    FrameDesc result;
+    result.id = instance_id;
+    result.title = "Frame";
+    result.members.reserve(members.size());
+    for (const auto& member : members) {
+        min_x = std::min(min_x, member.x);
+        min_y = std::min(min_y, member.y);
+        max_x = std::max(max_x, member.x + member.width);
+        max_y = std::max(max_y, member.y + member.height);
+        result.members.push_back(member.id);
+    }
+    result.x = min_x - kFramePadding;
+    result.y = min_y - kFrameHeader - kFramePadding;
+    result.width = (max_x + kFramePadding) - result.x;
+    result.height = (max_y + kFramePadding) - result.y;
+    if (created != nullptr) {
+        *created = std::move(result);
+    }
+    return true;
+}
+
 } // namespace ORL::node_graph
 
 #endif
