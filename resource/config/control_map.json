@@ -181,6 +181,28 @@
       }
     },
     {
+      "op": "copy_node_graph",
+      "scope": "panel",
+      "panel": "node_graph",
+      "input": {
+        "type": "key",
+        "key": "C",
+        "action": "press",
+        "mods": ["ctrl"]
+      }
+    },
+    {
+      "op": "paste_node_graph",
+      "scope": "panel",
+      "panel": "node_graph",
+      "input": {
+        "type": "key",
+        "key": "V",
+        "action": "press",
+        "mods": ["ctrl"]
+      }
+    },
+    {
       "op": "toggle_orl_evaluation",
       "scope": "window",
       "input": {

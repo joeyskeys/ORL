@@ -100,12 +100,16 @@ struct PartialEvaluationFootprint {
     std::vector<std::string> read_joint_ports;
     std::vector<std::string> write_joint_ports;
     std::vector<std::string> read_controller_ports;
+    std::vector<std::string> write_controller_ports;
     std::vector<std::string> read_locator_ports;
+    std::vector<std::string> write_locator_ports;
 
     std::vector<StableId> read_joints;
     std::vector<StableId> write_joints;
     std::vector<StableId> read_controllers;
+    std::vector<StableId> write_controllers;
     std::vector<StableId> read_locators;
+    std::vector<StableId> write_locators;
     std::vector<StableId> read_resources;
     std::vector<StableId> write_resources;
 

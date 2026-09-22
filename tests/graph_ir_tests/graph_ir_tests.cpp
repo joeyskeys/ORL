@@ -450,6 +450,8 @@ TEST_CASE("oro serialization preserves partial evaluation footprints",
     footprint.propagation = PartialPropagation::AncestorsAndDescendants;
     footprint.read_joint_ports = {"parent"};
     footprint.write_joints = {StableId{"joint.output"}};
+    footprint.write_locator_ports = {"subject_index"};
+    footprint.write_locators = {StableId{"locator.target"}};
     footprint.read_resources = {StableId{"scene.joints"}};
     definition.partial_footprint = footprint;
     REQUIRE(registry.register_definition(std::move(definition)));

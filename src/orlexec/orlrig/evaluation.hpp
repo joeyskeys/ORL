@@ -29,7 +29,9 @@ struct SolverRegion {
     std::vector<ComponentId> write_joints;
     std::vector<ComponentId> affected_joints;
     std::vector<ComponentId> read_controllers;
+    std::vector<ComponentId> write_controllers;
     std::vector<ComponentId> read_locators;
+    std::vector<ComponentId> write_locators;
     std::vector<orlgraph::StableId> read_resources;
     std::vector<orlgraph::StableId> write_resources;
 

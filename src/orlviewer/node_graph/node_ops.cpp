@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <set>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -313,6 +314,295 @@ bool create_frame(const std::vector<FrameMemberBounds>& members,
     result.height = (max_y + kFramePadding) - result.y;
     if (created != nullptr) {
         *created = std::move(result);
+    }
+    return true;
+}
+
+std::string editor_id_for(CopiedNodeKind kind, const std::string& owner_id)
+{
+    if (kind == CopiedNodeKind::GraphInput) {
+        return "__graph_input__:" + owner_id;
+    }
+    if (kind == CopiedNodeKind::GraphOutput) {
+        return "__graph_output__:" + owner_id;
+    }
+    return owner_id;
+}
+
+bool endpoint_in_copy(const orlgraph::Endpoint& endpoint,
+    const std::vector<CopiedNode>& nodes)
+{
+    for (const auto& node : nodes) {
+        if (node.owner_id != endpoint.owner.value) {
+            continue;
+        }
+        if (endpoint.kind == orlgraph::EndpointKind::NodePort
+            && node.kind == CopiedNodeKind::Definition)
+        {
+            return true;
+        }
+        if (endpoint.kind == orlgraph::EndpointKind::GraphInput
+            && node.kind == CopiedNodeKind::GraphInput)
+        {
+            return true;
+        }
+        if (endpoint.kind == orlgraph::EndpointKind::GraphOutput
+            && node.kind == CopiedNodeKind::GraphOutput)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+using OwnerKey = std::pair<orlgraph::EndpointKind, std::string>;
+
+OwnerKey owner_key(CopiedNodeKind kind, const std::string& owner_id)
+{
+    if (kind == CopiedNodeKind::GraphInput) {
+        return {orlgraph::EndpointKind::GraphInput, owner_id};
+    }
+    if (kind == CopiedNodeKind::GraphOutput) {
+        return {orlgraph::EndpointKind::GraphOutput, owner_id};
+    }
+    return {orlgraph::EndpointKind::NodePort, owner_id};
+}
+
+bool id_taken(const orlgraph::GraphModule& graph,
+    const std::set<std::string>& reserved, const std::string& id)
+{
+    if (reserved.contains(id)) {
+        return true;
+    }
+    const orlgraph::StableId stable{id};
+    return graph.node(stable) != nullptr
+        || graph.input(stable) != nullptr
+        || graph.output(stable) != nullptr;
+}
+
+std::string unique_copy_id(const orlgraph::GraphModule& graph,
+    const std::set<std::string>& reserved, const std::string& base)
+{
+    std::string candidate = base.empty() ? "node" : base;
+    for (std::size_t suffix = 1;; ++suffix) {
+        if (!id_taken(graph, reserved, candidate)) {
+            return candidate;
+        }
+        candidate = (base.empty() ? "node" : base) + "_" + std::to_string(suffix);
+    }
+}
+
+std::string unique_label(const std::string& base,
+    std::vector<std::string>& existing, const std::string& suffix_text)
+{
+    const std::string stem = base.empty() ? "Frame" : base;
+    std::string candidate = stem + suffix_text;
+    if (std::find(existing.begin(), existing.end(), candidate) == existing.end()) {
+        existing.push_back(candidate);
+        return candidate;
+    }
+    for (std::size_t index = 2;; ++index) {
+        candidate = stem + suffix_text + " " + std::to_string(index);
+        if (std::find(existing.begin(), existing.end(), candidate) == existing.end()) {
+            existing.push_back(candidate);
+            return candidate;
+        }
+    }
+}
+
+bool copy_nodes(const orlgraph::GraphModule& graph,
+    const std::vector<CopyNodeRef>& nodes,
+    const std::vector<CopiedFrame>& frames,
+    NodeClipboard* clipboard, std::string* error)
+{
+    if (clipboard == nullptr) {
+        return set_error(error, "Node clipboard destination is null");
+    }
+    NodeClipboard copied;
+    copied.nodes.reserve(nodes.size());
+    for (const auto& ref : nodes) {
+        CopiedNode node;
+        node.kind = ref.kind;
+        node.editor_id = ref.editor_id;
+        node.owner_id = ref.owner_id;
+        node.x = ref.x;
+        node.y = ref.y;
+        if (ref.kind == CopiedNodeKind::Definition) {
+            const auto* instance = graph.node(orlgraph::StableId{ref.owner_id});
+            if (instance == nullptr) {
+                continue;
+            }
+            node.instance = *instance;
+        } else if (ref.kind == CopiedNodeKind::GraphInput) {
+            const auto* input = graph.input(orlgraph::StableId{ref.owner_id});
+            if (input == nullptr) {
+                continue;
+            }
+            node.interface_port = *input;
+        } else {
+            const auto* output = graph.output(orlgraph::StableId{ref.owner_id});
+            if (output == nullptr) {
+                continue;
+            }
+            node.interface_port = *output;
+        }
+        copied.nodes.push_back(std::move(node));
+    }
+    if (copied.nodes.empty()) {
+        return set_error(error, "Nothing to copy");
+    }
+    for (const auto& connection : graph.connections()) {
+        if (endpoint_in_copy(connection.source, copied.nodes)
+            && endpoint_in_copy(connection.destination, copied.nodes))
+        {
+            copied.connections.push_back(connection);
+        }
+    }
+    std::set<std::string> copied_editors;
+    for (const auto& node : copied.nodes) {
+        copied_editors.insert(node.editor_id);
+    }
+    for (const auto& frame : frames) {
+        CopiedFrame copied_frame = frame;
+        copied_frame.members.erase(std::remove_if(
+            copied_frame.members.begin(), copied_frame.members.end(),
+            [&copied_editors](const std::string& member) {
+                return !copied_editors.contains(member);
+            }), copied_frame.members.end());
+        if (!copied_frame.members.empty()) {
+            copied.frames.push_back(std::move(copied_frame));
+        }
+    }
+    *clipboard = std::move(copied);
+    return true;
+}
+
+bool paste_nodes(orlgraph::GraphModule& graph,
+    const orlgraph::NodeRegistry& registry, orlgraph::GraphStage stage,
+    const NodeClipboard& clipboard, double offset_x, double offset_y,
+    const std::vector<std::string>& existing_frame_ids,
+    const std::vector<std::string>& existing_frame_titles,
+    PasteResult* result, std::string* error)
+{
+    if (clipboard.nodes.empty()) {
+        return set_error(error, "Nothing to paste");
+    }
+
+    std::set<std::string> reserved;
+    std::map<OwnerKey, std::string> new_owners;
+    std::map<std::string, std::string> new_editors;
+    for (const auto& node : clipboard.nodes) {
+        std::string base = node.owner_id;
+        if (node.kind == CopiedNodeKind::Definition) {
+            const auto* definition = registry.find(node.instance.definition);
+            if (definition == nullptr
+                || !registry.is_available(node.instance.definition, stage))
+            {
+                continue;
+            }
+            base = short_name(definition->qualified_name);
+        }
+        const std::string created = unique_copy_id(graph, reserved, base);
+        reserved.insert(created);
+        new_owners.emplace(owner_key(node.kind, node.owner_id), created);
+        new_editors.emplace(node.editor_id, editor_id_for(node.kind, created));
+    }
+    if (new_owners.empty()) {
+        return set_error(error, "Nothing to paste");
+    }
+
+    PasteResult pasted;
+    for (const auto& node : clipboard.nodes) {
+        const auto created = new_owners.find(owner_key(node.kind, node.owner_id));
+        if (created == new_owners.end()) {
+            continue;
+        }
+        const std::string& new_id = created->second;
+        if (node.kind == CopiedNodeKind::Definition) {
+            orlgraph::NodeInstance instance = node.instance;
+            instance.id = orlgraph::StableId{new_id};
+            instance.name = new_id;
+            for (auto& mapping : instance.parameter_mappings) {
+                const auto remapped = new_owners.find({
+                    mapping.source.kind, mapping.source.owner.value});
+                if (remapped != new_owners.end()) {
+                    mapping.source.owner = orlgraph::StableId{remapped->second};
+                }
+            }
+            if (!graph.add_node(std::move(instance), error)) {
+                return false;
+            }
+        } else {
+            orlgraph::InterfacePort port = node.interface_port;
+            port.id = orlgraph::StableId{new_id};
+            if (port.name.empty()) {
+                port.name = new_id;
+            } else {
+                port.name += "_copy";
+            }
+            const bool added = node.kind == CopiedNodeKind::GraphInput
+                ? graph.add_input(std::move(port), error)
+                : graph.add_output(std::move(port), error);
+            if (!added) {
+                return false;
+            }
+        }
+        pasted.nodes.push_back(PastedNode{
+            new_editors.at(node.editor_id),
+            node.x + offset_x,
+            node.y + offset_y,
+        });
+    }
+
+    for (const auto& connection : clipboard.connections) {
+        const auto source = new_owners.find({
+            connection.source.kind, connection.source.owner.value});
+        const auto destination = new_owners.find({
+            connection.destination.kind, connection.destination.owner.value});
+        if (source == new_owners.end() || destination == new_owners.end()) {
+            continue;
+        }
+        orlgraph::Connection copy = connection;
+        copy.source.owner = orlgraph::StableId{source->second};
+        copy.destination.owner = orlgraph::StableId{destination->second};
+        if (!graph.add_connection(std::move(copy), error)) {
+            return false;
+        }
+    }
+
+    std::vector<std::string> frame_ids = existing_frame_ids;
+    std::vector<std::string> frame_titles = existing_frame_titles;
+    for (const auto& frame : clipboard.frames) {
+        PastedFrame pasted_frame;
+        pasted_frame.id = "frame";
+        for (std::size_t suffix = 1;; ++suffix) {
+            if (std::find(frame_ids.begin(), frame_ids.end(), pasted_frame.id)
+                == frame_ids.end())
+            {
+                break;
+            }
+            pasted_frame.id = "frame_" + std::to_string(suffix);
+        }
+        frame_ids.push_back(pasted_frame.id);
+        pasted_frame.title = unique_label(frame.title, frame_titles, " copy");
+        pasted_frame.x = frame.x + offset_x;
+        pasted_frame.y = frame.y + offset_y;
+        pasted_frame.width = frame.width;
+        pasted_frame.height = frame.height;
+        pasted_frame.collapsed = frame.collapsed;
+        for (const auto& member : frame.members) {
+            const auto remapped = new_editors.find(member);
+            if (remapped != new_editors.end()) {
+                pasted_frame.members.push_back(remapped->second);
+            }
+        }
+        if (pasted_frame.members.empty()) {
+            continue;
+        }
+        pasted.frames.push_back(std::move(pasted_frame));
+    }
+    if (result != nullptr) {
+        *result = std::move(pasted);
     }
     return true;
 }

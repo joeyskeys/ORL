@@ -20,11 +20,13 @@ namespace ORL
 {
 
 class ComponentManager;
+class SceneGraphContext;
 
 class PropertyEditor final : public QWidget {
 public:
     PropertyEditor(const Selection& selection,
-        const ComponentManager& components, QWidget* parent = nullptr);
+        ComponentManager& components, SceneGraphContext* graph_context,
+        QWidget* parent = nullptr);
 
     void refresh();
 
@@ -54,6 +56,7 @@ private:
         const glm::vec3& value, bool enabled,
         bool preserve_focus = true);
     void apply_vector_edit(VectorProperty property, int component);
+    void apply_component_name();
     static glm::vec3& vector_value(
         TransformValues& values, VectorProperty property);
     static QString kind_name(SelectionRef::Kind kind);
@@ -61,9 +64,12 @@ private:
         const ComponentManager& components);
 
     const Selection& selection_;
-    const ComponentManager& components_;
+    ComponentManager& components_;
+    SceneGraphContext* graphContext = nullptr;
     QLabel* selection_summary_ = nullptr;
     QLabel* selected_items_ = nullptr;
+    QGroupBox* nameGroup = nullptr;
+    QLineEdit* nameField = nullptr;
     QGroupBox* transform_group_ = nullptr;
     QLabel* transform_source_ = nullptr;
     VectorEditor translation_editor_;

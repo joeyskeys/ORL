@@ -102,6 +102,7 @@ private:
         const orlgraph::NodeInstance& instance);
     bool prepare_lbs_inputs(std::string* error);
     bool dispatch_graph(vkkk::Context& context, bool capture);
+    void report_compile_error(const std::string& message);
     bool add_scene_execution_input(
         orlgraph::GraphModule& module,
         std::string_view binding,
@@ -156,6 +157,8 @@ private:
     orlrig::SolverDispatchRuntimeData active_dispatch_data_;
     bool logged_rest = false;
     bool logged_move = false;
+    std::string reportedPlanError;
+    std::size_t reportedPlanRevision = 0;
 };
 
 } // namespace ORL

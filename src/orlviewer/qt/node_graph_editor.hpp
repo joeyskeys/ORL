@@ -16,6 +16,7 @@
 #include <QWidget>
 
 #include "../component_manager.hpp"
+#include "../node_graph/node_ops.hpp"
 #include "../project_serialization.hpp"
 #include "orlgraph/orlgraph.hpp"
 
@@ -55,6 +56,8 @@ public:
     void set_scene_input_catalog(const SceneInputCatalog* catalog);
     void refresh_scene_inputs();
     void create_frame_from_selection();
+    void copy_selected_nodes();
+    void paste_nodes();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -241,6 +244,8 @@ private:
 
     StageLayout solver_layout_;
     StageLayout deformer_layout_;
+    std::optional<node_graph::NodeClipboard> nodeClipboard;
+    int pasteSerial = 0;
 };
 
 } // namespace ORL

@@ -40,6 +40,7 @@ struct ProjectIoResult {
     bool ok = false;
     bool evaluate_orl = true;
     std::vector<std::string> errors;
+    std::vector<std::string> warnings;
     NodeGraphLayout node_graph_layout;
 };
 

@@ -244,16 +244,24 @@ Json partial_footprint_value(
         string_array(footprint.write_joint_ports, allocator), allocator);
     add(result, "read_controller_ports",
         string_array(footprint.read_controller_ports, allocator), allocator);
+    add(result, "write_controller_ports",
+        string_array(footprint.write_controller_ports, allocator), allocator);
     add(result, "read_locator_ports",
         string_array(footprint.read_locator_ports, allocator), allocator);
+    add(result, "write_locator_ports",
+        string_array(footprint.write_locator_ports, allocator), allocator);
     add(result, "read_joints",
         stable_id_array(footprint.read_joints, allocator), allocator);
     add(result, "write_joints",
         stable_id_array(footprint.write_joints, allocator), allocator);
     add(result, "read_controllers",
         stable_id_array(footprint.read_controllers, allocator), allocator);
+    add(result, "write_controllers",
+        stable_id_array(footprint.write_controllers, allocator), allocator);
     add(result, "read_locators",
         stable_id_array(footprint.read_locators, allocator), allocator);
+    add(result, "write_locators",
+        stable_id_array(footprint.write_locators, allocator), allocator);
     add(result, "read_resources",
         stable_id_array(footprint.read_resources, allocator), allocator);
     add(result, "write_resources",
@@ -681,9 +689,17 @@ bool parse_partial_footprint(const Json& value,
         read_string_array(value, "read_controller_ports",
             &output->read_controller_ports, diagnostics);
     }
+    if (member(value, "write_controller_ports") != nullptr) {
+        read_string_array(value, "write_controller_ports",
+            &output->write_controller_ports, diagnostics);
+    }
     if (member(value, "read_locator_ports") != nullptr) {
         read_string_array(value, "read_locator_ports",
             &output->read_locator_ports, diagnostics);
+    }
+    if (member(value, "write_locator_ports") != nullptr) {
+        read_string_array(value, "write_locator_ports",
+            &output->write_locator_ports, diagnostics);
     }
     if (member(value, "read_joints") != nullptr) {
         read_stable_id_array(value, "read_joints",
@@ -697,9 +713,17 @@ bool parse_partial_footprint(const Json& value,
         read_stable_id_array(value, "read_controllers",
             &output->read_controllers, diagnostics);
     }
+    if (member(value, "write_controllers") != nullptr) {
+        read_stable_id_array(value, "write_controllers",
+            &output->write_controllers, diagnostics);
+    }
     if (member(value, "read_locators") != nullptr) {
         read_stable_id_array(value, "read_locators",
             &output->read_locators, diagnostics);
+    }
+    if (member(value, "write_locators") != nullptr) {
+        read_stable_id_array(value, "write_locators",
+            &output->write_locators, diagnostics);
     }
     if (member(value, "read_resources") != nullptr) {
         read_stable_id_array(value, "read_resources",

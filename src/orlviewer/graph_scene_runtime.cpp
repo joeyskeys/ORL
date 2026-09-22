@@ -20,6 +20,11 @@
 #include "runtime_config.hpp"
 #include "vk_ins/context.hpp"
 
+#if ORL_USE_QT6
+#include <QMessageBox>
+#include <QString>
+#endif
+
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec4.hpp>
@@ -346,7 +351,7 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
     if (solver_stage) {
         std::string hierarchy_error;
         if (!graph_context_.ensure_hierarchy_plan(&hierarchy_error)) {
-            std::cerr << "Solver: " << hierarchy_error << '\n';
+            report_compile_error("Solver: " + hierarchy_error);
             graph_context_.clear_computed_joints_device();
             return;
         }
@@ -647,8 +652,8 @@ bool GraphSceneRuntime::dispatch_graph(vkkk::Context& context, bool capture)
         if (!graph_context_.ensure_evaluation_plan(
                 orlgraph::GraphStage::Solver, &evaluation_error))
         {
-            std::cerr << "Solver: evaluation plan: "
-                      << evaluation_error << '\n';
+            report_compile_error(
+                "Solver: evaluation plan: " + evaluation_error);
             return false;
         }
         evaluation_plan_ = graph_context_.evaluation_plan();
@@ -678,20 +683,22 @@ bool GraphSceneRuntime::dispatch_graph(vkkk::Context& context, bool capture)
             && *stage_ == orlgraph::GraphStage::Solver
         ? "Solver" : "Deformer";
     if (!validation.ok()) {
+        std::ostringstream message;
         for (const auto& diagnostic : validation.diagnostics) {
-            std::cerr << label << ": graph validation: "
-                << diagnostic.message << '\n';
+            message << label << ": graph validation: "
+                    << diagnostic.message << '\n';
         }
         for (const auto& error : validation.schedule.errors) {
-            std::cerr << label << ": graph schedule: " << error << '\n';
+            message << label << ": graph schedule: " << error << '\n';
         }
+        report_compile_error(message.str());
         return false;
     }
 
     std::string plan_error;
     if (!ensure_execution_plan(validation, &plan_error)) {
-        std::cerr << label << ": graph execution plan failed: "
-                  << plan_error << '\n';
+        report_compile_error(std::string{label}
+            + ": graph execution plan failed: " + plan_error);
         return false;
     }
 
@@ -728,7 +735,24 @@ bool GraphSceneRuntime::dispatch_graph(vkkk::Context& context, bool capture)
                      "LBS capture/deform nodes\n";
         return false;
     }
+    reportedPlanError.clear();
+    reportedPlanRevision = 0;
     return true;
+}
+
+void GraphSceneRuntime::report_compile_error(const std::string& message)
+{
+    std::cerr << message << '\n';
+    const std::size_t revision = graph_context_.graph_edit_revision();
+    if (message == reportedPlanError && revision == reportedPlanRevision) {
+        return;
+    }
+    reportedPlanError = message;
+    reportedPlanRevision = revision;
+#if ORL_USE_QT6
+    QMessageBox::warning(nullptr, QStringLiteral("ORL evaluation"),
+        QString::fromStdString(message));
+#endif
 }
 
 bool GraphSceneRuntime::resolve_scene_input_node(
@@ -1344,6 +1368,67 @@ bool GraphSceneRuntime::ensure_execution_plan(
         return true;
     };
 
+    std::map<orlgraph::StableId, std::size_t> region_batches;
+    if (stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver
+        && evaluation_plan_ != nullptr)
+    {
+        for (std::size_t level = 0;
+             level < evaluation_plan_->batches.size(); ++level)
+        {
+            for (const auto& id : evaluation_plan_->batches[level]) {
+                region_batches.emplace(id, level);
+            }
+        }
+    }
+    std::optional<std::size_t> segment_batch;
+    std::map<std::size_t, std::vector<orlgraph::StableId>> stashed_inputs;
+    const auto consumer_batch = [&](const orlgraph::StableId& id)
+        -> std::optional<std::size_t> {
+        std::optional<std::size_t> batch;
+        for (const auto& connection : source_graph.connections()) {
+            if (connection.source.kind != orlgraph::EndpointKind::NodePort
+                || connection.source.owner != id
+                || connection.destination.kind
+                    != orlgraph::EndpointKind::NodePort)
+            {
+                continue;
+            }
+            const auto found = region_batches.find(
+                connection.destination.owner);
+            if (found == region_batches.end()) {
+                continue;
+            }
+            if (!batch.has_value() || found->second < *batch) {
+                batch = found->second;
+            }
+        }
+        return batch;
+    };
+    const auto begin_batch = [&](std::size_t batch) -> bool {
+        if (segment_batch.has_value() && *segment_batch == batch) {
+            return true;
+        }
+        if (segment_has_orl) {
+            if (!flush_segment()) {
+                return false;
+            }
+        } else if (segment_batch.has_value() && !segment_nodes.empty()) {
+            auto& slot = stashed_inputs[*segment_batch];
+            slot.insert(slot.end(),
+                segment_nodes.begin(), segment_nodes.end());
+            segment_nodes.clear();
+        }
+        segment_batch = batch;
+        const auto stashed = stashed_inputs.find(batch);
+        if (stashed != stashed_inputs.end()) {
+            segment_nodes.insert(segment_nodes.end(),
+                stashed->second.begin(), stashed->second.end());
+            stashed_inputs.erase(stashed);
+        }
+        return true;
+    };
+
     for (const auto& node_id : validation.schedule.order) {
         const auto* instance = source_graph.node(node_id);
         const auto* definition = instance == nullptr
@@ -1358,6 +1443,12 @@ bool GraphSceneRuntime::ensure_execution_plan(
         if (definition->implementation.kind
             == orlgraph::ImplementationKind::OrlFunction)
         {
+            const auto found = region_batches.find(node_id);
+            if (found != region_batches.end()
+                && !begin_batch(found->second))
+            {
+                return false;
+            }
             segment_nodes.push_back(node_id);
             segment_has_orl = true;
             continue;
@@ -1383,12 +1474,19 @@ bool GraphSceneRuntime::ensure_execution_plan(
                 runtime_name
                     == std::string{orlrig::kComputedJointsNodeDefinition};
             if (contains_orl && (is_scene_input || is_computed_joints_source)) {
+                if (is_scene_input) {
+                    const auto batch = consumer_batch(node_id);
+                    if (batch.has_value() && !begin_batch(*batch)) {
+                        return false;
+                    }
+                }
                 segment_nodes.push_back(node_id);
                 continue;
             }
             if (!flush_segment()) {
                 return false;
             }
+            segment_batch.reset();
             execution_plan_.push_back(ExecutionStep{
                 ExecutionStep::Kind::RuntimeNode,
                 0,
@@ -1411,6 +1509,37 @@ bool GraphSceneRuntime::ensure_execution_plan(
     }
     if (!flush_segment()) {
         return false;
+    }
+    if (!region_batches.empty()) {
+        std::vector<std::size_t> positions;
+        std::vector<ExecutionStep> segments;
+        for (std::size_t index = 0; index < execution_plan_.size(); ++index) {
+            const auto& step = execution_plan_[index];
+            if (step.kind != ExecutionStep::Kind::OrlSegment
+                || step.index >= orl_segments_.size()
+                || orl_segments_[step.index].region_nodes.empty())
+            {
+                continue;
+            }
+            positions.push_back(index);
+            segments.push_back(step);
+        }
+        std::stable_sort(segments.begin(), segments.end(),
+            [&](const ExecutionStep& left, const ExecutionStep& right) {
+                const auto batch_of = [&](const ExecutionStep& step) {
+                    const auto& nodes =
+                        orl_segments_[step.index].region_nodes;
+                    const auto found = nodes.empty()
+                        ? region_batches.end()
+                        : region_batches.find(nodes.front());
+                    return found == region_batches.end()
+                        ? std::size_t{0} : found->second;
+                };
+                return batch_of(left) < batch_of(right);
+            });
+        for (std::size_t index = 0; index < positions.size(); ++index) {
+            execution_plan_[positions[index]] = segments[index];
+        }
     }
 
     planned_graph_revision_ = current_graph_revision;

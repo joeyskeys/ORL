@@ -74,6 +74,85 @@ bool create_frame(const std::vector<FrameMemberBounds>& members,
     const std::vector<std::string>& existing_ids, FrameDesc* created,
     std::string* error = nullptr);
 
+enum class CopiedNodeKind {
+    Definition,
+    GraphInput,
+    GraphOutput,
+};
+
+struct CopyNodeRef {
+    CopiedNodeKind kind = CopiedNodeKind::Definition;
+    std::string editor_id;
+    std::string owner_id;
+    double x = 0.0;
+    double y = 0.0;
+};
+
+struct CopiedNode {
+    CopiedNodeKind kind = CopiedNodeKind::Definition;
+    std::string editor_id;
+    std::string owner_id;
+    orlgraph::NodeInstance instance;
+    orlgraph::InterfacePort interface_port;
+    double x = 0.0;
+    double y = 0.0;
+};
+
+struct CopiedFrame {
+    std::string title;
+    double x = 0.0;
+    double y = 0.0;
+    double width = 0.0;
+    double height = 0.0;
+    bool collapsed = false;
+    std::vector<std::string> members;
+};
+
+struct NodeClipboard {
+    orlgraph::GraphStage stage = orlgraph::GraphStage::Solver;
+    std::vector<CopiedNode> nodes;
+    std::vector<orlgraph::Connection> connections;
+    std::vector<CopiedFrame> frames;
+};
+
+struct PastedNode {
+    std::string editor_id;
+    double x = 0.0;
+    double y = 0.0;
+};
+
+struct PastedFrame {
+    std::string id;
+    std::string title;
+    double x = 0.0;
+    double y = 0.0;
+    double width = 0.0;
+    double height = 0.0;
+    bool collapsed = false;
+    std::vector<std::string> members;
+};
+
+struct PasteResult {
+    std::vector<PastedNode> nodes;
+    std::vector<PastedFrame> frames;
+};
+
+// Snapshot definition nodes, interface nodes, and connections whose
+// endpoints are both in the snapshot. Frames are copied as editor layout.
+bool copy_nodes(const orlgraph::GraphModule& graph,
+    const std::vector<CopyNodeRef>& nodes,
+    const std::vector<CopiedFrame>& frames,
+    NodeClipboard* clipboard, std::string* error = nullptr);
+
+// Duplicate a clipboard into the graph with new ids. Frame titles and ids
+// are renamed. offset shifts every pasted position from the snapshot.
+bool paste_nodes(orlgraph::GraphModule& graph,
+    const orlgraph::NodeRegistry& registry, orlgraph::GraphStage stage,
+    const NodeClipboard& clipboard, double offset_x, double offset_y,
+    const std::vector<std::string>& existing_frame_ids,
+    const std::vector<std::string>& existing_frame_titles,
+    PasteResult* result, std::string* error = nullptr);
+
 } // namespace ORL::node_graph
 
 #endif

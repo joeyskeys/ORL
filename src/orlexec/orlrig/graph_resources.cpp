@@ -621,7 +621,7 @@ std::vector<orlgraph::NodeDefinition> make_constraint_definitions() {
     locator_aim_inputs[0].type =
         orlgraph::LogicalType::buffer(
             orlgraph::LogicalType::struct_type("Locator"));
-    return {
+    auto result = std::vector<orlgraph::NodeDefinition>{
         make_stdlib_definition("constraint", "aim", std::move(aim_inputs),
             parameter_effects("constraint_aim", {"targets", "axes"}, {},
                 {"subjects"}), false),
@@ -634,6 +634,37 @@ std::vector<orlgraph::NodeDefinition> make_constraint_definitions() {
         copy_definition("copy_rotation"),
         copy_definition("copy_scale"),
     };
+    const auto set_footprint = [](orlgraph::NodeDefinition* definition,
+        std::vector<std::string> read_ports,
+        std::vector<std::string> write_ports,
+        std::vector<std::string> locator_reads) {
+        orlgraph::PartialEvaluationFootprint footprint;
+        footprint.declared = true;
+        footprint.propagation = orlgraph::PartialPropagation::None;
+        footprint.read_joint_ports = read_ports;
+        footprint.read_controller_ports = read_ports;
+        footprint.read_locator_ports = std::move(read_ports);
+        footprint.read_locator_ports.insert(
+            footprint.read_locator_ports.end(),
+            locator_reads.begin(), locator_reads.end());
+        footprint.write_joint_ports = write_ports;
+        footprint.write_controller_ports = write_ports;
+        footprint.write_locator_ports = std::move(write_ports);
+        definition->partial_footprint = std::move(footprint);
+    };
+    for (auto& definition : result) {
+        const auto& function = definition.implementation.function;
+        if (function == "constraint_aim") {
+            set_footprint(&definition, {}, {"subject_index"}, {});
+        } else if (function == "constraint_aim_locator") {
+            set_footprint(&definition, {}, {"subject_index"},
+                {"target_index"});
+        } else {
+            set_footprint(&definition, {"source_index"},
+                {"destination_index"}, {});
+        }
+    }
+    return result;
 }
 
 void add_interface_input(orlgraph::GraphModule& module,

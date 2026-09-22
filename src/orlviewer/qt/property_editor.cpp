@@ -26,6 +26,7 @@
 #include <glm/gtx/quaternion.hpp>
 
 #include "../component_manager.hpp"
+#include "../scene_graph_context.hpp"
 
 namespace ORL
 {
@@ -60,10 +61,12 @@ glm::quat euler_rotation(const glm::vec3& degrees) {
 } // namespace
 
 PropertyEditor::PropertyEditor(const Selection& selection,
-    const ComponentManager& components, QWidget* parent)
+    ComponentManager& components, SceneGraphContext* graph_context,
+    QWidget* parent)
     : QWidget(parent)
     , selection_(selection)
     , components_(components)
+    , graphContext(graph_context)
 {
     setMinimumSize(280, 240);
 
@@ -88,6 +91,20 @@ PropertyEditor::PropertyEditor(const Selection& selection,
     selection_layout->addRow(QStringLiteral("Count"), selection_summary_);
     selection_layout->addRow(QStringLiteral("Items"), selected_items_);
     content_layout->addWidget(selection_group);
+
+    nameGroup = new QGroupBox(QStringLiteral("Name"), content);
+    auto* name_layout = new QFormLayout(nameGroup);
+    nameField = new QLineEdit(nameGroup);
+    nameField->setPlaceholderText(QStringLiteral("component name"));
+    name_layout->addRow(QStringLiteral("Name"), nameField);
+    QObject::connect(nameField, &QLineEdit::editingFinished, this, [this] {
+        if (!nameField->isModified()) {
+            return;
+        }
+        apply_component_name();
+        nameField->setModified(false);
+    });
+    content_layout->addWidget(nameGroup);
 
     transform_group_ = new QGroupBox(QStringLiteral("Transform"), content);
     auto* transform_layout = new QFormLayout(transform_group_);
@@ -193,6 +210,7 @@ void PropertyEditor::refresh() {
         selection_summary_->setText(QStringLiteral("Nothing selected"));
         selected_items_->setText(
             QStringLiteral("Select a viewport element to inspect its properties."));
+        nameGroup->setVisible(false);
         transform_group_->setVisible(false);
         return;
     }
@@ -209,6 +227,18 @@ void PropertyEditor::refresh() {
     selected_items_->setText(item_names.join(QStringLiteral("\n")));
 
     const auto* focus = selection_.focus();
+    const bool named_focus = focus != nullptr
+        && (focus->kind == SelectionRef::Kind::Joint
+            || focus->kind == SelectionRef::Kind::Locator
+            || focus->kind == SelectionRef::Kind::Controller);
+    nameGroup->setTitle(named_focus
+        ? kind_name(focus->kind) : QStringLiteral("Name"));
+    nameGroup->setVisible(named_focus);
+    if (named_focus && !nameField->hasFocus()) {
+        const QSignalBlocker blocker(nameField);
+        nameField->setText(component_name(*focus, components_));
+    }
+
     TransformValues values;
     QString source;
     if (focus == nullptr || !make_transform(*focus, values, source)) {
@@ -376,6 +406,52 @@ void PropertyEditor::apply_vector_edit(
         refresh();
         return;
     }
+    refresh();
+}
+
+void PropertyEditor::apply_component_name()
+{
+    const auto* focus = selection_.focus();
+    const char* find_node = nullptr;
+    if (focus != nullptr && focus->kind == SelectionRef::Kind::Joint) {
+        find_node = "orlrig.input.find_joint";
+    } else if (focus != nullptr && focus->kind == SelectionRef::Kind::Locator) {
+        find_node = "orlrig.input.find_locator";
+    } else if (focus != nullptr
+        && focus->kind == SelectionRef::Kind::Controller)
+    {
+        find_node = "orlrig.input.find_controller";
+    }
+    if (find_node == nullptr) {
+        return;
+    }
+    const auto* component = components_.find(focus->component);
+    if (component == nullptr) {
+        return;
+    }
+    const std::string old_name = component->name;
+    const std::string new_name = nameField->text().trimmed().toStdString();
+    const auto restore = [this, &old_name] {
+        const QSignalBlocker blocker(nameField);
+        nameField->setText(QString::fromStdString(old_name));
+    };
+    if (new_name.empty()) {
+        restore();
+        return;
+    }
+    if (new_name == old_name) {
+        restore();
+        return;
+    }
+    if (!components_.rename(focus->component, new_name)) {
+        restore();
+        return;
+    }
+    if (graphContext != nullptr) {
+        graphContext->retarget_element_name(find_node, old_name, new_name);
+    }
+    const QSignalBlocker blocker(nameField);
+    nameField->setText(QString::fromStdString(new_name));
     refresh();
 }
 

@@ -959,6 +959,229 @@ TEST_CASE("evaluation plan resolves typed solver footprints and dirty levels",
     REQUIRE(glm::vec3{worlds[2][3]}.x == Catch::Approx(2.0f));
 }
 
+TEST_CASE("evaluation plan orders a locator writer before its reader",
+    "[orlrig][partial][order]")
+{
+    orlrig::ComponentStore store;
+    const auto root = store.create_joint("root");
+    auto mid_value = orlrig::make_identity_joint();
+    mid_value.parent = 0;
+    const auto mid = store.create_joint("mid", mid_value);
+    auto end_value = orlrig::make_identity_joint();
+    end_value.parent = 1;
+    store.create_joint("end", end_value);
+    store.create_locator("target");
+    store.create_locator("pole");
+    store.create_locator("aim_at");
+    (void)root;
+    (void)mid;
+
+    orlgraph::NodeRegistry registry;
+    REQUIRE(orlrig::register_rig_node_definitions(registry));
+    orlgraph::GraphModule graph;
+    graph.module_id = "partial.order";
+
+    const auto add_find = [&](std::string id, std::string definition,
+        std::string name) {
+        orlgraph::NodeInstance node;
+        node.id = orlgraph::StableId{id};
+        node.definition = orlgraph::StableId{std::move(definition)};
+        node.name = id;
+        node.parameter_values.emplace("name",
+            orlgraph::ConstantValue{
+                orlgraph::LogicalType::string(), std::move(name)});
+        return graph.add_node(std::move(node));
+    };
+    const auto connect = [&](std::string source_node,
+        std::string source_port, std::string destination_node,
+        std::string destination_port) {
+        orlgraph::Connection connection;
+        connection.source = orlgraph::Endpoint::node_port(
+            orlgraph::StableId{std::move(source_node)},
+            orlgraph::StableId{std::move(source_port)});
+        connection.destination = orlgraph::Endpoint::node_port(
+            orlgraph::StableId{std::move(destination_node)},
+            orlgraph::StableId{std::move(destination_port)});
+        return graph.add_connection(std::move(connection));
+    };
+    REQUIRE(add_find("find.root", "orlrig.input.find_joint", "root"));
+    REQUIRE(add_find("find.mid", "orlrig.input.find_joint", "mid"));
+    REQUIRE(add_find("find.end", "orlrig.input.find_joint", "end"));
+    REQUIRE(add_find("find.target", "orlrig.input.find_locator", "target"));
+    REQUIRE(add_find("find.pole", "orlrig.input.find_locator", "pole"));
+    REQUIRE(add_find("find.aim", "orlrig.input.find_locator", "aim_at"));
+
+    orlgraph::NodeInstance aim;
+    aim.id = orlgraph::StableId{"aim"};
+    aim.definition = orlgraph::StableId{"orlrig.constraint.aim_locator"};
+    aim.name = "aim";
+    REQUIRE(graph.add_node(std::move(aim)));
+    orlgraph::NodeInstance solver;
+    solver.id = orlgraph::StableId{"ik"};
+    solver.definition = orlgraph::StableId{"orlrig.solver.ik_two_bone"};
+    solver.name = "ik";
+    REQUIRE(graph.add_node(std::move(solver)));
+
+    REQUIRE(connect("find.aim", "index", "aim", "target_index"));
+    REQUIRE(connect("find.target", "index", "aim", "subject_index"));
+    REQUIRE(connect("find.root", "handle", "ik", "root"));
+    REQUIRE(connect("find.mid", "handle", "ik", "mid"));
+    REQUIRE(connect("find.end", "handle", "ik", "end"));
+    REQUIRE(connect("find.target", "index", "ik", "target_index"));
+    REQUIRE(connect("find.pole", "index", "ik", "pole_index"));
+
+    const auto hierarchy = orlrig::compile_hierarchy_plan(store);
+    REQUIRE(hierarchy);
+    const auto compiled = orlrig::compile_evaluation_plan(
+        graph, registry, store, *hierarchy.plan);
+    REQUIRE(compiled);
+    std::size_t aim_level = compiled.plan->batches.size();
+    std::size_t ik_level = compiled.plan->batches.size();
+    for (std::size_t level = 0; level < compiled.plan->batches.size(); ++level) {
+        for (const auto& id : compiled.plan->batches[level]) {
+            if (id.value == "aim") {
+                aim_level = level;
+            }
+            if (id.value == "ik") {
+                ik_level = level;
+            }
+        }
+    }
+    REQUIRE(aim_level < ik_level);
+}
+
+TEST_CASE("evaluation plan rejects two solvers writing the same joints",
+    "[orlrig][partial][order]")
+{
+    orlrig::ComponentStore store;
+    store.create_joint("root");
+    auto mid_value = orlrig::make_identity_joint();
+    mid_value.parent = 0;
+    store.create_joint("mid", mid_value);
+    auto end_value = orlrig::make_identity_joint();
+    end_value.parent = 1;
+    store.create_joint("end", end_value);
+    store.create_locator("target");
+    store.create_locator("pole");
+
+    orlgraph::NodeRegistry registry;
+    REQUIRE(orlrig::register_rig_node_definitions(registry));
+    orlgraph::GraphModule graph;
+    graph.module_id = "partial.duplicate";
+
+    const auto add_find = [&](std::string id, std::string definition,
+        std::string name) {
+        orlgraph::NodeInstance node;
+        node.id = orlgraph::StableId{id};
+        node.definition = orlgraph::StableId{std::move(definition)};
+        node.name = id;
+        node.parameter_values.emplace("name",
+            orlgraph::ConstantValue{
+                orlgraph::LogicalType::string(), std::move(name)});
+        return graph.add_node(std::move(node));
+    };
+    const auto connect = [&](std::string source_node,
+        std::string source_port, std::string destination_node,
+        std::string destination_port) {
+        orlgraph::Connection connection;
+        connection.source = orlgraph::Endpoint::node_port(
+            orlgraph::StableId{std::move(source_node)},
+            orlgraph::StableId{std::move(source_port)});
+        connection.destination = orlgraph::Endpoint::node_port(
+            orlgraph::StableId{std::move(destination_node)},
+            orlgraph::StableId{std::move(destination_port)});
+        return graph.add_connection(std::move(connection));
+    };
+    REQUIRE(add_find("find.root", "orlrig.input.find_joint", "root"));
+    REQUIRE(add_find("find.mid", "orlrig.input.find_joint", "mid"));
+    REQUIRE(add_find("find.end", "orlrig.input.find_joint", "end"));
+    REQUIRE(add_find("find.target", "orlrig.input.find_locator", "target"));
+    REQUIRE(add_find("find.pole", "orlrig.input.find_locator", "pole"));
+    for (const char* id : {"ik_a", "ik_b"}) {
+        orlgraph::NodeInstance solver;
+        solver.id = orlgraph::StableId{id};
+        solver.definition = orlgraph::StableId{"orlrig.solver.ik_two_bone"};
+        solver.name = id;
+        REQUIRE(graph.add_node(std::move(solver)));
+        REQUIRE(connect("find.root", "handle", id, "root"));
+        REQUIRE(connect("find.mid", "handle", id, "mid"));
+        REQUIRE(connect("find.end", "handle", id, "end"));
+        REQUIRE(connect("find.target", "index", id, "target_index"));
+        REQUIRE(connect("find.pole", "index", id, "pole_index"));
+    }
+
+    const auto hierarchy = orlrig::compile_hierarchy_plan(store);
+    REQUIRE(hierarchy);
+    const auto compiled = orlrig::compile_evaluation_plan(
+        graph, registry, store, *hierarchy.plan);
+    REQUIRE_FALSE(compiled);
+    REQUIRE_FALSE(compiled.plan.has_value());
+    REQUIRE(std::any_of(compiled.errors.begin(), compiled.errors.end(),
+        [](const std::string& error) {
+            return error.find("Competing writers") != std::string::npos;
+        }));
+}
+
+TEST_CASE("evaluation plan rejects a locator dependency cycle",
+    "[orlrig][partial][order]")
+{
+    orlrig::ComponentStore store;
+    store.create_locator("locator_a");
+    store.create_locator("locator_b");
+
+    orlgraph::NodeRegistry registry;
+    REQUIRE(orlrig::register_rig_node_definitions(registry));
+    orlgraph::GraphModule graph;
+    graph.module_id = "partial.cycle";
+
+    const auto add_find = [&](std::string id, std::string name) {
+        orlgraph::NodeInstance node;
+        node.id = orlgraph::StableId{id};
+        node.definition = orlgraph::StableId{"orlrig.input.find_locator"};
+        node.name = id;
+        node.parameter_values.emplace("name",
+            orlgraph::ConstantValue{
+                orlgraph::LogicalType::string(), std::move(name)});
+        return graph.add_node(std::move(node));
+    };
+    const auto connect = [&](std::string source_node,
+        std::string destination_node, std::string destination_port) {
+        orlgraph::Connection connection;
+        connection.source = orlgraph::Endpoint::node_port(
+            orlgraph::StableId{std::move(source_node)},
+            orlgraph::StableId{"index"});
+        connection.destination = orlgraph::Endpoint::node_port(
+            orlgraph::StableId{std::move(destination_node)},
+            orlgraph::StableId{std::move(destination_port)});
+        return graph.add_connection(std::move(connection));
+    };
+    REQUIRE(add_find("find.a", "locator_a"));
+    REQUIRE(add_find("find.b", "locator_b"));
+    for (const char* id : {"aim_a", "aim_b"}) {
+        orlgraph::NodeInstance aim;
+        aim.id = orlgraph::StableId{id};
+        aim.definition = orlgraph::StableId{"orlrig.constraint.aim_locator"};
+        aim.name = id;
+        REQUIRE(graph.add_node(std::move(aim)));
+    }
+    REQUIRE(connect("find.b", "aim_a", "target_index"));
+    REQUIRE(connect("find.a", "aim_a", "subject_index"));
+    REQUIRE(connect("find.a", "aim_b", "target_index"));
+    REQUIRE(connect("find.b", "aim_b", "subject_index"));
+
+    const auto hierarchy = orlrig::compile_hierarchy_plan(store);
+    REQUIRE(hierarchy);
+    const auto compiled = orlrig::compile_evaluation_plan(
+        graph, registry, store, *hierarchy.plan);
+    REQUIRE_FALSE(compiled);
+    REQUIRE_FALSE(compiled.plan.has_value());
+    REQUIRE(std::any_of(compiled.errors.begin(), compiled.errors.end(),
+        [](const std::string& error) {
+            return error.find("Evaluation dependency cycle")
+                != std::string::npos;
+        }));
+}
+
 TEST_CASE("opaque solver nodes force conservative full evaluation",
     "[orlrig][partial][fallback]")
 {

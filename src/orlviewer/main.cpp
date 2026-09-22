@@ -219,7 +219,8 @@ int main(int argc, char** argv) {
     if (node_graph_editor != nullptr) {
         node_graph_editor->set_selection(&selection);
     }
-    auto* property_editor = new ORL::PropertyEditor(selection, components);
+    auto* property_editor = new ORL::PropertyEditor(
+        selection, components, &scene_graph);
     if (window_backend.set_hud_panel(property_editor, "Properties") < 0) {
         delete property_editor;
         property_editor = nullptr;
@@ -416,6 +417,26 @@ int main(int argc, char** argv) {
         [node_graph_editor](const ORL::InputEvent&) {
             if (node_graph_editor != nullptr) {
                 node_graph_editor->create_frame_from_selection();
+            }
+        });
+    controls.bind_op_variant("copy_node_graph",
+        [node_graph_editor, panel_has_focus](const ORL::InputEvent&) {
+            return node_graph_editor != nullptr
+                && panel_has_focus(node_graph_editor);
+        },
+        [node_graph_editor](const ORL::InputEvent&) {
+            if (node_graph_editor != nullptr) {
+                node_graph_editor->copy_selected_nodes();
+            }
+        });
+    controls.bind_op_variant("paste_node_graph",
+        [node_graph_editor, panel_has_focus](const ORL::InputEvent&) {
+            return node_graph_editor != nullptr
+                && panel_has_focus(node_graph_editor);
+        },
+        [node_graph_editor](const ORL::InputEvent&) {
+            if (node_graph_editor != nullptr) {
+                node_graph_editor->paste_nodes();
             }
         });
     controls.bind_op_variant("display_mode_switch",

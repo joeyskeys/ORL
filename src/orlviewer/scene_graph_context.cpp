@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <utility>
+#include <variant>
 
 namespace ORL
 {
@@ -333,15 +334,13 @@ bool SceneGraphContext::ensure_evaluation_plan(
     const auto result = orlrig::compile_evaluation_plan(
         stage_graph(stage), registry_, components_.rigging(),
         *compiled_hierarchy_plan);
-    if (!result.plan.has_value()) {
-        std::string message = "Evaluation plan compilation failed";
-        for (const auto& detail : result.errors) {
-            message += ": " + detail;
-        }
-        return set_error(error, std::move(message));
-    }
-    if (!result.errors.empty()) {
-        std::string message = "Evaluation plan contains invalid regions";
+    if (!result.plan.has_value() || !result.errors.empty()) {
+        std::atomic_store(&compiled_evaluation_plan_,
+            std::shared_ptr<const orlrig::EvaluationPlan>{});
+        compiled_evaluation_signature_ = 0;
+        std::string message = result.plan.has_value()
+            ? "Evaluation plan contains invalid regions"
+            : "Evaluation plan compilation failed";
         for (const auto& detail : result.errors) {
             message += ": " + detail;
         }
@@ -582,6 +581,42 @@ bool SceneGraphContext::take_operation(std::string_view operation)
     }
     pending_operations_.erase(found);
     return true;
+}
+
+void SceneGraphContext::retarget_element_name(
+    std::string_view qualified_name,
+    std::string_view old_name, std::string_view new_name)
+{
+    if (old_name.empty() || old_name == new_name) {
+        return;
+    }
+    ensure_stage_graphs();
+    bool changed = false;
+    const auto retarget = [&](orlgraph::GraphModule& graph) {
+        for (auto& [_, node] : graph.mutable_nodes()) {
+            const auto* definition = registry_.find(node.definition);
+            if (definition == nullptr
+                || definition->qualified_name != qualified_name)
+            {
+                continue;
+            }
+            const auto parameter = node.parameter_values.find("name");
+            if (parameter == node.parameter_values.end()) {
+                continue;
+            }
+            auto* value = std::get_if<std::string>(&parameter->second.value);
+            if (value == nullptr || *value != old_name) {
+                continue;
+            }
+            *value = std::string{new_name};
+            changed = true;
+        }
+    };
+    retarget(solver_graph_);
+    retarget(graph_);
+    if (changed) {
+        touch_graph();
+    }
 }
 
 bool SceneGraphContext::set_error(

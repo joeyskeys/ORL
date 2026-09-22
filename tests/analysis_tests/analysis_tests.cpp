@@ -195,6 +195,8 @@ TEST_CASE("export metadata imports a partial evaluation footprint",
             string stage = "solver",
             string partial_propagation = "descendants",
             string partial_read_locator_ports = "target_index,pole_index",
+            string partial_write_locator_ports = "subject_index",
+            string partial_write_locators = "locator.target",
             int partial_sparse = 1
         ]] (int value) {
             return value;
@@ -212,6 +214,11 @@ TEST_CASE("export metadata imports a partial evaluation footprint",
         == orlgraph::PartialPropagation::Descendants);
     REQUIRE(solve->partial_footprint->read_locator_ports
         == std::vector<std::string>{"target_index", "pole_index"});
+    REQUIRE(solve->partial_footprint->write_locator_ports
+        == std::vector<std::string>{"subject_index"});
+    REQUIRE(solve->partial_footprint->write_locators
+        == std::vector<orlgraph::StableId>{
+            orlgraph::StableId{"locator.target"}});
 }
 
 TEST_CASE("semantic analysis rejects unresolved calls and unsupported types",

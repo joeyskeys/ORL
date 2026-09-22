@@ -147,6 +147,10 @@ public:
     // graph runtime adapters during the ordered viewport update phase.
     bool request_operation(std::string operation);
     bool take_operation(std::string_view operation);
+    // Rewrite find-node name parameters after a component rename so graph
+    // nodes keep pointing at the same element.
+    void retarget_element_name(std::string_view qualified_name,
+        std::string_view old_name, std::string_view new_name);
 
 private:
     bool set_error(std::string* error, std::string message) const;

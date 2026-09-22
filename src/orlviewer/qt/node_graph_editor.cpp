@@ -200,6 +200,16 @@ bool NodeGraphEditor::load_project_file()
     if (runtime_config.evaluate_orl) {
         scene_graph_context_->request_evaluation();
     }
+    if (!loaded.warnings.empty()) {
+        QString message = QStringLiteral(
+            "The project opened with unfinished graph connections.");
+        for (const auto& warning : loaded.warnings) {
+            message += QStringLiteral("\n")
+                + QString::fromStdString(warning);
+        }
+        QMessageBox::warning(this, QStringLiteral("Open ORL Project"),
+            message);
+    }
     return true;
 }
 
@@ -293,6 +303,178 @@ void NodeGraphEditor::create_frame_from_selection()
     capture_stage_layout();
     rebuild_frame_controls();
     select_only_frame(frames.size() - 1);
+    update();
+}
+
+void NodeGraphEditor::copy_selected_nodes()
+{
+    if (qobject_cast<QLineEdit*>(focusWidget()) != nullptr
+        || qobject_cast<QComboBox*>(focusWidget()) != nullptr)
+    {
+        return;
+    }
+
+    std::vector<node_graph::CopyNodeRef> refs;
+    QSet<QString> seen;
+    const auto add_view_node = [&](const Node& node) {
+        if (seen.contains(node.id)) {
+            return;
+        }
+        seen.insert(node.id);
+        node_graph::CopyNodeRef ref;
+        ref.editor_id = node.id.toStdString();
+        ref.x = node.position.x();
+        ref.y = node.position.y();
+        if (node.kind == Node::Kind::GraphInput) {
+            ref.kind = node_graph::CopiedNodeKind::GraphInput;
+            ref.owner_id = node.interface_id.value;
+        } else if (node.kind == Node::Kind::GraphOutput) {
+            ref.kind = node_graph::CopiedNodeKind::GraphOutput;
+            ref.owner_id = node.interface_id.value;
+        } else {
+            ref.kind = node_graph::CopiedNodeKind::Definition;
+            ref.owner_id = node.id.toStdString();
+        }
+        refs.push_back(std::move(ref));
+    };
+    const auto find_view_node = [this](const QString& id) -> const Node* {
+        for (const auto& node : nodes_) {
+            if (node.id == id) {
+                return &node;
+            }
+        }
+        return nullptr;
+    };
+
+    std::vector<node_graph::CopiedFrame> frames;
+    const auto& stage_frames = current_frames();
+    for (int index : selectedFrames) {
+        if (index < 0 || index >= stage_frames.size()) {
+            continue;
+        }
+        const Frame& frame = stage_frames[index];
+        node_graph::CopiedFrame copied;
+        copied.title = frame.title.toStdString();
+        copied.x = frame.position.x();
+        copied.y = frame.position.y();
+        copied.width = frame.size.width();
+        copied.height = frame.size.height();
+        copied.collapsed = frame.collapsed;
+        for (const auto& member : frame.members) {
+            const Node* node = find_view_node(member);
+            if (node == nullptr) {
+                continue;
+            }
+            add_view_node(*node);
+            copied.members.push_back(member.toStdString());
+        }
+        if (!copied.members.empty()) {
+            frames.push_back(std::move(copied));
+        }
+    }
+    for (int index : selectedNodes) {
+        if (index < 0 || index >= nodes_.size()) {
+            continue;
+        }
+        add_view_node(nodes_[index]);
+    }
+
+    node_graph::NodeClipboard clipboard;
+    std::string error;
+    if (!node_graph::copy_nodes(
+            active_graph(), refs, frames, &clipboard, &error))
+    {
+        return;
+    }
+    clipboard.stage = stage_;
+    nodeClipboard = std::move(clipboard);
+    pasteSerial = 0;
+}
+
+void NodeGraphEditor::paste_nodes()
+{
+    if (qobject_cast<QLineEdit*>(focusWidget()) != nullptr
+        || qobject_cast<QComboBox*>(focusWidget()) != nullptr)
+    {
+        return;
+    }
+    if (!nodeClipboard.has_value() || nodeClipboard->nodes.empty()
+        || nodeClipboard->stage != stage_)
+    {
+        return;
+    }
+
+    runtime_config.evaluate_orl = false;
+    if (project_selection != nullptr) {
+        project_selection->set_controller_input_mode(false);
+    }
+    if (scene_graph_context_ != nullptr) {
+        scene_graph_context_->scene_inputs().set_cuda_evaluation(false);
+    }
+
+    ++pasteSerial;
+    const double offset = 48.0 * static_cast<double>(pasteSerial);
+    std::vector<std::string> frame_ids;
+    std::vector<std::string> frame_titles;
+    for (const auto& frame : current_frames()) {
+        frame_ids.push_back(frame.id.toStdString());
+        frame_titles.push_back(frame.title.toStdString());
+    }
+
+    node_graph::PasteResult pasted;
+    std::string error;
+    if (!node_graph::paste_nodes(active_graph(), active_registry(), stage_,
+            *nodeClipboard, offset, offset, frame_ids, frame_titles,
+            &pasted, &error))
+    {
+        if (!error.empty()) {
+            std::cerr << "Node graph: failed to paste: " << error << '\n';
+        }
+        return;
+    }
+
+    auto& stored = stage_layout(stage_).nodes;
+    QSet<QString> pasted_ids;
+    for (const auto& node : pasted.nodes) {
+        const QString id = QString::fromStdString(node.editor_id);
+        stored.insert(id, QPointF{node.x, node.y});
+        pasted_ids.insert(id);
+    }
+    QSet<QString> pasted_frames;
+    auto& frames = current_frames();
+    for (const auto& frame : pasted.frames) {
+        Frame view;
+        view.id = QString::fromStdString(frame.id);
+        view.title = QString::fromStdString(frame.title);
+        view.position = QPointF{frame.x, frame.y};
+        view.size = QSizeF{frame.width, frame.height};
+        view.collapsed = frame.collapsed;
+        for (const auto& member : frame.members) {
+            view.members.push_back(QString::fromStdString(member));
+        }
+        pasted_frames.insert(view.id);
+        frames.push_back(std::move(view));
+    }
+
+    notify_graph_changed();
+    rebuild_view();
+
+    selectedNodes.clear();
+    selectedFrames.clear();
+    selected_node_ = -1;
+    for (int index = 0; index < nodes_.size(); ++index) {
+        if (pasted_ids.contains(nodes_[index].id)) {
+            selectedNodes.push_back(index);
+            selected_node_ = index;
+        }
+    }
+    const auto& live_frames = current_frames();
+    for (int index = 0; index < live_frames.size(); ++index) {
+        if (pasted_frames.contains(live_frames[index].id)) {
+            selectedFrames.push_back(index);
+        }
+    }
+    capture_stage_layout();
     update();
 }
 

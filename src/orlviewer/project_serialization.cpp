@@ -789,6 +789,46 @@ std::string diagnostics_text(
     return result.str();
 }
 
+bool authoring_incomplete(const orlgraph::Diagnostic& diagnostic)
+{
+    return diagnostic.code == "ORLGRAPH_UNCONNECTED_INPUT"
+        || diagnostic.code == "ORLGRAPH_UNCONNECTED_OUTPUT";
+}
+
+void collect_load_diagnostics(const char* stage_label,
+    const orlgraph::ValidationResult& validation,
+    std::vector<std::string>& errors,
+    std::vector<std::string>& warnings)
+{
+    std::vector<orlgraph::Diagnostic> blocking;
+    std::vector<orlgraph::Diagnostic> incomplete;
+    for (const auto& diagnostic : validation.diagnostics) {
+        if (diagnostic.severity != orlgraph::DiagnosticSeverity::Error) {
+            continue;
+        }
+        if (authoring_incomplete(diagnostic)) {
+            incomplete.push_back(diagnostic);
+        } else {
+            blocking.push_back(diagnostic);
+        }
+    }
+    if (!blocking.empty() || !validation.schedule.ok) {
+        std::string message = std::string{stage_label}
+            + " graph validation failed:";
+        if (!blocking.empty()) {
+            message += "\n" + diagnostics_text(blocking);
+        } else {
+            message += "\nGraph schedule failed";
+        }
+        errors.push_back(std::move(message));
+    }
+    if (!incomplete.empty()) {
+        warnings.push_back(std::string{stage_label}
+            + " graph is incomplete and was loaded anyway:\n"
+            + diagnostics_text(incomplete));
+    }
+}
+
 Json serialize_components(const ComponentManager& components,
     ComponentId weight_id, ComponentId deformer_id, Allocator& allocator)
 {
@@ -1432,16 +1472,10 @@ ProjectIoResult load_project_json(
     const auto deformer_validation = orlgraph::validate(
         graph_document.deformer, graph_context.registry(),
         orlgraph::GraphStage::Deformer);
-    if (!solver_validation.ok()) {
-        result.errors.push_back(
-            "Solver graph validation failed:\n"
-            + diagnostics_text(solver_validation.diagnostics));
-    }
-    if (!deformer_validation.ok()) {
-        result.errors.push_back(
-            "Deformer graph validation failed:\n"
-            + diagnostics_text(deformer_validation.diagnostics));
-    }
+    collect_load_diagnostics(
+        "Solver", solver_validation, result.errors, result.warnings);
+    collect_load_diagnostics(
+        "Deformer", deformer_validation, result.errors, result.warnings);
     if (!result.errors.empty()) {
         return result;
     }

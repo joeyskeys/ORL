@@ -127,11 +127,15 @@ bool add_partial_footprint(const FunctionSummary& function,
         || function.metadata.contains("partial_read_joint_ports")
         || function.metadata.contains("partial_write_joint_ports")
         || function.metadata.contains("partial_read_controller_ports")
+        || function.metadata.contains("partial_write_controller_ports")
         || function.metadata.contains("partial_read_locator_ports")
+        || function.metadata.contains("partial_write_locator_ports")
         || function.metadata.contains("partial_read_joints")
         || function.metadata.contains("partial_write_joints")
         || function.metadata.contains("partial_read_controllers")
+        || function.metadata.contains("partial_write_controllers")
         || function.metadata.contains("partial_read_locators")
+        || function.metadata.contains("partial_write_locators")
         || function.metadata.contains("partial_read_resources")
         || function.metadata.contains("partial_write_resources");
     if (!declared) {
@@ -181,17 +185,31 @@ bool add_partial_footprint(const FunctionSummary& function,
         function, "partial_write_joint_ports");
     footprint.read_controller_ports = metadata_list(
         function, "partial_read_controller_ports");
+    footprint.write_controller_ports = metadata_list(
+        function, "partial_write_controller_ports");
     footprint.read_locator_ports = metadata_list(
         function, "partial_read_locator_ports");
+    footprint.write_locator_ports = metadata_list(
+        function, "partial_write_locator_ports");
     for (const auto& value :
         metadata_list(function, "partial_read_controllers"))
     {
         footprint.read_controllers.push_back(orlgraph::StableId{value});
     }
     for (const auto& value :
+        metadata_list(function, "partial_write_controllers"))
+    {
+        footprint.write_controllers.push_back(orlgraph::StableId{value});
+    }
+    for (const auto& value :
         metadata_list(function, "partial_read_locators"))
     {
         footprint.read_locators.push_back(orlgraph::StableId{value});
+    }
+    for (const auto& value :
+        metadata_list(function, "partial_write_locators"))
+    {
+        footprint.write_locators.push_back(orlgraph::StableId{value});
     }
     for (const auto& value : metadata_list(function, "partial_read_joints")) {
         footprint.read_joints.push_back(orlgraph::StableId{value});
@@ -214,9 +232,13 @@ bool add_partial_footprint(const FunctionSummary& function,
         && footprint.read_joints.empty()
         && footprint.write_joints.empty()
         && footprint.read_controller_ports.empty()
+        && footprint.write_controller_ports.empty()
         && footprint.read_locator_ports.empty()
+        && footprint.write_locator_ports.empty()
         && footprint.read_controllers.empty()
+        && footprint.write_controllers.empty()
         && footprint.read_locators.empty()
+        && footprint.write_locators.empty()
         && footprint.read_resources.empty()
         && footprint.write_resources.empty())
     {

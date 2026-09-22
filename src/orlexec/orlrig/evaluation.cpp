@@ -105,13 +105,24 @@ std::optional<ComponentId> constant_component(
         ? std::optional<ComponentId>{id} : std::nullopt;
 }
 
-std::optional<ComponentId> resolve_port(
+enum class ConnectedKind {
+    Absent,
+    Joint,
+    Controller,
+    Locator,
+};
+
+struct ConnectedElement {
+    ConnectedKind kind = ConnectedKind::Absent;
+    ComponentId id;
+};
+
+ConnectedElement connected_element(
     const orlgraph::GraphModule& graph,
     const orlgraph::NodeRegistry& registry,
     const ComponentStore& components,
     const orlgraph::StableId& node_id,
-    std::string_view port_name,
-    ExpectedKind expected)
+    std::string_view port_name)
 {
     for (const auto& connection : graph.connections()) {
         if (connection.destination.kind != orlgraph::EndpointKind::NodePort
@@ -120,20 +131,173 @@ std::optional<ComponentId> resolve_port(
         {
             continue;
         }
+        ConnectedElement absent;
         if (connection.source.kind != orlgraph::EndpointKind::NodePort) {
-            return std::nullopt;
+            return absent;
         }
         const auto* source = graph.node(connection.source.owner);
         if (source == nullptr) {
-            return std::nullopt;
+            return absent;
         }
         const auto* definition = registry.find(source->definition);
         if (definition == nullptr) {
-            return std::nullopt;
+            return absent;
         }
-        return constant_component(*source, *definition, components, expected);
+        ConnectedElement found;
+        if (const auto joint = constant_component(
+                *source, *definition, components, ExpectedKind::Joint))
+        {
+            found.kind = ConnectedKind::Joint;
+            found.id = *joint;
+            return found;
+        }
+        if (const auto controller = constant_component(
+                *source, *definition, components, ExpectedKind::Controller))
+        {
+            found.kind = ConnectedKind::Controller;
+            found.id = *controller;
+            return found;
+        }
+        if (const auto locator = constant_component(
+                *source, *definition, components, ExpectedKind::Locator))
+        {
+            found.kind = ConnectedKind::Locator;
+            found.id = *locator;
+            return found;
+        }
+        return absent;
     }
-    return std::nullopt;
+    return {};
+}
+
+struct PortFlags {
+    bool joint = false;
+    bool controller = false;
+    bool locator = false;
+};
+
+struct PortEntry {
+    std::string name;
+    PortFlags flags;
+};
+
+void note_port(std::vector<PortEntry>* ports, const std::vector<std::string>& names,
+    void (*mark)(PortFlags*))
+{
+    for (const auto& name : names) {
+        const auto found = std::find_if(ports->begin(), ports->end(),
+            [&](const PortEntry& entry) { return entry.name == name; });
+        PortEntry* entry = nullptr;
+        if (found == ports->end()) {
+            ports->push_back(PortEntry{name, {}});
+            entry = &ports->back();
+        } else {
+            entry = &*found;
+        }
+        mark(&entry->flags);
+    }
+}
+
+void resolve_element_ports(
+    const orlgraph::GraphModule& graph,
+    const orlgraph::NodeRegistry& registry,
+    const ComponentStore& components,
+    const orlgraph::StableId& node_id,
+    const orlgraph::PartialEvaluationFootprint& footprint,
+    bool writing,
+    SolverRegion* region,
+    bool* global)
+{
+    std::vector<PortEntry> ports;
+    if (writing) {
+        note_port(&ports, footprint.write_joint_ports,
+            [](PortFlags* flags) { flags->joint = true; });
+        note_port(&ports, footprint.write_controller_ports,
+            [](PortFlags* flags) { flags->controller = true; });
+        note_port(&ports, footprint.write_locator_ports,
+            [](PortFlags* flags) { flags->locator = true; });
+    } else {
+        note_port(&ports, footprint.read_joint_ports,
+            [](PortFlags* flags) { flags->joint = true; });
+        note_port(&ports, footprint.read_controller_ports,
+            [](PortFlags* flags) { flags->controller = true; });
+        note_port(&ports, footprint.read_locator_ports,
+            [](PortFlags* flags) { flags->locator = true; });
+    }
+    for (const auto& entry : ports) {
+        const auto connected = connected_element(
+            graph, registry, components, node_id, entry.name);
+        const bool allowed = connected.kind == ConnectedKind::Joint
+                ? entry.flags.joint
+            : connected.kind == ConnectedKind::Controller
+                ? entry.flags.controller
+            : connected.kind == ConnectedKind::Locator
+                ? entry.flags.locator
+            : false;
+        if (!allowed) {
+            *global = true;
+            continue;
+        }
+        if (writing) {
+            if (connected.kind == ConnectedKind::Joint) {
+                append_unique(&region->write_joints, connected.id);
+            } else if (connected.kind == ConnectedKind::Controller) {
+                append_unique(&region->write_controllers, connected.id);
+            } else {
+                append_unique(&region->write_locators, connected.id);
+            }
+        } else if (connected.kind == ConnectedKind::Joint) {
+            append_unique(&region->read_joints, connected.id);
+        } else if (connected.kind == ConnectedKind::Controller) {
+            append_unique(&region->read_controllers, connected.id);
+        } else {
+            append_unique(&region->read_locators, connected.id);
+        }
+    }
+}
+
+bool is_ancestor(const HierarchyPlan& hierarchy,
+    ComponentId ancestor, ComponentId joint)
+{
+    auto current = hierarchy.parent_of(joint);
+    while (current.has_value()) {
+        if (*current == ancestor) {
+            return true;
+        }
+        current = hierarchy.parent_of(*current);
+    }
+    return false;
+}
+
+bool reaches(const std::vector<std::vector<std::size_t>>& precedes,
+    std::size_t from, std::size_t to)
+{
+    std::vector<bool> seen(precedes.size(), false);
+    std::vector<std::size_t> pending{from};
+    while (!pending.empty()) {
+        const std::size_t current = pending.back();
+        pending.pop_back();
+        if (current == to) {
+            return true;
+        }
+        if (current >= seen.size() || seen[current]) {
+            continue;
+        }
+        seen[current] = true;
+        for (const std::size_t next : precedes[current]) {
+            pending.push_back(next);
+        }
+    }
+    return false;
+}
+
+std::string component_label(const ComponentStore& components, ComponentId id)
+{
+    const Component* component = components.find(id);
+    if (component == nullptr || component->name.empty()) {
+        return std::to_string(id.value);
+    }
+    return component->name;
 }
 
 void append_ancestors(const HierarchyPlan& hierarchy,
@@ -308,47 +472,20 @@ EvaluationPlanCompileResult compile_evaluation_plan(
                 &region.read_controllers, &region.global);
             resolve_explicit_components(components, footprint.read_locators,
                 ExpectedKind::Locator, &region.read_locators, &region.global);
+            resolve_explicit_components(components,
+                footprint.write_controllers, ExpectedKind::Controller,
+                &region.write_controllers, &region.global);
+            resolve_explicit_components(components, footprint.write_locators,
+                ExpectedKind::Locator, &region.write_locators, &region.global);
             append_unique_stable_ids(&region.read_resources,
                 footprint.read_resources);
             append_unique_stable_ids(&region.write_resources,
                 footprint.write_resources);
 
-            for (const auto& port : footprint.read_joint_ports) {
-                const auto id = resolve_port(graph, registry, components,
-                    node_id, port, ExpectedKind::Joint);
-                if (!id.has_value()) {
-                    region.global = true;
-                    continue;
-                }
-                append_unique(&region.read_joints, *id);
-            }
-            for (const auto& port : footprint.write_joint_ports) {
-                const auto id = resolve_port(graph, registry, components,
-                    node_id, port, ExpectedKind::Joint);
-                if (!id.has_value()) {
-                    region.global = true;
-                    continue;
-                }
-                append_unique(&region.write_joints, *id);
-            }
-            for (const auto& port : footprint.read_controller_ports) {
-                const auto id = resolve_port(graph, registry, components,
-                    node_id, port, ExpectedKind::Controller);
-                if (!id.has_value()) {
-                    region.global = true;
-                    continue;
-                }
-                append_unique(&region.read_controllers, *id);
-            }
-            for (const auto& port : footprint.read_locator_ports) {
-                const auto id = resolve_port(graph, registry, components,
-                    node_id, port, ExpectedKind::Locator);
-                if (!id.has_value()) {
-                    region.global = true;
-                    continue;
-                }
-                append_unique(&region.read_locators, *id);
-            }
+            resolve_element_ports(graph, registry, components, node_id,
+                footprint, false, &region, &region.global);
+            resolve_element_ports(graph, registry, components, node_id,
+                footprint, true, &region, &region.global);
         } else {
             // Missing metadata is deliberately opaque. It can never silently
             // become a sparse region.
@@ -370,6 +507,11 @@ EvaluationPlanCompileResult compile_evaluation_plan(
         if (region.stateful) {
             region.global = true;
             plan.stateful_evaluation_required = true;
+        }
+        if (definition->operation == "constraint") {
+            region.propagation = region.write_joints.empty()
+                ? orlgraph::PartialPropagation::None
+                : orlgraph::PartialPropagation::Descendants;
         }
         const std::vector<ComponentId> initial_read_joints =
             region.read_joints;
@@ -473,50 +615,167 @@ EvaluationPlanCompileResult compile_evaluation_plan(
             + (plan.dependency_revision >> 2);
     }
 
-    for (std::size_t i = 0; i < plan.regions.size(); ++i) {
-        bool placed = false;
-        for (auto& batch : plan.batches) {
-            bool conflict = false;
-            for (const auto& node_id : batch) {
-                const SolverRegion* other = plan.region(node_id);
-                const SolverRegion& current = plan.regions[i];
-                const auto other_index = region_indices.find(node_id);
-                const bool dependency = other_index != region_indices.end()
-                    && (std::find(current.dependencies.begin(),
-                            current.dependencies.end(), other_index->second)
-                        != current.dependencies.end()
-                        || std::find(
-                            plan.regions[other_index->second].dependencies.begin(),
-                            plan.regions[other_index->second].dependencies.end(),
-                            i)
-                        != plan.regions[other_index->second].dependencies.end());
-                if (other == nullptr || other->global || current.global
-                    || dependency
-                    || intersects(other->affected_joints,
-                        current.read_joints)
-                    || intersects(other->affected_joints,
-                        current.affected_joints)
-                    || intersects(current.affected_joints,
-                        other->read_joints)
-                    || resource_intersects(*other, current))
-                {
-                    conflict = true;
-                    break;
+    const auto add_element_edges = [](
+        const std::map<std::uint64_t, std::vector<std::size_t>>& writers,
+        const std::map<std::uint64_t, std::vector<std::size_t>>& readers,
+        std::vector<SolverRegion>* regions) {
+        for (const auto& [id, writer_list] : writers) {
+            const auto found = readers.find(id);
+            if (found == readers.end()) {
+                continue;
+            }
+            for (const std::size_t reader : found->second) {
+                for (const std::size_t writer : writer_list) {
+                    if (reader == writer) {
+                        continue;
+                    }
+                    append_unique(&(*regions)[reader].dependencies, writer);
                 }
             }
-            if (!conflict) {
-                batch.push_back(plan.regions[i].node_id);
-                placed = true;
-                break;
-            }
         }
-        if (!placed) {
-            plan.batches.push_back({plan.regions[i].node_id});
+    };
+    std::map<std::uint64_t, std::vector<std::size_t>> joint_writer_regions;
+    std::map<std::uint64_t, std::vector<std::size_t>> joint_reader_regions;
+    std::map<std::uint64_t, std::vector<std::size_t>> controller_writer_regions;
+    std::map<std::uint64_t, std::vector<std::size_t>> controller_reader_regions;
+    std::map<std::uint64_t, std::vector<std::size_t>> locator_writer_regions;
+    std::map<std::uint64_t, std::vector<std::size_t>> locator_reader_regions;
+    const auto note_regions = [](
+        const std::vector<ComponentId>& ids,
+        std::size_t region_index,
+        std::map<std::uint64_t, std::vector<std::size_t>>* output) {
+        for (const ComponentId id : ids) {
+            append_unique(&(*output)[id.value], region_index);
+        }
+    };
+    for (std::size_t index = 0; index < plan.regions.size(); ++index) {
+        const auto& region = plan.regions[index];
+        note_regions(region.write_joints, index, &joint_writer_regions);
+        note_regions(region.read_joints, index, &joint_reader_regions);
+        note_regions(region.write_controllers, index,
+            &controller_writer_regions);
+        note_regions(region.read_controllers, index,
+            &controller_reader_regions);
+        note_regions(region.write_locators, index, &locator_writer_regions);
+        note_regions(region.read_locators, index, &locator_reader_regions);
+    }
+    add_element_edges(joint_writer_regions, joint_reader_regions,
+        &plan.regions);
+    add_element_edges(controller_writer_regions, controller_reader_regions,
+        &plan.regions);
+    add_element_edges(locator_writer_regions, locator_reader_regions,
+        &plan.regions);
+    for (std::size_t left = 0; left < plan.regions.size(); ++left) {
+        for (std::size_t right = 0; right < plan.regions.size(); ++right) {
+            if (left == right) {
+                continue;
+            }
+            for (const ComponentId parent : plan.regions[left].write_joints) {
+                for (const ComponentId child : plan.regions[right].write_joints) {
+                    if (is_ancestor(hierarchy, parent, child)) {
+                        append_unique(&plan.regions[right].dependencies, left);
+                    }
+                }
+            }
         }
     }
 
+    std::vector<std::vector<std::size_t>> precedes(plan.regions.size());
+    for (std::size_t index = 0; index < plan.regions.size(); ++index) {
+        for (const std::size_t dependency : plan.regions[index].dependencies) {
+            if (dependency < precedes.size() && dependency != index) {
+                append_unique(&precedes[dependency], index);
+            }
+        }
+    }
+    const auto report_competing = [&](
+        std::string_view kind,
+        const std::map<std::uint64_t, std::vector<std::size_t>>& writers) {
+        for (const auto& [id, writer_list] : writers) {
+            if (writer_list.size() < 2) {
+                continue;
+            }
+            for (std::size_t first = 0; first < writer_list.size(); ++first) {
+                for (std::size_t second = first + 1;
+                     second < writer_list.size(); ++second)
+                {
+                    const std::size_t left = writer_list[first];
+                    const std::size_t right = writer_list[second];
+                    const bool forward = reaches(precedes, left, right);
+                    const bool backward = reaches(precedes, right, left);
+                    if (forward != backward) {
+                        continue;
+                    }
+                    result.errors.push_back(
+                        "Competing writers of " + std::string{kind} + " '"
+                        + component_label(components, ComponentId{id})
+                        + "': " + plan.regions[left].node_id.value
+                        + ", " + plan.regions[right].node_id.value);
+                }
+            }
+        }
+    };
+    report_competing("joint", joint_writer_regions);
+    report_competing("controller", controller_writer_regions);
+    report_competing("locator", locator_writer_regions);
+    for (std::size_t left = 0; left < plan.regions.size(); ++left) {
+        if (!plan.regions[left].global) {
+            continue;
+        }
+        for (std::size_t right = 0; right < plan.regions.size(); ++right) {
+            if (left == right || plan.regions[right].global) {
+                continue;
+            }
+            if (reaches(precedes, left, right)
+                || reaches(precedes, right, left))
+            {
+                continue;
+            }
+            result.errors.push_back(
+                "Unresolved order between '"
+                + plan.regions[left].node_id.value + "' and '"
+                + plan.regions[right].node_id.value + "'");
+        }
+    }
+
+    std::vector<std::size_t> indegree(plan.regions.size(), 0);
+    for (std::size_t index = 0; index < plan.regions.size(); ++index) {
+        indegree[index] = plan.regions[index].dependencies.size();
+    }
+    std::vector<bool> placed(plan.regions.size(), false);
+    std::size_t placed_count = 0;
+    while (placed_count < plan.regions.size()) {
+        std::vector<orlgraph::StableId> level;
+        std::vector<std::size_t> level_indices;
+        for (std::size_t index = 0; index < plan.regions.size(); ++index) {
+            if (!placed[index] && indegree[index] == 0) {
+                level.push_back(plan.regions[index].node_id);
+                level_indices.push_back(index);
+            }
+        }
+        if (level.empty()) {
+            std::string message = "Evaluation dependency cycle involving";
+            for (std::size_t index = 0; index < plan.regions.size(); ++index) {
+                if (!placed[index]) {
+                    message += " '" + plan.regions[index].node_id.value + "'";
+                }
+            }
+            result.errors.push_back(std::move(message));
+            break;
+        }
+        for (const std::size_t index : level_indices) {
+            placed[index] = true;
+            ++placed_count;
+            for (const std::size_t dependent : precedes[index]) {
+                if (indegree[dependent] > 0) {
+                    --indegree[dependent];
+                }
+            }
+        }
+        plan.batches.push_back(std::move(level));
+    }
+
     if (!result.errors.empty()) {
-        result.plan = std::move(plan);
         return result;
     }
     result.plan = std::move(plan);
