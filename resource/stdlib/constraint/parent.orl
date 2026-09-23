@@ -1,12 +1,13 @@
-// Copy-transform constraint.
-//   use constraint/copy_xform;
+// Parent constraint.
+//   use constraint/parent;
 //
-// Copies one complete source transform into one destination transform.
-// Source and destination may be different matrix buffers.
+// Keeps the destination's distance and orientation relative to the source.
+// offset is that relative transform, captured once as
+// mat_mul(mat_inverse(source), destination). Each evaluation writes
+// destination = source * offset. copy_xform replaces the destination
+// matrix; this one carries the captured offset with the source.
 
-use constraint/common;
-
-export int constraint_copy_xform [[
+export int constraint_parent [[
     string stage = "solver",
     string partial_propagation = "none",
     string partial_read_joint_ports = "source_index",
@@ -17,17 +18,18 @@ export int constraint_copy_xform [[
     string partial_write_locator_ports = "destination_index"
 ]]
     (matrix source[],
-                          matrix destination[],
-                          int source_index,
-                          int destination_index,
-                          int source_count,
-                          int destination_count) {
+     matrix destination[],
+     matrix offset,
+     int source_index,
+     int destination_index,
+     int source_count,
+     int destination_count) {
     if (source_index < 0 || source_index >= source_count) {
         return 0;
     }
     if (destination_index < 0 || destination_index >= destination_count) {
         return 0;
     }
-    destination[destination_index] = source[source_index];
+    destination[destination_index] = mat_mul(source[source_index], offset);
     return 1;
 }

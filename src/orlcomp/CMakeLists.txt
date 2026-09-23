@@ -84,6 +84,11 @@ target_link_libraries(orlcomp_analysis
         orlgraph
 )
 
+if(TARGET orlgraph_io)
+    target_link_libraries(orlcomp_analysis PUBLIC orlgraph_io)
+    target_compile_definitions(orlcomp_analysis PUBLIC ORL_HAS_GRAPH_IO=1)
+endif()
+
 add_library(orlcomp_graph_lowering
     orl_graph_lowering.cpp
     orl_graph_lowering.h

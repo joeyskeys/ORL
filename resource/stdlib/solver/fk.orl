@@ -26,7 +26,11 @@ matrix solver_fk_world_matrix(int index) {
     return world;
 }
 
-export int solver_fk [[ string stage = "solver" ]]
+export int solver_fk [[
+    string stage = "solver",
+    int partial_global = 1,
+    string partial_propagation = "full"
+]]
     (matrix world[]) {
     int joint_count = solver_context.joint_count;
     int index = 0;

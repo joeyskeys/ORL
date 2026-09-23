@@ -7,7 +7,13 @@
 #include "orl_parser.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <vector>
+
+#if defined(ORL_HAS_GRAPH_IO)
+#include "graph_serialization.hpp"
+#endif
 
 using namespace orlcomp;
 
@@ -103,7 +109,7 @@ TEST_CASE("external ORL source registers node definitions at runtime",
     options.source_name = "external_nodes.orl";
     options.exported_functions.push_back("add_external");
 
-    const auto result = register_orl_node_definitions(registry, R"(
+    const auto compiled = compile_node_definitions_to_oro(R"(
         int add_helper(int value) {
             return value + 1;
         }
@@ -112,6 +118,9 @@ TEST_CASE("external ORL source registers node definitions at runtime",
             return add_helper(left) + right - 1;
         }
     )", options);
+    REQUIRE(compiled.ok());
+    const auto result = register_orl_node_definitions_from_oro(
+        registry, compiled.text);
     REQUIRE(result.ok());
     REQUIRE(result.registered_count == 1);
 
@@ -122,11 +131,8 @@ TEST_CASE("external ORL source registers node definitions at runtime",
     REQUIRE(definition->implementation.module == "external_nodes");
     REQUIRE(definition->implementation.function == "add_external");
 
-    const auto duplicate = register_orl_node_definitions(registry, R"(
-        int add_external(int value) {
-            return value;
-        }
-    )", options);
+    const auto duplicate = register_orl_node_definitions_from_oro(
+        registry, compiled.text);
     REQUIRE_FALSE(duplicate.ok());
     REQUIRE(duplicate.registered_count == 0);
     REQUIRE(registry.find("external_nodes.add_external") != nullptr);
@@ -268,5 +274,84 @@ TEST_CASE("semantic analysis records buffer reads and writes", "[orl][analysis][
     REQUIRE(function->parameters[0].access == ParameterAccess::Read);
     REQUIRE(function->parameters[1].access == ParameterAccess::Write);
 }
+
+#if defined(ORL_HAS_GRAPH_IO)
+TEST_CASE("compiled oro documents provide node definitions",
+    "[orl][analysis][oro]")
+{
+    orlgraph::NodeDefinition definition;
+    definition.id = orlgraph::StableId{"custom.parent"};
+    definition.qualified_name = "custom.parent";
+    definition.implementation.kind = orlgraph::ImplementationKind::OrlFunction;
+    definition.implementation.module = "constraint/parent";
+    definition.implementation.function = "constraint_parent";
+    definition.allowed_stages = orlgraph::GraphStageMask::Solver;
+
+    orlgraph::Port source;
+    source.id = orlgraph::StableId{"source"};
+    source.name = "source";
+    source.cardinality = orlgraph::PortCardinality::Buffer;
+    source.type = orlgraph::LogicalType::buffer(orlgraph::LogicalType::matrix());
+    source.domain = orlgraph::Domain::buffer();
+    source.shape = orlgraph::Shape::one("source_count");
+    definition.inputs.push_back(source);
+
+    orlgraph::Port offset;
+    offset.id = orlgraph::StableId{"offset"};
+    offset.name = "offset";
+    offset.type = orlgraph::LogicalType::matrix();
+    definition.inputs.push_back(offset);
+
+    orlgraph::Port status;
+    status.id = orlgraph::StableId{"status"};
+    status.name = "status";
+    status.direction = orlgraph::PortDirection::Output;
+    status.type = orlgraph::LogicalType::int64();
+    status.required = false;
+    definition.outputs.push_back(status);
+
+    orlgraph::NodeRegistry compiled;
+    REQUIRE(compiled.register_definition(definition));
+    orlgraph::GraphModule module;
+    module.module_id = "custom.oro";
+    const auto serialized = orlgraph::serialize_oro(module, compiled);
+    REQUIRE(serialized.ok);
+
+    const auto imported = import_node_definitions_from_oro(serialized.text);
+    REQUIRE(imported.ok());
+    const auto* loaded = imported.registry.find("custom.parent");
+    REQUIRE(loaded != nullptr);
+    REQUIRE(loaded->implementation.module == "constraint/parent");
+    REQUIRE(loaded->implementation.function == "constraint_parent");
+    REQUIRE(loaded->inputs.size() == 2);
+    REQUIRE(loaded->inputs[0].id == orlgraph::StableId{"source"});
+    REQUIRE(loaded->inputs[0].shape == orlgraph::Shape::one("source_count"));
+    REQUIRE(loaded->inputs[1].name == "offset");
+    REQUIRE(loaded->outputs.size() == 1);
+    REQUIRE(loaded->outputs[0].name == "status");
+
+    orlgraph::NodeRegistry registry;
+    const auto registered = register_orl_node_definitions_from_oro(
+        registry, serialized.text);
+    REQUIRE(registered.ok());
+    REQUIRE(registered.registered_count == 1);
+    REQUIRE(registry.find("custom.parent") != nullptr);
+
+    const auto rejected = import_node_definitions_from_oro("{not an oro document}");
+    REQUIRE_FALSE(rejected.ok());
+
+    const auto path = std::filesystem::temp_directory_path()
+        / "orl_custom_parent.oro";
+    {
+        std::ofstream output(path, std::ios::binary);
+        REQUIRE(output);
+        output << serialized.text;
+    }
+    const auto from_file = import_node_definitions_from_oro_file(path.string());
+    REQUIRE(from_file.ok());
+    REQUIRE(from_file.registry.find("custom.parent") != nullptr);
+    std::filesystem::remove(path);
+}
+#endif
 
 #endif

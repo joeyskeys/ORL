@@ -43,7 +43,11 @@ quat solver_full_body_ik_quat_from_to(vector from, vector to) {
     return quat_normalize(q);
 }
 
-export int solver_full_body_ik [[ string stage = "solver" ]]
+export int solver_full_body_ik [[
+    string stage = "solver",
+    int partial_global = 1,
+    string partial_propagation = "full"
+]]
     (int effectors[],
                         int target_indices[],
                         int effector_count,

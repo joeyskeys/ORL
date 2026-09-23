@@ -462,6 +462,7 @@ TEST_CASE("llvm codegen lowers transform constraints", "[orl][codegen][stdlib][c
         "use constraint/copy_translation;\n"
         "use constraint/copy_rotation;\n"
         "use constraint/copy_scale;\n"
+        "use constraint/parent;\n"
         "int aim(matrix targets[], matrix subjects[], vector axes[], int target_index, int subject_index, int target_count, int subject_count) {\n"
         "    return constraint_aim(targets, subjects, axes, target_index, subject_index, target_count, subject_count);\n"
         "}\n"
@@ -476,6 +477,9 @@ TEST_CASE("llvm codegen lowers transform constraints", "[orl][codegen][stdlib][c
         "}\n"
         "int copy_scale(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
         "    return constraint_copy_scale(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "}\n"
+        "int parent(matrix source[], matrix destination[], matrix offset, int source_index, int destination_index, int source_count, int destination_count) {\n"
+        "    return constraint_parent(source, destination, offset, source_index, destination_index, source_count, destination_count);\n"
         "}\n";
 
     Parser parser(src);
@@ -492,6 +496,7 @@ TEST_CASE("llvm codegen lowers transform constraints", "[orl][codegen][stdlib][c
     REQUIRE(ir.find("define i64 @constraint_copy_translation") != std::string::npos);
     REQUIRE(ir.find("define i64 @constraint_copy_rotation") != std::string::npos);
     REQUIRE(ir.find("define i64 @constraint_copy_scale") != std::string::npos);
+    REQUIRE(ir.find("define i64 @constraint_parent") != std::string::npos);
 }
 
 TEST_CASE("llvm codegen lowers lbs deformer", "[orl][codegen][stdlib][deformer]") {

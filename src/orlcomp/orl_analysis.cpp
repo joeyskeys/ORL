@@ -306,7 +306,11 @@ private:
                     "Only direct function calls can be imported as graph nodes");
             } else {
                 const std::string& name = callee->name;
-                if (!functions_.contains(name) && !is_known_orl_builtin(name)) {
+                const bool constructor = is_supported_orl_type(name)
+                    || structs_.contains(name);
+                if (!functions_.contains(name) && !is_known_orl_builtin(name)
+                    && !constructor)
+                {
                     add_error("ORL_ANALYSIS_UNKNOWN_CALL",
                         "Unresolved function call: " + name);
                     summary_.has_external_call = true;

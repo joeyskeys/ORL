@@ -306,6 +306,7 @@ TEST_CASE("syntax includes stdlib transform constraints", "[orl][syntax][stdlib]
         "use constraint/copy_translation;\n"
         "use constraint/copy_rotation;\n"
         "use constraint/copy_scale;\n"
+        "use constraint/parent;\n"
         "int aim(matrix targets[], matrix subjects[], vector axes[], int target_index, int subject_index, int target_count, int subject_count) {\n"
         "    return constraint_aim(targets, subjects, axes, target_index, subject_index, target_count, subject_count);\n"
         "}\n"
@@ -320,6 +321,9 @@ TEST_CASE("syntax includes stdlib transform constraints", "[orl][syntax][stdlib]
         "}\n"
         "int copy_scale(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
         "    return constraint_copy_scale(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "}\n"
+        "int parent(matrix source[], matrix destination[], matrix offset, int source_index, int destination_index, int source_count, int destination_count) {\n"
+        "    return constraint_parent(source, destination, offset, source_index, destination_index, source_count, destination_count);\n"
         "}\n";
 
     RequireParses(src);

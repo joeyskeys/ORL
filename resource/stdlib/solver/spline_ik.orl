@@ -76,7 +76,11 @@ quat solver_spline_ik_quat_from_to(vector from, vector to) {
     return quat_normalize(q);
 }
 
-export int solver_spline_ik [[ string stage = "solver" ]]
+export int solver_spline_ik [[
+    string stage = "solver",
+    int partial_global = 1,
+    string partial_propagation = "full"
+]]
     (int chain[],
                      point spline[],
                      int chain_count,

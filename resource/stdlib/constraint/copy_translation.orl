@@ -5,7 +5,16 @@
 
 use constraint/common;
 
-export int constraint_copy_translation [[ string stage = "solver" ]]
+export int constraint_copy_translation [[
+    string stage = "solver",
+    string partial_propagation = "none",
+    string partial_read_joint_ports = "source_index",
+    string partial_read_controller_ports = "source_index",
+    string partial_read_locator_ports = "source_index",
+    string partial_write_joint_ports = "destination_index",
+    string partial_write_controller_ports = "destination_index",
+    string partial_write_locator_ports = "destination_index"
+]]
     (matrix source[],
                                 matrix destination[],
                                 int source_index,

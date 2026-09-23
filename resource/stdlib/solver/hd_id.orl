@@ -65,7 +65,12 @@ int solver_hd_id_has_chain(int root, int end) {
     return found;
 }
 
-export int solver_hd_id [[ string stage = "solver" ]]
+export int solver_hd_id [[
+    string stage = "solver",
+    int stateful = 1,
+    int partial_global = 1,
+    string partial_propagation = "full"
+]]
     (Joint history[],
                  int root,
                  int end,

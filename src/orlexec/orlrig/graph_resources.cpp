@@ -1,7 +1,10 @@
 #include "graph_resources.hpp"
 
+#include "orl_graph_import.h"
+
+#include <algorithm>
 #include <cstdint>
-#include <initializer_list>
+#include <filesystem>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -299,372 +302,72 @@ std::vector<orlgraph::NodeDefinition> make_input_definitions() {
     };
 }
 
-orlgraph::ResourceEffect parameter_effect(std::string_view function,
-    std::string_view parameter, orlgraph::AccessMode access)
+bool register_compiled_stdlib_nodes(orlgraph::NodeRegistry& registry,
+    std::string* error)
 {
-    std::string resource_name{function};
-    resource_name += ".";
-    resource_name += parameter;
-    return {
-        orlgraph::StableId::from("orl.parameter", resource_name),
-        access,
-        access != orlgraph::AccessMode::Read,
+    const std::filesystem::path root{ORL_STDLIB_DIR};
+    const std::string_view categories[] = {
+        "solver", "constraint", "auto_weight",
     };
-}
-
-std::vector<orlgraph::ResourceEffect> parameter_effects(
-    std::string_view function,
-    std::initializer_list<std::string_view> reads,
-    std::initializer_list<std::string_view> writes,
-    std::initializer_list<std::string_view> read_writes)
-{
-    std::vector<orlgraph::ResourceEffect> result;
-    for (const auto parameter : reads) {
-        result.push_back(parameter_effect(function, parameter,
-            orlgraph::AccessMode::Read));
-    }
-    for (const auto parameter : writes) {
-        result.push_back(parameter_effect(function, parameter,
-            orlgraph::AccessMode::Write));
-    }
-    for (const auto parameter : read_writes) {
-        result.push_back(parameter_effect(function, parameter,
-            orlgraph::AccessMode::ReadWrite));
-    }
-    return result;
-}
-
-orlgraph::NodeDefinition make_stdlib_definition(std::string category,
-    std::string function, std::vector<orlgraph::Port> inputs,
-    std::vector<orlgraph::ResourceEffect> effects, bool cuda_capable,
-    bool stateful = false)
-{
-    const std::string qualified_name =
-        "orlrig." + category + "." + function;
-    orlgraph::NodeDefinition definition;
-    definition.id = orlgraph::StableId{qualified_name};
-    definition.qualified_name = qualified_name;
-    definition.allowed_stages =
-        category == "solver" || category == "constraint"
-            ? orlgraph::GraphStageMask::Solver
-            : category == "deformer" || category == "auto_weight"
-                ? orlgraph::GraphStageMask::Deformer
-                : orlgraph::GraphStageMask::All;
-    definition.implementation.kind = orlgraph::ImplementationKind::OrlFunction;
-    definition.implementation.module = category + "/" + function;
-    definition.implementation.function = category + "_" + function;
-    definition.inputs = std::move(inputs);
-    definition.outputs.push_back(stdlib_status_port());
-    definition.effects = std::move(effects);
-    definition.capabilities.push_back("cpu");
-    if (cuda_capable) {
-        definition.capabilities.push_back("cuda");
-    }
-    definition.inline_policy = orlgraph::InlinePolicy::Never;
-    definition.operation = category == "solver" ? "solver"
-        : category == "constraint" ? "constraint" : category;
-    definition.pure = false;
-    definition.stateful = stateful;
-    if (category == "solver" && function == "ik_two_bone") {
-        orlgraph::PartialEvaluationFootprint footprint;
-        footprint.declared = true;
-        footprint.propagation =
-            orlgraph::PartialPropagation::Descendants;
-        footprint.read_joint_ports = {"root", "mid", "end"};
-        footprint.write_joint_ports = {"root", "mid"};
-        footprint.read_locator_ports = {"target_index", "pole_index"};
-        definition.partial_footprint = std::move(footprint);
-    } else if (category == "solver") {
-        // The remaining solvers currently read/write broad buffers or carry
-        // iterative state. They are explicit conservative barriers until a
-        // solver-specific footprint is available.
-        orlgraph::PartialEvaluationFootprint footprint;
-        footprint.declared = true;
-        footprint.global = true;
-        footprint.stateful = stateful;
-        footprint.propagation = orlgraph::PartialPropagation::Full;
-        definition.partial_footprint = std::move(footprint);
-    }
-    return definition;
-}
-
-std::vector<orlgraph::Port> closest_weight_inputs() {
-    return {
-        stdlib_buffer_port("positions", orlgraph::LogicalType::point(),
-            "vertex_count"),
-        stdlib_buffer_port("joints",
-            orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
-        stdlib_buffer_port("weights",
-            orlgraph::LogicalType::struct_type("Weight"), "weight_count"),
-        stdlib_scalar_port("vertex_count", orlgraph::LogicalType::int64()),
-        stdlib_scalar_port("joint_count", orlgraph::LogicalType::int64()),
-        stdlib_scalar_port("weight_cnt", orlgraph::LogicalType::int64()),
-        stdlib_scalar_port("dropoff", orlgraph::LogicalType::float64()),
-    };
-}
-
-std::vector<orlgraph::Port> envelope_weight_inputs() {
-    return {
-        stdlib_buffer_port("positions", orlgraph::LogicalType::point(),
-            "vertex_count"),
-        stdlib_buffer_port("joints",
-            orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
-        stdlib_buffer_port("radii", orlgraph::LogicalType::float64(),
-            "joint_count"),
-        stdlib_buffer_port("weights",
-            orlgraph::LogicalType::struct_type("Weight"), "weight_count"),
-        stdlib_scalar_port("vertex_count", orlgraph::LogicalType::int64()),
-        stdlib_scalar_port("joint_count", orlgraph::LogicalType::int64()),
-        stdlib_scalar_port("weight_cnt", orlgraph::LogicalType::int64()),
-    };
-}
-
-std::vector<orlgraph::Port> csr_weight_inputs(bool with_radii) {
-    std::vector<orlgraph::Port> result{
-        stdlib_buffer_port("positions", orlgraph::LogicalType::point(),
-            "vertex_count"),
-        stdlib_buffer_port("offsets", orlgraph::LogicalType::int64(),
-            "offset_count"),
-        stdlib_buffer_port("neighbors", orlgraph::LogicalType::int64(),
-            "neighbor_count"),
-        stdlib_buffer_port("joints",
-            orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
-    };
-    if (with_radii) {
-        result.push_back(stdlib_buffer_port("radii",
-            orlgraph::LogicalType::float64(), "joint_count"));
-    }
-    result.push_back(stdlib_buffer_port("scratch",
-        orlgraph::LogicalType::float64(), "scratch_count"));
-    result.push_back(stdlib_buffer_port("weights",
-        orlgraph::LogicalType::struct_type("Weight"), "weight_count"));
-    result.push_back(stdlib_scalar_port("vertex_count",
-        orlgraph::LogicalType::int64()));
-    result.push_back(stdlib_scalar_port("joint_count",
-        orlgraph::LogicalType::int64()));
-    result.push_back(stdlib_scalar_port("weight_cnt",
-        orlgraph::LogicalType::int64()));
-    return result;
-}
-
-std::vector<orlgraph::NodeDefinition> make_auto_weight_definitions() {
-    std::vector<orlgraph::NodeDefinition> result;
-    const auto add_closest = [&result](std::string function,
-        bool cuda_capable) {
-        const std::string implementation_function = "auto_weight_" + function;
-        const auto effects = parameter_effects(
-            implementation_function, {"positions", "joints"}, {}, {"weights"});
-        result.push_back(make_stdlib_definition("auto_weight", function,
-            closest_weight_inputs(), effects, cuda_capable));
-    };
-    add_closest("closest_joint", true);
-    add_closest("closest_distance", false);
-    add_closest("closest_hierarchy", true);
-
-    result.push_back(make_stdlib_definition("auto_weight", "envelope",
-        envelope_weight_inputs(), parameter_effects(
-            "auto_weight_envelope", {"positions", "joints", "radii"}, {},
-            {"weights"}), true));
-
-    const auto add_csr = [&result](std::string function, bool with_radii) {
-        const std::string implementation_function = "auto_weight_" + function;
-        const auto effects = with_radii
-            ? parameter_effects(implementation_function,
-                {"positions", "offsets", "neighbors", "joints", "radii"},
-                {}, {"scratch", "weights"})
-            : parameter_effects(implementation_function,
-                {"positions", "offsets", "neighbors", "joints"},
-                {}, {"scratch", "weights"});
-        result.push_back(make_stdlib_definition("auto_weight", function,
-            csr_weight_inputs(with_radii), effects, true));
-    };
-    add_csr("heat", true);
-    add_csr("geodesic", false);
-    add_csr("harmonic", true);
-    add_csr("bounded_biharmonic", true);
-    return result;
-}
-
-std::vector<orlgraph::NodeDefinition> make_solver_definitions() {
-    const auto index_port = [](std::string name) {
-        auto port = stdlib_scalar_port(
-            std::move(name), orlgraph::LogicalType::int64());
-        port.semantic = std::string{kSceneArrayIndexSemantic};
-        return port;
-    };
-    const auto index_buffer = [](std::string name, std::string shape) {
-        auto port = stdlib_buffer_port(
-            std::move(name), orlgraph::LogicalType::int64(),
-            std::move(shape));
-        port.semantic = std::string{kSceneArrayIndexSemantic};
-        return port;
-    };
-    const auto read_write_buffer = [](
-        std::string name, orlgraph::LogicalType element,
-        std::string shape) {
-        auto port = stdlib_buffer_port(
-            std::move(name), std::move(element), std::move(shape));
-        port.access = orlgraph::AccessMode::ReadWrite;
-        return port;
-    };
-    return {
-        make_stdlib_definition("solver", "fk",
+    for (const auto category : categories) {
+        const auto directory = root / std::string{category};
+        std::error_code status;
+        if (!std::filesystem::is_directory(directory, status)) {
+            if (error != nullptr && error->empty()) {
+                *error = "Stdlib node directory is missing: "
+                    + directory.string();
+            }
+            return false;
+        }
+        for (const auto& entry :
+            std::filesystem::directory_iterator(directory))
+        {
+            if (!entry.is_regular_file()
+                || entry.path().extension() != ".orl")
             {
-                read_write_buffer("world",
-                    orlgraph::LogicalType::matrix(), "joint_count"),
-            },
-            parameter_effects("solver_fk", {}, {"world"}, {}), false),
-        make_stdlib_definition("solver", "ik_two_bone",
-            {
-                index_port("root"),
-                index_port("mid"),
-                index_port("end"),
-                index_port("target_index"),
-                index_port("pole_index"),
-            },
-            parameter_effects("solver_ik_two_bone",
-                {"target_index", "pole_index"}, {}, {}), false),
-        make_stdlib_definition("solver", "hd_id",
-            {
-                read_write_buffer("history",
-                    orlgraph::LogicalType::struct_type("Joint"), "joint_count"),
-                index_port("root"),
-                index_port("end"),
-                index_port("target_index"),
-                stdlib_scalar_port("iterations", orlgraph::LogicalType::int64()),
-            },
-            parameter_effects("solver_hd_id", {"target_index"}, {}, {"history"}),
-            false, true),
-        make_stdlib_definition("solver", "spline_ik",
-            {
-                stdlib_buffer_port("chain",
-                    orlgraph::LogicalType::int64(), "chain_count"),
-                stdlib_buffer_port("spline",
-                    orlgraph::LogicalType::point(), "point_count"),
-                stdlib_scalar_port("chain_count", orlgraph::LogicalType::int64()),
-                stdlib_scalar_port("point_count", orlgraph::LogicalType::int64()),
-            },
-            parameter_effects("solver_spline_ik",
-                {"chain", "spline"}, {}, {}), false),
-        make_stdlib_definition("solver", "full_body_ik",
-            {
-                stdlib_buffer_port("effectors",
-                    orlgraph::LogicalType::int64(), "effector_count"),
-                index_buffer("target_indices", "effector_count"),
-                stdlib_scalar_port("effector_count", orlgraph::LogicalType::int64()),
-                stdlib_scalar_port("iterations", orlgraph::LogicalType::int64()),
-            },
-            parameter_effects("solver_full_body_ik",
-                {"effectors", "target_indices"}, {}, {}), false),
-    };
-}
-
-std::vector<orlgraph::NodeDefinition> make_constraint_definitions() {
-    const auto indices = [] {
-        auto result = std::vector<orlgraph::Port>{
-            stdlib_scalar_port("source_index", orlgraph::LogicalType::int64()),
-            stdlib_scalar_port("destination_index", orlgraph::LogicalType::int64()),
-            stdlib_scalar_port("source_count", orlgraph::LogicalType::int64()),
-            stdlib_scalar_port("destination_count", orlgraph::LogicalType::int64()),
-        };
-        result[0].semantic = std::string{kSceneArrayIndexSemantic};
-        result[1].semantic = std::string{kSceneArrayIndexSemantic};
-        result[0].default_value = orlgraph::ConstantValue{
-            orlgraph::LogicalType::int64(), std::int64_t{0}};
-        result[1].default_value = orlgraph::ConstantValue{
-            orlgraph::LogicalType::int64(), std::int64_t{0}};
-        return result;
-    };
-    const auto copy_inputs = [&indices] {
-        auto result = std::vector<orlgraph::Port>{
-            stdlib_buffer_port("source",
-                orlgraph::LogicalType::matrix(), "source_count"),
-            stdlib_buffer_port("destination",
-                orlgraph::LogicalType::matrix(), "destination_count"),
-        };
-        result[0].semantic.clear();
-        result[1].semantic.clear();
-        result.back().access = orlgraph::AccessMode::ReadWrite;
-        auto index_ports = indices();
-        result.insert(result.end(), index_ports.begin(), index_ports.end());
-        return result;
-    };
-    const auto copy_definition = [&copy_inputs](std::string function) {
-        const std::string implementation_function = "constraint_" + function;
-        return make_stdlib_definition("constraint", function,
-            copy_inputs(), parameter_effects(
-                implementation_function, {"source"}, {}, {"destination"}), false);
-    };
-
-    auto aim_inputs = std::vector<orlgraph::Port>{
-        stdlib_buffer_port("targets",
-            orlgraph::LogicalType::matrix(), "target_count"),
-        stdlib_buffer_port("subjects",
-            orlgraph::LogicalType::matrix(), "subject_count"),
-        stdlib_buffer_port("axes",
-            orlgraph::LogicalType::vector(), "one"),
-        stdlib_scalar_port("target_index", orlgraph::LogicalType::int64()),
-        stdlib_scalar_port("subject_index", orlgraph::LogicalType::int64()),
-        stdlib_scalar_port("target_count", orlgraph::LogicalType::int64()),
-        stdlib_scalar_port("subject_count", orlgraph::LogicalType::int64()),
-    };
-    aim_inputs[0].semantic.clear();
-    aim_inputs[1].semantic.clear();
-    aim_inputs[3].semantic = std::string{kSceneArrayIndexSemantic};
-    aim_inputs[4].semantic = std::string{kSceneArrayIndexSemantic};
-    aim_inputs[3].default_value = orlgraph::ConstantValue{
-        orlgraph::LogicalType::int64(), std::int64_t{0}};
-    aim_inputs[4].default_value = orlgraph::ConstantValue{
-        orlgraph::LogicalType::int64(), std::int64_t{0}};
-    aim_inputs[1].access = orlgraph::AccessMode::ReadWrite;
-    auto locator_aim_inputs = aim_inputs;
-    locator_aim_inputs[0].type =
-        orlgraph::LogicalType::buffer(
-            orlgraph::LogicalType::struct_type("Locator"));
-    auto result = std::vector<orlgraph::NodeDefinition>{
-        make_stdlib_definition("constraint", "aim", std::move(aim_inputs),
-            parameter_effects("constraint_aim", {"targets", "axes"}, {},
-                {"subjects"}), false),
-        make_stdlib_definition("constraint", "aim_locator",
-            std::move(locator_aim_inputs),
-            parameter_effects("constraint_aim_locator",
-                {"targets", "axes"}, {}, {"subjects"}), false),
-        copy_definition("copy_xform"),
-        copy_definition("copy_translation"),
-        copy_definition("copy_rotation"),
-        copy_definition("copy_scale"),
-    };
-    const auto set_footprint = [](orlgraph::NodeDefinition* definition,
-        std::vector<std::string> read_ports,
-        std::vector<std::string> write_ports,
-        std::vector<std::string> locator_reads) {
-        orlgraph::PartialEvaluationFootprint footprint;
-        footprint.declared = true;
-        footprint.propagation = orlgraph::PartialPropagation::None;
-        footprint.read_joint_ports = read_ports;
-        footprint.read_controller_ports = read_ports;
-        footprint.read_locator_ports = std::move(read_ports);
-        footprint.read_locator_ports.insert(
-            footprint.read_locator_ports.end(),
-            locator_reads.begin(), locator_reads.end());
-        footprint.write_joint_ports = write_ports;
-        footprint.write_controller_ports = write_ports;
-        footprint.write_locator_ports = std::move(write_ports);
-        definition->partial_footprint = std::move(footprint);
-    };
-    for (auto& definition : result) {
-        const auto& function = definition.implementation.function;
-        if (function == "constraint_aim") {
-            set_footprint(&definition, {}, {"subject_index"}, {});
-        } else if (function == "constraint_aim_locator") {
-            set_footprint(&definition, {}, {"subject_index"},
-                {"target_index"});
-        } else {
-            set_footprint(&definition, {"source_index"},
-                {"destination_index"}, {});
+                continue;
+            }
+            const auto stem = entry.path().stem().string();
+            orlcomp::NodeImportOptions options;
+            options.use_path = std::string{category} + "/" + stem;
+            options.exported_functions.push_back(
+                std::string{category} + "_" + stem);
+            const auto compiled =
+                orlcomp::compile_node_definitions_to_oro_file(
+                    entry.path().string(), options);
+            if (!compiled.ok()) {
+                const bool helper = !compiled.diagnostics.empty()
+                    && std::all_of(compiled.diagnostics.begin(),
+                        compiled.diagnostics.end(),
+                        [](const orlcomp::AnalysisDiagnostic& diagnostic) {
+                            return diagnostic.code == "ORL_IMPORT_FUNCTION";
+                        });
+                if (helper) {
+                    continue;
+                }
+                if (error != nullptr && error->empty()) {
+                    *error = compiled.diagnostics.empty()
+                        ? "Failed to compile " + entry.path().string()
+                        : compiled.diagnostics.front().code + ": "
+                            + compiled.diagnostics.front().message;
+                }
+                return false;
+            }
+            const auto registered =
+                orlcomp::register_orl_node_definitions_from_oro(
+                    registry, compiled.text);
+            if (!registered.ok()) {
+                if (error != nullptr && error->empty()) {
+                    *error = registered.diagnostics.empty()
+                        ? "Failed to register " + options.use_path
+                        : registered.diagnostics.front().code + ": "
+                            + registered.diagnostics.front().message;
+                }
+                return false;
+            }
         }
     }
-    return result;
+    return true;
 }
 
 void add_interface_input(orlgraph::GraphModule& module,
@@ -801,14 +504,8 @@ bool register_rig_node_definitions(orlgraph::NodeRegistry& registry,
     for (auto& definition : make_input_definitions()) {
         register_definition(std::move(definition));
     }
-    for (auto& definition : make_auto_weight_definitions()) {
-        register_definition(std::move(definition));
-    }
-    for (auto& definition : make_solver_definitions()) {
-        register_definition(std::move(definition));
-    }
-    for (auto& definition : make_constraint_definitions()) {
-        register_definition(std::move(definition));
+    if (!register_compiled_stdlib_nodes(registry, error)) {
+        return false;
     }
     return result;
 }

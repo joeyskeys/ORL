@@ -7,7 +7,13 @@
 
 use constraint/common;
 
-export int constraint_aim [[ string stage = "solver" ]]
+export int constraint_aim [[
+    string stage = "solver",
+    string partial_propagation = "none",
+    string partial_write_joint_ports = "subject_index",
+    string partial_write_controller_ports = "subject_index",
+    string partial_write_locator_ports = "subject_index"
+]]
     (matrix targets[],
                    matrix subjects[],
                    vector axes[],

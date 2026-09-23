@@ -8,18 +8,51 @@
 #include <utility>
 #include <variant>
 
+#if defined(ORL_HAS_GRAPH_IO)
+#include "graph_serialization.hpp"
+#endif
+
 namespace orlcomp
 {
 
 namespace
 {
 
+std::optional<std::string> metadata_string(
+    const FunctionSummary& function, std::string_view key)
+{
+    const auto found = function.metadata.find(std::string{key});
+    if (found == function.metadata.end()) {
+        return std::nullopt;
+    }
+    const auto* value = std::get_if<std::string>(&found->second.value);
+    if (value == nullptr || value->empty()) {
+        return std::nullopt;
+    }
+    return *value;
+}
+
+orlgraph::AccessMode port_access(ParameterAccess access)
+{
+    const auto bits = static_cast<std::uint8_t>(access);
+    const bool reads = (bits & static_cast<std::uint8_t>(
+        ParameterAccess::Read)) != 0;
+    const bool writes = (bits & static_cast<std::uint8_t>(
+        ParameterAccess::Write)) != 0;
+    if (reads && writes) {
+        return orlgraph::AccessMode::ReadWrite;
+    }
+    if (writes) {
+        return orlgraph::AccessMode::Write;
+    }
+    return orlgraph::AccessMode::Read;
+}
+
 orlgraph::Port make_input(const FunctionSummary& function,
     const FunctionParameterSummary& parameter)
 {
     orlgraph::Port port;
-    port.id = orlgraph::StableId::from(
-        "orl.port", function.name + ".in." + parameter.name);
+    port.id = orlgraph::StableId{parameter.name};
     port.name = parameter.name;
     port.direction = orlgraph::PortDirection::Input;
     port.cardinality = parameter.is_buffer
@@ -31,10 +64,23 @@ orlgraph::Port make_input(const FunctionSummary& function,
     port.domain = parameter.is_buffer
         ? orlgraph::Domain::buffer()
         : orlgraph::Domain::constant();
+    if (parameter.is_buffer && parameter.name == "joints") {
+        port.domain = orlgraph::Domain::joint();
+    }
+    port.access = port_access(parameter.access);
     port.shape = parameter.is_buffer
         ? orlgraph::Shape::one(parameter.name + "_count")
         : orlgraph::Shape::scalar();
-    port.semantic = parameter.name;
+    if (const auto shape = metadata_string(
+            function, "port_shape_" + parameter.name))
+    {
+        port.shape = orlgraph::Shape::one(*shape);
+    }
+    if (const auto semantic = metadata_string(
+            function, "port_semantic_" + parameter.name))
+    {
+        port.semantic = *semantic;
+    }
     return port;
 }
 
@@ -147,6 +193,8 @@ bool add_partial_footprint(const FunctionSummary& function,
     footprint.global = metadata_flag(function, "partial_global");
     footprint.supports_sparse_dispatch =
         metadata_flag(function, "partial_sparse");
+    footprint.stateful = function.stateful
+        || metadata_flag(function, "stateful");
     if (const auto found = function.metadata.find("partial_propagation");
         found != function.metadata.end())
     {
@@ -248,10 +296,178 @@ bool add_partial_footprint(const FunctionSummary& function,
     return true;
 }
 
+std::optional<std::string> stdlib_buffer_shape(std::string_view name)
+{
+    if (name == "positions") {
+        return "vertex_count";
+    }
+    if (name == "joints" || name == "radii" || name == "world"
+        || name == "history")
+    {
+        return "joint_count";
+    }
+    if (name == "weights") {
+        return "weight_count";
+    }
+    if (name == "offsets") {
+        return "offset_count";
+    }
+    if (name == "neighbors") {
+        return "neighbor_count";
+    }
+    if (name == "scratch") {
+        return "scratch_count";
+    }
+    if (name == "targets") {
+        return "target_count";
+    }
+    if (name == "subjects") {
+        return "subject_count";
+    }
+    if (name == "axes") {
+        return "one";
+    }
+    if (name == "spline") {
+        return "point_count";
+    }
+    if (name == "effectors" || name == "target_indices") {
+        return "effector_count";
+    }
+    return std::nullopt;
+}
+
+void stamp_stdlib_node(orlgraph::NodeDefinition* definition,
+    std::string_view use_path)
+{
+    const auto slash = use_path.find('/');
+    const auto category = slash == std::string_view::npos
+        ? std::string{use_path}
+        : std::string{use_path.substr(0, slash)};
+    const auto stem = slash == std::string_view::npos
+        ? std::string{use_path}
+        : std::string{use_path.substr(slash + 1)};
+    const auto prefix = category + "_";
+    std::string short_name = definition->implementation.function;
+    if (short_name.starts_with(prefix)) {
+        short_name.erase(0, prefix.size());
+    } else {
+        short_name = stem;
+    }
+
+    definition->qualified_name = "orlrig." + category + "." + short_name;
+    definition->id = orlgraph::StableId{definition->qualified_name};
+    definition->implementation.module = std::string{use_path};
+    definition->operation = category;
+    definition->pure = false;
+    definition->inline_policy = orlgraph::InlinePolicy::Never;
+
+    for (auto& port : definition->inputs) {
+        if (const auto shape = stdlib_buffer_shape(port.name);
+            shape.has_value()
+            && port.shape == orlgraph::Shape::one(port.name + "_count"))
+        {
+            port.shape = orlgraph::Shape::one(*shape);
+        }
+        if (!port.semantic.empty()) {
+            continue;
+        }
+        const bool index_buffer = port.cardinality
+                == orlgraph::PortCardinality::Buffer
+            && port.name == "target_indices"
+            && port.type.element != nullptr
+            && port.type.element->kind == orlgraph::LogicalTypeKind::Int64;
+        const bool index_scalar = port.cardinality
+                == orlgraph::PortCardinality::Scalar
+            && port.type.kind == orlgraph::LogicalTypeKind::Int64
+            && port.name != "iterations"
+            && !port.name.ends_with("_count");
+        if (index_buffer || index_scalar) {
+            port.semantic = "scene.array_index";
+        }
+    }
+
+    if (definition->outputs.size() == 1
+        && definition->outputs.front().type == orlgraph::LogicalType::int64())
+    {
+        auto& status = definition->outputs.front();
+        status.id = orlgraph::StableId{"status"};
+        status.name = "status";
+        status.required = false;
+        status.semantic = "status";
+    }
+}
+
+#if defined(ORL_HAS_GRAPH_IO)
+OroCompileResult compile_imported_oro(NodeImportResult imported,
+    const NodeImportOptions& options)
+{
+    OroCompileResult result;
+    result.diagnostics = std::move(imported.diagnostics);
+    if (!result.diagnostics.empty()) {
+        return result;
+    }
+
+    orlgraph::NodeRegistry registry;
+    if (options.use_path.empty()) {
+        registry = std::move(imported.registry);
+    } else {
+        for (const auto& [_, definition] : imported.registry.definitions()) {
+            auto stamped = definition;
+            stamp_stdlib_node(&stamped, options.use_path);
+            std::string error;
+            if (!registry.register_definition(std::move(stamped), &error)) {
+                result.diagnostics.push_back({
+                    "ORL_IMPORT_REGISTRY",
+                    std::move(error),
+                    {},
+                    true,
+                });
+            }
+        }
+        if (!result.diagnostics.empty()) {
+            return result;
+        }
+    }
+
+    orlgraph::GraphModule module;
+    module.module_id = options.use_path.empty()
+        ? options.module_name : options.use_path;
+    const auto serialized = orlgraph::serialize_oro(module, registry);
+    if (!serialized.ok) {
+        if (serialized.diagnostics.empty()) {
+            result.diagnostics.push_back({
+                "ORL_IMPORT_ORO",
+                "Failed to compile ORL node definitions to ORO",
+                {},
+                true,
+            });
+        }
+        for (const auto& diagnostic : serialized.diagnostics) {
+            if (diagnostic.severity != orlgraph::DiagnosticSeverity::Error) {
+                continue;
+            }
+            result.diagnostics.push_back({
+                diagnostic.code.empty() ? "ORL_IMPORT_ORO" : diagnostic.code,
+                diagnostic.message,
+                {},
+                true,
+            });
+        }
+        return result;
+    }
+    result.text = serialized.text;
+    return result;
+}
+#endif
+
 } // namespace
 
 bool NodeImportResult::ok() const {
     return diagnostics.empty();
+}
+
+bool OroCompileResult::ok() const {
+    return diagnostics.empty() && !text.empty();
 }
 
 bool NodeRegistrationResult::ok() const {
@@ -294,7 +510,8 @@ NodeImportResult import_node_definitions(const AnalysisResult& analysis,
             ? orlgraph::InlinePolicy::Default
             : orlgraph::InlinePolicy::Never;
         definition.pure = function.pure;
-        definition.stateful = function.stateful;
+        definition.stateful = function.stateful
+            || metadata_flag(function, "stateful");
         std::string footprint_error;
         if (!add_partial_footprint(
                 function, &definition, &footprint_error))
@@ -469,6 +686,110 @@ NodeImportResult import_node_definitions_file(const std::string& path,
     return import_node_definitions(contents.str(), std::move(options));
 }
 
+#if defined(ORL_HAS_GRAPH_IO)
+AnalysisDiagnostic oro_diagnostic(const orlgraph::Diagnostic& diagnostic) {
+    AnalysisDiagnostic result;
+    result.code = diagnostic.code.empty() ? "ORL_IMPORT_ORO" : diagnostic.code;
+    result.message = diagnostic.message;
+    result.error = diagnostic.severity == orlgraph::DiagnosticSeverity::Error;
+    return result;
+}
+
+NodeImportResult import_from_oro_document(orlgraph::OroDocument document) {
+    NodeImportResult result;
+    for (const auto& diagnostic : document.diagnostics) {
+        if (diagnostic.severity == orlgraph::DiagnosticSeverity::Error) {
+            result.diagnostics.push_back(oro_diagnostic(diagnostic));
+        }
+    }
+    if (!document.ok || !result.diagnostics.empty()) {
+        if (result.diagnostics.empty()) {
+            result.diagnostics.push_back({
+                "ORL_IMPORT_ORO",
+                "ORO document did not produce node definitions",
+                {},
+                true,
+            });
+        }
+        return result;
+    }
+    result.registry = std::move(document.registry);
+    return result;
+}
+#endif
+
+NodeImportResult import_node_definitions_from_oro(std::string_view oro_text) {
+#if !defined(ORL_HAS_GRAPH_IO)
+    (void)oro_text;
+    NodeImportResult result;
+    result.diagnostics.push_back({
+        "ORL_IMPORT_ORO",
+        "ORO import is unavailable because graph I/O support was not built",
+        {},
+        true,
+    });
+    return result;
+#else
+    return import_from_oro_document(orlgraph::deserialize_oro(oro_text));
+#endif
+}
+
+OroCompileResult compile_node_definitions_to_oro(std::string_view source,
+    NodeImportOptions options)
+{
+#if !defined(ORL_HAS_GRAPH_IO)
+    (void)source;
+    (void)options;
+    OroCompileResult result;
+    result.diagnostics.push_back({
+        "ORL_IMPORT_ORO",
+        "ORO compile is unavailable because graph I/O support was not built",
+        {},
+        true,
+    });
+    return result;
+#else
+    auto imported = import_node_definitions(source, options);
+    return compile_imported_oro(std::move(imported), options);
+#endif
+}
+
+OroCompileResult compile_node_definitions_to_oro_file(const std::string& path,
+    NodeImportOptions options)
+{
+#if !defined(ORL_HAS_GRAPH_IO)
+    (void)path;
+    (void)options;
+    OroCompileResult result;
+    result.diagnostics.push_back({
+        "ORL_IMPORT_ORO",
+        "ORO compile is unavailable because graph I/O support was not built",
+        {},
+        true,
+    });
+    return result;
+#else
+    auto imported = import_node_definitions_file(path, options);
+    return compile_imported_oro(std::move(imported), options);
+#endif
+}
+
+NodeImportResult import_node_definitions_from_oro_file(const std::string& path) {
+#if !defined(ORL_HAS_GRAPH_IO)
+    (void)path;
+    NodeImportResult result;
+    result.diagnostics.push_back({
+        "ORL_IMPORT_ORO",
+        "ORO import is unavailable because graph I/O support was not built",
+        {},
+        true,
+    });
+    return result;
+#else
+    return import_from_oro_document(orlgraph::load_oro(path));
+#endif
+}
+
 NodeRegistrationResult register_orl_node_definitions(
     orlgraph::NodeRegistry& registry, NodeImportResult imported)
 {
@@ -508,20 +829,18 @@ NodeRegistrationResult register_orl_node_definitions(
     return result;
 }
 
-NodeRegistrationResult register_orl_node_definitions(
-    orlgraph::NodeRegistry& registry, std::string_view source,
-    NodeImportOptions options)
+NodeRegistrationResult register_orl_node_definitions_from_oro(
+    orlgraph::NodeRegistry& registry, std::string_view oro_text)
 {
     return register_orl_node_definitions(registry,
-        import_node_definitions(source, std::move(options)));
+        import_node_definitions_from_oro(oro_text));
 }
 
-NodeRegistrationResult register_orl_node_definitions_file(
-    orlgraph::NodeRegistry& registry, const std::string& path,
-    NodeImportOptions options)
+NodeRegistrationResult register_orl_node_definitions_from_oro_file(
+    orlgraph::NodeRegistry& registry, const std::string& path)
 {
     return register_orl_node_definitions(registry,
-        import_node_definitions_file(path, std::move(options)));
+        import_node_definitions_from_oro_file(path));
 }
 
 } // namespace orlcomp

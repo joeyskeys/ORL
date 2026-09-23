@@ -88,7 +88,13 @@ quat solver_quat_from_to(vector from, vector to) {
     return quat_normalize(q);
 }
 
-export int solver_ik_two_bone [[ string stage = "solver" ]]
+export int solver_ik_two_bone [[
+    string stage = "solver",
+    string partial_propagation = "descendants",
+    string partial_read_joint_ports = "root,mid,end",
+    string partial_write_joint_ports = "root,mid",
+    string partial_read_locator_ports = "target_index,pole_index"
+]]
     (int root,
                        int mid,
                        int end,

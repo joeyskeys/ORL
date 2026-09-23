@@ -7,7 +7,14 @@
 use locator;
 use constraint/common;
 
-export int constraint_aim_locator [[ string stage = "solver" ]]
+export int constraint_aim_locator [[
+    string stage = "solver",
+    string partial_propagation = "none",
+    string partial_read_locator_ports = "target_index",
+    string partial_write_joint_ports = "subject_index",
+    string partial_write_controller_ports = "subject_index",
+    string partial_write_locator_ports = "subject_index"
+]]
     (Locator targets[],
     matrix subjects[],
     vector axes[],
