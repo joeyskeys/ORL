@@ -27,6 +27,7 @@ enum class LogicalTypeKind : std::uint8_t {
     Array,
     Buffer,
     Unknown,
+    Handle,
 };
 
 struct LogicalType {
@@ -35,6 +36,8 @@ struct LogicalType {
     std::uint32_t lanes = 0;
     std::size_t extent = 0;
     std::shared_ptr<LogicalType> element;
+    std::vector<std::string> accepted_handles;
+    bool open_handle = false;
 
     static LogicalType void_type();
     static LogicalType boolean();
@@ -48,12 +51,18 @@ struct LogicalType {
     static LogicalType quaternion();
     static LogicalType matrix();
     static LogicalType struct_type(std::string name);
+    static LogicalType handle(std::string canonical_name);
+    static LogicalType handle_union(std::string canonical_name,
+        std::vector<std::string> accepted_handles,
+        bool open = false);
     static LogicalType array(LogicalType element, std::size_t extent);
     static LogicalType buffer(LogicalType element);
     static LogicalType from_orl_name(std::string_view name);
 
     bool is_scalar() const;
     bool is_sequence() const;
+    bool is_handle() const { return kind == LogicalTypeKind::Handle; }
+    bool is_open_handle() const { return is_handle() && open_handle; }
     bool is_known() const { return kind != LogicalTypeKind::Unknown; }
     std::string canonical_name() const;
 
@@ -62,6 +71,13 @@ struct LogicalType {
         return !(left == right);
     }
 };
+
+// Graph connections currently support exact type compatibility only. Keeping
+// this policy behind a helper leaves room for plan 7's universal and union
+// handle assignability without changing every connection validator again.
+bool is_assignable(const LogicalType& source, const LogicalType& destination);
+bool is_valid_handle_name(std::string_view canonical_name);
+bool contains_handle(const LogicalType& type);
 
 struct StructField {
     std::string name;

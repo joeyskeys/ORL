@@ -106,11 +106,16 @@ void Preprocessor::AddIncludePath(std::string path) {
     include_paths_.push_back(std::move(path));
 }
 
-bool Preprocessor::Process(const std::string &source, std::string *output) {
+bool Preprocessor::Process(const std::string &source, std::string *output,
+    std::string root_module)
+{
     errors_.clear();
     include_stack_.clear();
     processed_files_.clear();
-    return ProcessText(source, "<source>", output);
+    if (root_module.empty()) {
+        root_module = "<source>";
+    }
+    return ProcessText(source, "<source>", root_module, output);
 }
 
 bool Preprocessor::ProcessFile(const std::string &path, std::string *output) {
@@ -124,14 +129,18 @@ bool Preprocessor::ProcessFile(const std::string &path, std::string *output) {
         AddError(error);
         return false;
     }
-    return ProcessText(contents, CanonicalPath(path), output);
+    return ProcessText(contents, CanonicalPath(path),
+        std::filesystem::path(path).stem().string(), output);
 }
 
 const std::vector<std::string> &Preprocessor::Errors() const {
     return errors_;
 }
 
-bool Preprocessor::ProcessText(const std::string &source, const std::string &origin, std::string *output) {
+bool Preprocessor::ProcessText(const std::string &source,
+    const std::string &origin, const std::string &module_name,
+    std::string *output)
+{
     if (!origin.empty() && origin != "<source>") {
         for (const std::string &frame : include_stack_) {
             if (frame == origin) {
@@ -147,10 +156,18 @@ bool Preprocessor::ProcessText(const std::string &source, const std::string &ori
 
     std::istringstream input(source);
     std::ostringstream expanded;
+    expanded << "#orl_module " << module_name << " 1\n";
     std::string line;
+    std::size_t source_line = 0;
     while (std::getline(input, line)) {
+        ++source_line;
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
+        }
+
+        if (TrimLeft(line).starts_with("#orl_module ")) {
+            AddError("Reserved preprocessor directive in " + origin);
+            return false;
         }
 
         if (LooksLikeUse(line)) {
@@ -173,13 +190,15 @@ bool Preprocessor::ProcessText(const std::string &source, const std::string &ori
                 return false;
             }
             std::string used;
-            if (!ProcessText(used_source, CanonicalPath(resolved), &used)) {
+            if (!ProcessText(used_source, CanonicalPath(resolved), name, &used)) {
                 return false;
             }
             expanded << used;
             if (!used.empty() && used.back() != '\n') {
                 expanded << '\n';
             }
+            expanded << "#orl_module " << module_name << ' '
+                << (source_line + 1) << '\n';
             continue;
         }
 

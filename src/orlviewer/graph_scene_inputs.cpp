@@ -17,6 +17,15 @@
 
 namespace ORL
 {
+
+std::string scene_joint_handle_binding(std::string_view name) {
+    return "scene.rig.joint." + std::string{name} + ".handle";
+}
+
+std::string scene_locator_handle_binding(std::string_view name) {
+    return "scene.rig.locator." + std::string{name} + ".handle";
+}
+
 namespace
 {
 
@@ -141,44 +150,6 @@ std::optional<std::int64_t> SceneInputCatalog::resolve_element_handle(
     return static_cast<std::int64_t>(component->id.value);
 }
 
-std::optional<std::int64_t> SceneInputCatalog::resolve_element_index(
-    SceneElementKind kind, std::string_view name) const
-{
-    if (kind == SceneElementKind::Mesh) {
-        return resolve_element_handle(kind, name);
-    }
-    const auto* component = components_.find(name);
-    if (component == nullptr) {
-        return std::nullopt;
-    }
-    if (kind == SceneElementKind::Joint) {
-        if (component->kind != ComponentKind::Joint) {
-            return std::nullopt;
-        }
-        const auto index = components_.joint_index(component->id);
-        return index < 0 ? std::nullopt
-                        : std::optional<std::int64_t>{index};
-    }
-    if (kind == SceneElementKind::Controller
-        && component->kind != ComponentKind::Controller)
-    {
-        return std::nullopt;
-    }
-    if (kind == SceneElementKind::Locator
-        && component->kind != ComponentKind::Locator)
-    {
-        return std::nullopt;
-    }
-    const auto& ids = kind == SceneElementKind::Controller
-        ? controller_ids_ : locator_ids_;
-    const auto found = std::find(ids.begin(), ids.end(), component->id);
-    return found == ids.end()
-        ? std::nullopt
-        : std::optional<std::int64_t>{
-            static_cast<std::int64_t>(
-                std::distance(ids.begin(), found))};
-}
-
 bool SceneInputCatalog::make_interface_port(const orlgraph::StableId& id,
     orlgraph::InterfacePort* port, std::string* error) const
 {
@@ -210,6 +181,36 @@ bool SceneInputCatalog::ensure_cuda_inputs()
     }
     refresh();
     return packed_solver_inputs.ready;
+}
+
+orlrig::HandleViewContext& SceneInputCatalog::handle_view_context()
+{
+    if (cuda_evaluation) {
+        ensure_cuda_inputs();
+    }
+    if (packed_solver_inputs.ready) {
+        handle_view_context_.joints = {
+            packed_solver_inputs.storage.data()
+                + packed_solver_inputs.joints_offset,
+            packed_solver_inputs.joint_ids.size(),
+            orlrig::kJointStride,
+            true,
+        };
+        handle_view_context_.locators = {
+            packed_solver_inputs.storage.data()
+                + packed_solver_inputs.locators_offset,
+            packed_solver_inputs.locator_ids.size(),
+            orlrig::kLocatorStride,
+            false,
+        };
+    } else {
+        handle_view_context_.joints = {
+            joints_.data(), joints_.count(), orlrig::kJointStride, true};
+        handle_view_context_.locators = {
+            locators_.data(), locators_.count(), orlrig::kLocatorStride, false};
+    }
+    handle_view_context_.topology_revision = revision_ == 0 ? 1 : revision_;
+    return handle_view_context_;
 }
 
 bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
@@ -331,6 +332,17 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
         binding.int_value = static_cast<std::int64_t>(
             components_.packed_joints().size());
         return true;
+    case SourceKind::JointHandle: {
+        const auto index = components_.joint_index(source->second.component);
+        if (index < 0) {
+            return set_error(error,
+                "Joint handle identity is no longer packed");
+        }
+        binding.kind = exec::ParameterKind::Handle;
+        binding.handle_value = {
+            orlcomp::HandleTypeIdFor("orlrig::joint_handle"), index};
+        return true;
+    }
     case SourceKind::Locators:
         if (!pack_locators()) {
             return set_error(error, "Unable to pack scene locators");
@@ -354,6 +366,21 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
             : static_cast<std::int64_t>(
                 components_.packed_locators().size());
         return true;
+    case SourceKind::LocatorHandle: {
+        const auto found = std::find(
+            locator_ids_.begin(), locator_ids_.end(),
+            source->second.component);
+        if (found == locator_ids_.end()) {
+            return set_error(error,
+                "Locator handle identity is no longer packed");
+        }
+        binding.kind = exec::ParameterKind::Handle;
+        binding.handle_value = {
+            orlcomp::HandleTypeIdFor("orlrig::locator_handle"),
+            static_cast<std::int64_t>(
+                std::distance(locator_ids_.begin(), found))};
+        return true;
+    }
     case SourceKind::LocatorXform:
         if (!pack_locator(source->second.component, key)) {
             return set_error(error, "Unable to pack locator transform for '" + key + "'");
@@ -758,6 +785,13 @@ void SceneInputCatalog::add_descriptors() {
                 "inverse_binds", "joint", orlrig::kMatrixStride,
                 std::string{orlrig::kSceneJointCountBinding},
                 Source{SourceKind::InverseBinds, meta.id, {}});
+        } else if (meta.kind == ComponentKind::Joint) {
+            add_handle_descriptor(
+                orlgraph::StableId{
+                    scene_joint_handle_binding(meta.name)},
+                "Joint " + meta.name + " Handle",
+                "orlrig::joint_handle", "scene.joint.handle",
+                Source{SourceKind::JointHandle, meta.id, {}});
         } else if (meta.kind == ComponentKind::Locator) {
             const auto binding = orlrig::scene_locator_xform_binding(meta.name);
             if (!pack_locator(meta.id, binding)) {
@@ -778,6 +812,12 @@ void SceneInputCatalog::add_descriptors() {
                 "Locator " + meta.name + " Count",
                 "locator_count",
                 Source{SourceKind::LocatorCount, meta.id, {}});
+            add_handle_descriptor(
+                orlgraph::StableId{
+                    scene_locator_handle_binding(meta.name)},
+                "Locator " + meta.name + " Handle",
+                "orlrig::locator_handle", "scene.locator.handle",
+                Source{SourceKind::LocatorHandle, meta.id, {}});
         } else if (meta.kind == ComponentKind::Controller) {
             const auto binding = orlrig::scene_controller_xform_binding(meta.name);
             if (!pack_controller(meta.id, binding)) {
@@ -824,9 +864,14 @@ void SceneInputCatalog::add_buffer_descriptor(orlgraph::StableId id,
     port.binding = id.value;
     port.semantic = std::move(semantic);
     port.coordinate_space = std::move(coordinate_space);
-    descriptors_.push_back(SceneInputDescriptor{
-        id, label, port, exec::ParameterKind::Buffer, element_stride,
-        std::move(count_binding)});
+    SceneInputDescriptor descriptor;
+    descriptor.id = id;
+    descriptor.label = label;
+    descriptor.port = port;
+    descriptor.kind = exec::ParameterKind::Buffer;
+    descriptor.element_stride = element_stride;
+    descriptor.count_binding = std::move(count_binding);
+    descriptors_.push_back(std::move(descriptor));
     sources_[port.binding] = std::move(source);
 }
 
@@ -843,8 +888,37 @@ void SceneInputCatalog::add_scalar_descriptor(orlgraph::StableId id,
     port.required = true;
     port.binding = id.value;
     port.semantic = std::move(semantic);
-    descriptors_.push_back(SceneInputDescriptor{
-        id, label, port, exec::ParameterKind::Int64, sizeof(std::int64_t)});
+    SceneInputDescriptor descriptor;
+    descriptor.id = id;
+    descriptor.label = label;
+    descriptor.port = port;
+    descriptor.kind = exec::ParameterKind::Int64;
+    descriptor.element_stride = sizeof(std::int64_t);
+    descriptors_.push_back(std::move(descriptor));
+    sources_[port.binding] = std::move(source);
+}
+
+void SceneInputCatalog::add_handle_descriptor(
+    orlgraph::StableId id, std::string label,
+    std::string canonical_type, std::string semantic, Source source)
+{
+    orlgraph::InterfacePort port;
+    port.id = id;
+    port.name = std::move(label);
+    port.direction = orlgraph::PortDirection::Input;
+    port.type = orlgraph::LogicalType::handle(canonical_type);
+    port.domain = orlgraph::Domain::rig();
+    port.shape = orlgraph::Shape::scalar();
+    port.required = true;
+    port.binding = id.value;
+    port.semantic = std::move(semantic);
+    SceneInputDescriptor descriptor;
+    descriptor.id = id;
+    descriptor.label = port.name;
+    descriptor.port = port;
+    descriptor.kind = exec::ParameterKind::Handle;
+    descriptor.canonical_handle_type = std::move(canonical_type);
+    descriptors_.push_back(std::move(descriptor));
     sources_[port.binding] = std::move(source);
 }
 

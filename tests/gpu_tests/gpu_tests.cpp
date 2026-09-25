@@ -3,6 +3,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "orl_codegen.h"
+#include "orl_handle_views.hpp"
 #include "orl_gpu.h"
 #include "orl_parser.h"
 
@@ -160,6 +161,73 @@ TEST_CASE("cuda entry reflects ORL parameters and rejects mismatched bindings", 
     if (!compiled) {
         WARN("CUDA PTX compilation unavailable in this environment");
     }
+}
+
+TEST_CASE("cuda entry reflects exact handle lane parameters",
+    "[orl][gpu][cuda][handle]")
+{
+    const std::string src =
+        "handle joint_handle;\n"
+        "int compute(joint_handle value) {\n"
+        "    return value == value;\n"
+        "}\n";
+    Parser parser(src, "orlrig");
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_gpu_handle_reflection",
+        OrlCodegenTarget::Cuda);
+    REQUIRE(codegen.Generate(*parser.Ast()));
+
+    OrlGpuEngine gpu(OrlGpuBackend::Cuda);
+    gpu.SetCudaEntryFunction("compute");
+    const bool compiled = gpu.CompileModule(
+        codegen.ReleaseModule(), codegen.ReleaseContext());
+
+    const auto& parameters = gpu.CudaEntryParameters();
+    REQUIRE(parameters.size() == 1);
+    REQUIRE(parameters.front().type
+        == OrlGpuKernelParameterType::Handle);
+    if (!compiled) {
+        WARN("CUDA PTX compilation unavailable in this environment");
+    }
+}
+
+TEST_CASE("cuda lowering uses device offsets for Joint view fields",
+    "[orl][gpu][cuda][handle][view]")
+{
+    global_handle_view_registry().clear();
+    std::string error;
+    REQUIRE(global_handle_view_registry().register_view({
+        "orlrig::joint_handle", "Joint", 1, 3, "joint_arena",
+        {{"parent", HandleViewFieldKind::Int64, 0,
+            "read_parent", "write_parent", "int", 0, 8}}},
+        &error));
+    Parser parser(R"(
+        handle joint_handle;
+        struct Joint {
+            int parent;
+            int selected;
+            int pad0;
+            int pad1;
+            vec4 translation;
+            quat rotation;
+            vec4 scale;
+        }
+        int edit(joint_handle value) {
+            Joint data = Joint(value);
+            data.parent = 3;
+            return data.parent;
+        }
+    )", "orlrig");
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_cuda_joint_view",
+        OrlCodegenTarget::Cuda);
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    const auto ir = codegen.DumpIR();
+    REQUIRE(ir.find("__orl_handle_context") != std::string::npos);
+    REQUIRE(ir.find("inttoptr") != std::string::npos);
+    REQUIRE(ir.find("__orlrig_joint_write_i64") == std::string::npos);
 }
 
 #endif

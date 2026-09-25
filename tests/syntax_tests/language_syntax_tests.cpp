@@ -21,6 +21,31 @@ void RequireRejects(const std::string &source) {
 
 } // namespace
 
+TEST_CASE("syntax accepts scalar handle declarations and signatures",
+    "[orl][syntax][handle]")
+{
+    RequireParses(R"(
+        handle joint_handle;
+        joint_handle select(joint_handle value, handle generic) {
+            joint_handle result = value;
+            return result;
+        }
+    )");
+}
+
+TEST_CASE("syntax rejects handle arrays and buffers",
+    "[orl][syntax][handle][error]")
+{
+    RequireRejects(R"(
+        handle joint_handle;
+        int invalid() { joint_handle values[4]; return 0; }
+    )");
+    RequireRejects(R"(
+        handle joint_handle;
+        int invalid(joint_handle values[]) { return 0; }
+    )");
+}
+
 TEST_CASE("syntax accepts scalar vector point normal and matrix declarations", "[orl][syntax][declaration]") {
     const std::string src =
         "int declarations() {\n"
@@ -252,10 +277,12 @@ TEST_CASE("syntax includes nested stdlib auto-weight modules", "[orl][syntax][st
 
 TEST_CASE("syntax includes stdlib two-bone IK solver", "[orl][syntax][stdlib][solver]") {
     const std::string src =
+        "use rig/handles;\n"
         "use locator;\n"
         "use solver/ik_two_bone;\n"
-        "int solve(int root, int mid, int end, int target_index, int pole_index) {\n"
-        "    return solver_ik_two_bone(root, mid, end, target_index, pole_index);\n"
+        "int solve(joint_handle root, joint_handle mid, joint_handle end, "
+        "locator_handle target, locator_handle pole) {\n"
+        "    return solver_ik_two_bone(root, mid, end, target, pole);\n"
         "}\n";
 
     RequireParses(src);
@@ -307,23 +334,23 @@ TEST_CASE("syntax includes stdlib transform constraints", "[orl][syntax][stdlib]
         "use constraint/copy_rotation;\n"
         "use constraint/copy_scale;\n"
         "use constraint/parent;\n"
-        "int aim(matrix targets[], matrix subjects[], vector axes[], int target_index, int subject_index, int target_count, int subject_count) {\n"
-        "    return constraint_aim(targets, subjects, axes, target_index, subject_index, target_count, subject_count);\n"
+        "int aim(source_xform_handle target, destination_xform_handle subject, vector axes[]) {\n"
+        "    return constraint_aim(target, subject, axes);\n"
         "}\n"
-        "int copy_xform(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
-        "    return constraint_copy_xform(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "int copy_xform(source_xform_handle source, destination_xform_handle destination) {\n"
+        "    return constraint_copy_xform(source, destination);\n"
         "}\n"
-        "int copy_translation(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
-        "    return constraint_copy_translation(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "int copy_translation(source_xform_handle source, destination_xform_handle destination) {\n"
+        "    return constraint_copy_translation(source, destination);\n"
         "}\n"
-        "int copy_rotation(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
-        "    return constraint_copy_rotation(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "int copy_rotation(source_xform_handle source, destination_xform_handle destination) {\n"
+        "    return constraint_copy_rotation(source, destination);\n"
         "}\n"
-        "int copy_scale(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
-        "    return constraint_copy_scale(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "int copy_scale(source_xform_handle source, destination_xform_handle destination) {\n"
+        "    return constraint_copy_scale(source, destination);\n"
         "}\n"
-        "int parent(matrix source[], matrix destination[], matrix offset, int source_index, int destination_index, int source_count, int destination_count) {\n"
-        "    return constraint_parent(source, destination, offset, source_index, destination_index, source_count, destination_count);\n"
+        "int parent(source_xform_handle source, destination_xform_handle destination, matrix offset) {\n"
+        "    return constraint_parent(source, destination, offset);\n"
         "}\n";
 
     RequireParses(src);

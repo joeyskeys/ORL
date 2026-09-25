@@ -28,6 +28,7 @@ enum class TokenKind : std::uint16_t {
     KwOr,
     KwAnd,
     KwNot,
+    KwIs,
     KwVector,
     KwNormal,
     KwPoint,
@@ -36,6 +37,7 @@ enum class TokenKind : std::uint16_t {
     KwFloat,
     KwString,
     KwStruct,
+    KwHandle,
     KwUse,
     KwReturn,
     KwExport,
@@ -54,6 +56,7 @@ enum class TokenKind : std::uint16_t {
     Greater,
     GreaterEqual,
     AmpAmp,
+    Pipe,
     PipePipe,
     Comma,
     Dot,
@@ -72,6 +75,7 @@ struct Token {
     std::string lexeme;
     int line = 1;
     int column = 1;
+    std::string source_origin = "<source>";
 
     std::int64_t int_value = 0;
     double float_value = 0.0;
@@ -89,6 +93,7 @@ private:
     Token MakeInvalidToken(std::size_t start, std::size_t end, int line, int column, std::string message) const;
 
     void SkipIgnored();
+    bool ConsumeModuleDirective();
     bool IsPreprocessorLine() const;
     void SkipLine();
 
@@ -102,6 +107,7 @@ private:
     Token ScanString();
 
     std::string source_;
+    std::string source_origin_ = "<source>";
     std::size_t index_ = 0;
     int line_ = 1;
     int column_ = 1;

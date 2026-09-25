@@ -1,0 +1,12 @@
+// Exact rig handle declarations. The runtime descriptor registry owns their
+// storage and conversion semantics; these declarations only provide nominal
+// ORL types to package code.
+
+use joint;
+
+handle joint_handle;
+handle locator_handle;
+
+struct WorldTransform {
+    matrix xform;
+}

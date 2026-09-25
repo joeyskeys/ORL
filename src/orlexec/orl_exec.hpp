@@ -6,10 +6,16 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "orl_cache.h"
+#include "orl_runtime_signature.h"
 #include "orlrig/abi.hpp"
+
+namespace orlrig {
+struct HandleViewContext;
+}
 
 namespace ORL::exec
 {
@@ -23,14 +29,19 @@ enum class ParameterKind {
     Buffer,
     Int64,
     Float64,
+    Handle,
     Unsupported,
 };
+
+using HandleValue = orlcomp::HandleValue;
 
 struct ParameterDesc {
     std::string name;
     std::string orl_type;
     ParameterKind kind = ParameterKind::Unsupported;
     std::size_t element_stride = 0;
+    std::string canonical_type_name;
+    std::uint64_t handle_type_id = 0;
 };
 
 struct DeviceBufferView {
@@ -98,6 +109,9 @@ struct CompileOptions {
     std::string source_name = "orl_runtime_program";
     // Additional directories searched by `use module;` during parsing.
     std::vector<std::string> include_paths;
+    // Generated graph source may use a private spelling for a nominal handle;
+    // this map preserves its public canonical identity at the runtime ABI.
+    std::unordered_map<std::string, std::string> handle_type_identities;
 };
 
 // Parsed, application-facing description of an ORL entry function. The source
@@ -112,6 +126,8 @@ public:
     bool valid() const;
     const std::string& entry_function() const;
     const std::vector<ParameterDesc>& parameters() const;
+    bool has_handle_parameters() const;
+    bool has_handle_views() const;
     const std::vector<std::string>& errors() const;
 
 private:
@@ -148,6 +164,9 @@ public:
         std::size_t bytes);
     bool bind_int(std::string_view parameter, std::int64_t value);
     bool bind_float(std::string_view parameter, double value);
+    bool bind_handle(std::string_view parameter, HandleValue value);
+    bool bind_handle_view_context(
+        orlrig::HandleViewContext& context);
     // Updates the implicit solver_context global when the compiled program
     // uses it. This is a no-op for ordinary programs.
     bool set_solver_context(

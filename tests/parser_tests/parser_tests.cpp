@@ -2,6 +2,9 @@
 
 #include "orl_parser.h"
 
+#include <filesystem>
+#include <fstream>
+
 using namespace orlcomp;
 
 TEST_CASE("parser accepts basic function body", "[orl][parser]") {
@@ -59,6 +62,44 @@ TEST_CASE("parser reserves the solver context type and symbol",
 
     Parser function_parser("int solver_context() { return 0; }\n");
     REQUIRE_FALSE(function_parser.Parse());
+}
+
+TEST_CASE("parser accepts normalized handle unions and is expressions",
+    "[orl][parser][handle][union]")
+{
+    Parser parser(R"(
+        handle joint_handle;
+        handle locator_handle;
+        handle xform_handle = locator_handle | joint_handle;
+        int inspect(xform_handle value) {
+            if (value is joint_handle) {
+                return 1;
+            }
+            return 0;
+        }
+    )");
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+    REQUIRE(parser.Ast()->items.size() == 4);
+    const auto* union_definition =
+        dynamic_cast<const HandleDefinitionStatement*>(
+            parser.Ast()->items[2].get());
+    REQUIRE(union_definition != nullptr);
+    REQUIRE(union_definition->accepted_handles.size() == 2);
+    REQUIRE(union_definition->accepted_handles[0]
+        == "<source>::joint_handle");
+    REQUIRE(union_definition->accepted_handles[1]
+        == "<source>::locator_handle");
+    const auto* function =
+        dynamic_cast<const FunctionDefinitionStatement*>(
+            parser.Ast()->items[3].get());
+    REQUIRE(function != nullptr);
+    const auto* conditional =
+        dynamic_cast<const IfStatement*>(
+            function->body->statements.front().get());
+    REQUIRE(conditional != nullptr);
+    REQUIRE(dynamic_cast<const HandleTestExpression*>(
+        conditional->condition.get()) != nullptr);
 }
 
 TEST_CASE("parser reports syntax error on missing semicolon", "[orl][parser]") {
@@ -304,4 +345,90 @@ TEST_CASE("parser rejects metadata on non-exported functions",
 
     REQUIRE_FALSE(parser.Parse());
     REQUIRE_FALSE(parser.Errors().empty());
+}
+
+TEST_CASE("parser retains universal and nominal handle types",
+    "[orl][parser][handle]")
+{
+    Parser parser(R"(
+        handle joint_handle;
+        joint_handle choose(joint_handle value, handle fallback) {
+            joint_handle local = value;
+            return local;
+        }
+    )", "orlrig");
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Ast()->items.size() == 2);
+
+    const auto* handle = dynamic_cast<const HandleDefinitionStatement*>(
+        parser.Ast()->items[0].get());
+    REQUIRE(handle != nullptr);
+    REQUIRE(handle->name == "joint_handle");
+    REQUIRE(handle->canonical_name == "orlrig::joint_handle");
+
+    const auto* function = dynamic_cast<const FunctionDefinitionStatement*>(
+        parser.Ast()->items[1].get());
+    REQUIRE(function != nullptr);
+    REQUIRE(function->return_type == "joint_handle");
+    REQUIRE(function->parameters[1].type_name == "handle");
+}
+
+TEST_CASE("parser enforces handle declaration order and scalar storage",
+    "[orl][parser][handle][error]")
+{
+    Parser before_declaration(R"(
+        joint_handle invalid(joint_handle value) { return value; }
+        handle joint_handle;
+    )");
+    REQUIRE_FALSE(before_declaration.Parse());
+
+    Parser array(R"(
+        handle joint_handle;
+        int invalid() { joint_handle values[2]; return 0; }
+    )");
+    REQUIRE_FALSE(array.Parse());
+
+    Parser buffer(R"(
+        handle joint_handle;
+        int invalid(joint_handle values[]) { return 0; }
+    )");
+    REQUIRE_FALSE(buffer.Parse());
+}
+
+TEST_CASE("parser rejects duplicate and colliding handle names",
+    "[orl][parser][handle][error]")
+{
+    Parser duplicate("handle joint_handle; handle joint_handle;");
+    REQUIRE_FALSE(duplicate.Parse());
+
+    Parser collision(
+        "handle joint_handle; struct joint_handle { int value; };");
+    REQUIRE_FALSE(collision.Parse());
+}
+
+TEST_CASE("parser keeps imported package identity for handles",
+    "[orl][parser][handle][use]")
+{
+    const auto root = std::filesystem::temp_directory_path()
+        / "orl_handle_parser_test";
+    std::filesystem::create_directories(root / "rig");
+    {
+        std::ofstream module(root / "rig" / "types.orl");
+        REQUIRE(module);
+        module << "handle joint_handle;\n";
+    }
+
+    Parser parser(R"(
+        use rig/types;
+        joint_handle identity(joint_handle value) { return value; }
+    )");
+    parser.AddIncludePath(root.string());
+    REQUIRE(parser.Parse());
+    const auto* handle = dynamic_cast<const HandleDefinitionStatement*>(
+        parser.Ast()->items[0].get());
+    REQUIRE(handle != nullptr);
+    REQUIRE(handle->canonical_name == "rig::types::joint_handle");
+    REQUIRE(handle->source.source == "rig/types");
+    REQUIRE(handle->source.line == 1);
+    std::filesystem::remove_all(root);
 }

@@ -15,7 +15,7 @@ namespace orlgraph
 inline constexpr const char* kOroMagic = "ORO";
 inline constexpr std::uint32_t kOroFormatVersion = 1;
 inline constexpr const char* kOroLanguageVersion = "orl-0";
-inline constexpr const char* kOroLogicalAbiVersion = "orlgraph-0";
+inline constexpr const char* kOroLogicalAbiVersion = "orlgraph-1";
 
 // Graph JSON is the editable graph format. It stores one GraphModule and
 // references node definitions by stable ID; the definitions remain owned by

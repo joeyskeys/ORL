@@ -13,7 +13,7 @@ the file. A graph node's `definition` field is a stable ID resolved from the
     "magic": "ORL_GRAPH",
     "format_version": 1,
     "language_version": "orl-0",
-    "logical_abi_version": "orlgraph-0",
+    "logical_abi_version": "orlgraph-1",
     "module_id": "character.pose",
     "content_hash": "..."
   },
@@ -21,7 +21,7 @@ the file. A graph node's `definition` field is a stable ID resolved from the
     "module_id": "character.pose",
     "version": { "major": 0, "minor": 1, "patch": 0 },
     "language_version": "orl-0",
-    "logical_abi_version": "orlgraph-0",
+    "logical_abi_version": "orlgraph-1",
     "inputs": [],
     "outputs": [],
     "resources": [],
@@ -44,7 +44,13 @@ The `graph` arrays contain the serialized `GraphModule` values:
 Logical types, domains, shapes, constants, and provenance use the same
 structured encoding as the existing `.oro` serializer. Numbers are encoded
 with explicit kind tags where JSON number precision could otherwise be
-ambiguous.
+ambiguous. Exact handle types use the `Handle` logical-kind tag and store
+their canonical package-prefixed identity in `name`; they never serialize a
+runtime slot, pointer, packed index, or process-local registry ordinal.
+
+The `orlgraph-1` logical ABI rejects pre-plan-2 documents and malformed handle
+records instead of coercing them to `Unknown` or `Int64`. Handle constants are
+also rejected until a stable graph identity value is defined.
 
 ## C++ API
 

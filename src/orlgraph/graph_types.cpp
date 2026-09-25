@@ -1,6 +1,7 @@
 #include "graph_types.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <utility>
 
@@ -68,6 +69,24 @@ LogicalType LogicalType::struct_type(std::string type_name) {
     return named(LogicalTypeKind::Struct, std::move(type_name));
 }
 
+LogicalType LogicalType::handle(std::string canonical_name) {
+    return named(LogicalTypeKind::Handle, std::move(canonical_name));
+}
+
+LogicalType LogicalType::handle_union(std::string canonical_name,
+    std::vector<std::string> accepted_handles, bool open)
+{
+    LogicalType type = named(LogicalTypeKind::Handle,
+        std::move(canonical_name));
+    std::sort(accepted_handles.begin(), accepted_handles.end());
+    accepted_handles.erase(std::unique(
+        accepted_handles.begin(), accepted_handles.end()),
+        accepted_handles.end());
+    type.accepted_handles = std::move(accepted_handles);
+    type.open_handle = open;
+    return type;
+}
+
 LogicalType LogicalType::array(LogicalType element_type, std::size_t count) {
     LogicalType type;
     type.kind = LogicalTypeKind::Array;
@@ -127,7 +146,8 @@ bool LogicalType::is_scalar() const {
     return kind == LogicalTypeKind::Bool
         || kind == LogicalTypeKind::Int64
         || kind == LogicalTypeKind::Float64
-        || kind == LogicalTypeKind::String;
+        || kind == LogicalTypeKind::String
+        || kind == LogicalTypeKind::Handle;
 }
 
 bool LogicalType::is_sequence() const {
@@ -155,6 +175,23 @@ std::string LogicalType::canonical_name() const {
         return "buffer<" + (element == nullptr ? "unknown" : element->canonical_name()) + ">";
     case LogicalTypeKind::Unknown:
         return "unknown";
+    case LogicalTypeKind::Handle:
+        if (open_handle) {
+            return "handle:any";
+        }
+        if (!accepted_handles.empty()) {
+            std::string result = "handle_union:" + name + "<";
+            for (std::size_t index = 0;
+                 index < accepted_handles.size(); ++index)
+            {
+                if (index != 0) {
+                    result += "|";
+                }
+                result += accepted_handles[index];
+            }
+            return result + ">";
+        }
+        return "handle:" + name;
     }
     return "unknown";
 }
@@ -163,7 +200,9 @@ bool operator==(const LogicalType& left, const LogicalType& right) {
     if (left.kind != right.kind
         || left.name != right.name
         || left.lanes != right.lanes
-        || left.extent != right.extent)
+        || left.extent != right.extent
+        || left.accepted_handles != right.accepted_handles
+        || left.open_handle != right.open_handle)
     {
         return false;
     }
@@ -171,6 +210,71 @@ bool operator==(const LogicalType& left, const LogicalType& right) {
         return left.element == nullptr && right.element == nullptr;
     }
     return *left.element == *right.element;
+}
+
+bool is_assignable(const LogicalType& source, const LogicalType& destination) {
+    if (!source.is_handle() || !destination.is_handle()) {
+        return source == destination;
+    }
+    if (destination.open_handle) {
+        return true;
+    }
+    if (source.open_handle) {
+        return false;
+    }
+    if (destination.accepted_handles.empty()) {
+        return source.accepted_handles.empty()
+            && source.name == destination.name;
+    }
+    if (source.accepted_handles.empty()) {
+        return std::find(destination.accepted_handles.begin(),
+            destination.accepted_handles.end(), source.name)
+            != destination.accepted_handles.end();
+    }
+    return std::includes(
+        destination.accepted_handles.begin(),
+        destination.accepted_handles.end(),
+        source.accepted_handles.begin(),
+        source.accepted_handles.end());
+}
+
+bool is_valid_handle_name(std::string_view canonical_name) {
+    if (canonical_name.empty()
+        || canonical_name.find("::") == std::string_view::npos)
+    {
+        return false;
+    }
+    std::size_t segment_start = 0;
+    while (segment_start < canonical_name.size()) {
+        const std::size_t separator = canonical_name.find(
+            "::", segment_start);
+        const std::size_t segment_end = separator == std::string_view::npos
+            ? canonical_name.size() : separator;
+        if (segment_end == segment_start) {
+            return false;
+        }
+        for (std::size_t index = segment_start;
+             index < segment_end; ++index)
+        {
+            const unsigned char character =
+                static_cast<unsigned char>(canonical_name[index]);
+            if (std::isspace(character) != 0
+                || std::iscntrl(character) != 0)
+            {
+                return false;
+            }
+        }
+        if (separator == std::string_view::npos) {
+            break;
+        }
+        segment_start = separator + 2;
+    }
+    return segment_start < canonical_name.size();
+}
+
+bool contains_handle(const LogicalType& type) {
+    return type.is_handle()
+        || (type.element != nullptr && contains_handle(*type.element));
 }
 
 Domain Domain::constant() {

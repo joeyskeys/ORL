@@ -22,6 +22,7 @@ ComponentId ComponentStore::create(std::string name, ComponentKind kind, Payload
     if (kind == ComponentKind::Locator) {
         locator_order.push_back(id);
     }
+    ++revision;
     return id;
 }
 
@@ -66,6 +67,7 @@ bool ComponentStore::destroy(ComponentId id) {
         std::erase(locator_order, id);
     }
     records.erase(found);
+    ++revision;
     return true;
 }
 

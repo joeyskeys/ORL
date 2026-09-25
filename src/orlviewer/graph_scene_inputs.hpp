@@ -11,9 +11,13 @@
 #include "asset_mgr/scene.h"
 #include "component_manager.hpp"
 #include "orl_graph_exec.hpp"
+#include "orlrig/handle_registry.hpp"
 
 namespace ORL
 {
+
+std::string scene_joint_handle_binding(std::string_view name);
+std::string scene_locator_handle_binding(std::string_view name);
 
 struct SceneInputDescriptor {
     orlgraph::StableId id;
@@ -24,6 +28,7 @@ struct SceneInputDescriptor {
     std::string count_binding;
     bool host_backed = true;
     bool gpu_backed = false;
+    std::string canonical_handle_type;
 };
 
 enum class SceneElementKind {
@@ -50,8 +55,6 @@ public:
     std::vector<std::string> element_names(SceneElementKind kind) const;
     std::optional<std::int64_t> resolve_element_handle(
         SceneElementKind kind, std::string_view name) const;
-    std::optional<std::int64_t> resolve_element_index(
-        SceneElementKind kind, std::string_view name) const;
 
     bool make_interface_port(const orlgraph::StableId& id,
         orlgraph::InterfacePort* port, std::string* error = nullptr) const;
@@ -60,6 +63,7 @@ public:
     // buffer bindings for rig editing and CPU evaluation.
     bool set_cuda_evaluation(bool enabled);
     bool ensure_cuda_inputs();
+    orlrig::HandleViewContext& handle_view_context();
     bool resolve(const orlgraph::InterfacePort& port,
         exec::GraphInputBinding& binding, std::string* error = nullptr);
     bool resolve_binding(std::string_view binding,
@@ -112,6 +116,8 @@ private:
         ControllersCount,
         ControllerXform,
         ControllerCount,
+        JointHandle,
+        LocatorHandle,
     };
 
     struct Source {
@@ -129,6 +135,9 @@ private:
         Source source);
     void add_scalar_descriptor(orlgraph::StableId id,
         std::string label, std::string semantic, Source source);
+    void add_handle_descriptor(orlgraph::StableId id,
+        std::string label, std::string canonical_type,
+        std::string semantic, Source source);
 
     bool pack_mesh_positions(const std::string& object_name,
         const std::string& binding);
@@ -171,6 +180,7 @@ private:
     std::vector<ComponentId> locator_ids_;
     std::vector<ComponentId> controller_ids_;
     PackedSolverInputs packed_solver_inputs;
+    orlrig::HandleViewContext handle_view_context_;
     bool cuda_evaluation = false;
     std::size_t revision_ = 0;
 };

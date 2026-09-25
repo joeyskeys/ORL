@@ -28,18 +28,10 @@ inline constexpr std::string_view kSceneLocatorsBinding =
     "scene.rig.locators";
 inline constexpr std::string_view kSceneLocatorsCountBinding =
     "scene.rig.locator_count";
-inline constexpr std::string_view kSceneArrayIndexSemantic =
-    "scene.array_index";
 inline constexpr std::string_view kSceneJointHandleSemantic =
     "scene.joint.handle";
-inline constexpr std::string_view kSceneControllerHandleSemantic =
-    "scene.controller.handle";
 inline constexpr std::string_view kSceneLocatorHandleSemantic =
     "scene.locator.handle";
-inline constexpr std::string_view kJointWorldMatrixConversion =
-    "orlrig.convert.joint_world_matrix";
-inline constexpr std::string_view kJointWorldMatrixWritebackConversion =
-    "orlrig.convert.joint_world_matrix_to_trs";
 inline constexpr std::string_view kComputedJointsNodeDefinition =
     "orlrig.stage.computed_joints";
 inline constexpr std::string_view kComputedJointsBinding =

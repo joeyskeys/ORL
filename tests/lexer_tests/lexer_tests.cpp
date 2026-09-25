@@ -79,6 +79,34 @@ TEST_CASE("lexer recognizes use keyword", "[orl][lexer]") {
     REQUIRE(lexer.NextToken().kind == TokenKind::EndOfFile);
 }
 
+TEST_CASE("lexer recognizes handle keyword", "[orl][lexer][handle]") {
+    Lexer lexer("handle joint_handle;");
+
+    REQUIRE(lexer.NextToken().kind == TokenKind::KwHandle);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Identifier);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Semi);
+    REQUIRE(lexer.NextToken().kind == TokenKind::EndOfFile);
+}
+
+TEST_CASE("lexer recognizes handle union and is tokens",
+    "[orl][lexer][handle]")
+{
+    Lexer lexer(
+        "handle x = joint_handle | locator_handle; "
+        "value is joint_handle;");
+    REQUIRE(lexer.NextToken().kind == TokenKind::KwHandle);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Identifier);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Assign);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Identifier);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Pipe);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Identifier);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Semi);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Identifier);
+    REQUIRE(lexer.NextToken().kind == TokenKind::KwIs);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Identifier);
+    REQUIRE(lexer.NextToken().kind == TokenKind::Semi);
+}
+
 TEST_CASE("lexer recognizes export keyword and metadata brackets",
     "[orl][lexer][export]")
 {

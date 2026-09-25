@@ -666,6 +666,13 @@ RunnerStatus SolverRunner::ensure_program() {
 
     program.reset();
     execution.reset();
+    std::string view_error;
+    if (!register_rig_handle_views(
+            orlcomp::global_handle_view_registry(), &view_error))
+    {
+        return failure("Solver handle-view registration failed: "
+            + view_error);
+    }
     auto compiled = exec::OrlProgram::Compile("use solver/ik_two_bone;\n", {
         .entry_function = "solver_ik_two_bone",
         .source_name = "orlrig_solver_ik_two_bone",
@@ -757,6 +764,14 @@ RunnerStatus SolverRunner::evaluate_two_bone(exec::OrlBuffer& joint_buffer,
     {
         return failure("Two-bone solver indices are out of range");
     }
+    const auto* packed = static_cast<const Joint*>(joint_buffer.data());
+    if (packed == nullptr
+        || packed[mid].parent != root
+        || packed[end].parent != mid)
+    {
+        return failure(
+            "Two-bone solver joints do not form a root-mid-end hierarchy");
+    }
     if (const auto status = ensure_program(); !status) {
         return status;
     }
@@ -773,24 +788,29 @@ RunnerStatus SolverRunner::evaluate_two_bone(exec::OrlBuffer& joint_buffer,
         static_cast<std::byte*>(solver_locators.data()) + kLocatorStride,
         pole_xform.data(), kLocatorStride);
 
-    orlrig::SolverContext context;
-    if (!pack_solver_context(
-            solver_context_storage, joint_buffer, solver_locators,
-            exec::OrlBuffer{kMatrixOrlType, kMatrixStride}, &context)
-        || !execution->bind_solver_context(exec::PackedBufferView{
-            solver_context_storage.data(),
-            solver_context_storage.byte_size(),
-            0,
-            solver_context_storage.byte_size(),
-            solver_context_storage.version()})
-        || !execution->set_solver_context(context)
-        || !execution->set_hierarchy_context(hierarchy_context)
-        || !execution->bind_hierarchy_data(hierarchy_data)
-        || !execution->bind_int("root", root)
-        || !execution->bind_int("mid", mid)
-        || !execution->bind_int("end", end)
-        || !execution->bind_int("target_index", 0)
-        || !execution->bind_int("pole_index", 1))
+    handle_view_context.joints = {
+        joint_buffer.data(), joint_buffer.count(), kJointStride, true};
+    handle_view_context.locators = {
+        solver_locators.data(), solver_locators.count(), kLocatorStride, false};
+    handle_view_context.topology_revision =
+        compiled_hierarchy_plan.has_value()
+            && compiled_hierarchy_plan->topology_revision != 0
+        ? compiled_hierarchy_plan->topology_revision : 1;
+    const auto joint_type_id =
+        orlcomp::HandleTypeIdFor(kJointHandleCanonical);
+    const auto locator_type_id =
+        orlcomp::HandleTypeIdFor(kLocatorHandleCanonical);
+    if (!execution->bind_handle_view_context(handle_view_context)
+        || !execution->bind_handle(
+            "root", {joint_type_id, root})
+        || !execution->bind_handle(
+            "mid", {joint_type_id, mid})
+        || !execution->bind_handle(
+            "end", {joint_type_id, end})
+        || !execution->bind_handle(
+            "target", {locator_type_id, 0})
+        || !execution->bind_handle(
+            "pole", {locator_type_id, 1}))
     {
         return bind_error(*execution, "solver binding");
     }

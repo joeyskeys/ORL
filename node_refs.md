@@ -293,9 +293,8 @@ deform.posed_positions     -> graph output posed_positions
 The runtime registry exposes scene-wide input nodes:
 
 - `orlrig.input.joints`: the packed scene joint buffer;
-- `orlrig.input.controllers`: the packed scene controller transform buffer;
 - `orlrig.input.find_joint`;
-- `orlrig.input.find_controller`;
+- `orlrig.input.find_locator`;
 - `orlrig.input.find_mesh`.
 
 The `find_*` nodes are `Runtime` nodes with a compile-time string parameter
@@ -303,57 +302,37 @@ named `name`. In the viewer, the node editor renders `name` as a scene-backed
 combobox:
 
 - `find_joint` lists existing joint component names and resolves the selected
-  name to a stable component handle plus its current packed-joint index.
-- `find_controller` lists existing controller component names and resolves the
-  selected name to a stable component handle plus its current packed-controller
-  index.
+  name to a `joint_handle`.
+- `find_locator` lists existing locator component names and resolves the
+  selected name to a `locator_handle`.
 - `find_mesh` lists existing mesh names and resolves the selected name to its
   scene mesh handle.
 
-The lookup nodes expose a scalar `int` `handle` output with a
-`scene.<kind>.handle` semantic. This is the session-stable `ComponentId`, not
-an array position. `find_joint` and `find_controller` also expose a scalar
-`int` `index` output with semantic `scene.array_index`; it is recomputed from
-the current packed ordering. Array-index inputs on constraints use the same
-semantic, so connecting a stable handle directly to `source_index`,
-`destination_index`, `target_index`, or `subject_index` is rejected by both
-the editor and graph validation. A saved graph stores the lookup `name`
-parameter, never a transient packed index or component pointer.
+`find_joint` and `find_locator` each expose exactly one scalar `handle`
+socket with a distinct nominal type. They do not expose `index`, `xform`, or
+controller outputs. A saved graph stores the lookup `name` parameter, never a
+transient packed index or component pointer. The scene input catalog resolves
+the selected identity to a fresh dispatch-local handle whenever the scene
+packing revision changes.
 
-`find_joint` and `find_controller` additionally expose a one-element
-`buffer<matrix>` output named `xform`, in world space, so they can feed
-transform-oriented graph operations directly. The scene input catalog tracks
-membership/order changes with a scene-input revision. Any lowered program
-that embeds resolved index expressions should be tagged with that revision
-and rebuilt when `scene_input_revision()` changes.
+Controllers remain viewport/authoring data. They can provide GUI transform
+and attachment state, but they are not graph nodes, handle types, or solver
+inputs. A rig operation that needs component data converts a typed handle to
+the registered struct and then uses ordinary field access:
 
-The `find_joint.xform` socket is an implicit output adapter. Its visible
-contract remains `buffer<matrix>`, but the socket metadata references the
-stable conversion `orlrig.convert.joint_world_matrix` and consumes the
-`index` output. During ORL lowering, a use of that socket emits a hidden
-one-element matrix buffer and initializes it with
-`joint_world_matrix(joints, index)`. The reverse writeback selector retains
-the stable `handle`; the scene resolver maps it to the current packed index
-before the helper call. The conversion resolves the auxiliary
-`scene.rig.joints` graph input by semantic binding, so no explicit conversion
-node is required in the editable graph. The socket also declares the reverse
-conversion `orlrig.convert.joint_world_matrix_to_trs`. When the socket is
-connected to a mutable constraint input, the constraint edits the temporary
-world matrix and lowering emits
-`joint_write_world_matrix(joints, resolved_index, temporary)` afterward. That helper
-converts world space back to local space using the selected joint's parent
-inverse, decomposes local translation/rotation/scale, and preserves the
-joint's parent and metadata fields.
+```orl
+Joint joint_data = Joint(joint_handle);
+WorldTransform world_data = WorldTransform(joint_handle);
+Locator locator_data = Locator(locator_handle);
 
-Because `xform` is a one-element buffer, its constraint-array selector is
-`0`. Use the `index` output only when connecting a find node's stable scene
-selection to an aggregate `joints` or `controllers` buffer; do not use the
-packed scene index to index the one-element `xform` result.
+joint_data.rotation = solved_rotation;
+matrix world = world_data.xform;
+```
 
-Scene writeback is committed to component storage only after a graph
-evaluation with host readback. Device-only evaluation must not be committed
-because the CPU-side packed TRS values may be stale. The same registry
-mechanism can be used for future scalar/vector, matrix, and buffer adapters.
+There is no implicit matrix-buffer adapter or integer-index writeback path.
+World/local hierarchy conversion belongs to the registered
+`WorldTransform` view, and field writes commit through that view's normal
+read/write lowering.
 
 ## 4. Deformer node candidates
 
@@ -779,37 +758,45 @@ Source: `resource/stdlib/solver/ik_two_bone.orl`
 Signature:
 
 ```orl
+use rig/handles;
+
 int solver_ik_two_bone(
-    int root,
-    int mid,
-    int end,
-    int target_index,
-    int pole_index
+    joint_handle root,
+    joint_handle mid,
+    joint_handle end,
+    locator_handle target,
+    locator_handle pole
 )
 ```
 
 Inputs:
 
-- `solver_context.joints[]`: mutable local pose;
-- `root`, `mid`, `end`: indices of a strict three-joint chain;
-- `target_index` and `pole_index`: indices into
-  `solver_context.locators[]`;
-- `solver_context.joint_count`: implicit joint extent.
+- `root`, `mid`, `end`: exact typed joint handles;
+- `target` and `pole`: exact typed locator handles;
+- `Joint(handle)`, `Locator(handle)`, and `WorldTransform(handle)` views:
+  mutable local pose, locator transforms, and hierarchy-aware world transforms.
 
 Behavior:
 
-- validates indices and the `root -> mid -> end` parent relationship;
+- reads the typed views and writes root/mid rotations directly;
 - measures upper and lower bone lengths;
 - clamps target distance to reachable range;
 - uses the pole position to select the bend plane;
-- rotates root and mid;
+- evaluates parent/world transforms through the registered view resolvers;
 - leaves translations and the end-joint rotation unchanged.
 
-Return value is `1` on success and `0` if the chain, lengths, or target are
-invalid.
+Return value is `1` on success and `0` if the lengths or target are invalid.
+The graph/evaluation plan validates the strict `root -> mid -> end`
+hierarchy before dispatch.
 
 Current runner status: this is the only solver exposed by the current
 `SolverRunner`, through `evaluate_two_bone`.
+
+The former index-based `solver_hd_id`, `solver_spline_ik`, and
+`solver_full_body_ik` definitions are no longer registered as graph nodes.
+Their authored integer component selectors were intentionally removed in the
+plan-8 cutover; old projects must report an unsupported-definition diagnostic
+instead of silently treating those integers as handles.
 
 ### 6.3 `solver_hd_id`
 
@@ -934,9 +921,10 @@ is the `solver_*` operation that mutates or produces a complete result.
 ## 7. Constraint node definitions and source procedures
 
 Each public procedure in this section has a registered
-`orlrig.constraint.*` definition. Constraint definitions expose source and
-destination matrix buffers plus the index/count scalar inputs, and mark the
-destination as an observable read/write effect.
+`orlrig.constraint.*` definition. Transform constraints consume exact or
+specialized source/destination handles and access storage through registered
+views. Genuine numeric buffers, such as the one-element aim axis, remain
+ordinary data inputs.
 
 Constraints are effectful transform operations. They modify a destination
 matrix buffer and should normally be scheduled in graph order, rather than
@@ -953,13 +941,9 @@ Signature:
 
 ```orl
 int constraint_aim(
-    matrix targets[],
-    matrix subjects[],
+    source_xform_handle target,
+    destination_xform_handle subject,
     vector axes[],
-    int target_index,
-    int subject_index,
-    int target_count,
-    int subject_count
 )
 ```
 
@@ -971,7 +955,8 @@ Behavior:
 - preserves subject translation and axis scales.
 
 The axis buffer is currently a one-element input. The target and subject
-indices are independently validated. The return value is `1` on success.
+handle kinds are specialized at graph compile time. The return value is `1`
+on success.
 
 ### 7.2 `constraint_copy_xform`
 
@@ -981,12 +966,8 @@ Signature:
 
 ```orl
 int constraint_copy_xform(
-    matrix source[],
-    matrix destination[],
-    int source_index,
-    int destination_index,
-    int source_count,
-    int destination_count
+    source_xform_handle source,
+    destination_xform_handle destination
 )
 ```
 
@@ -1001,12 +982,8 @@ Signature:
 
 ```orl
 int constraint_copy_translation(
-    matrix source[],
-    matrix destination[],
-    int source_index,
-    int destination_index,
-    int source_count,
-    int destination_count
+    source_xform_handle source,
+    destination_xform_handle destination
 )
 ```
 
@@ -1021,12 +998,8 @@ Signature:
 
 ```orl
 int constraint_copy_rotation(
-    matrix source[],
-    matrix destination[],
-    int source_index,
-    int destination_index,
-    int source_count,
-    int destination_count
+    source_xform_handle source,
+    destination_xform_handle destination
 )
 ```
 
@@ -1042,12 +1015,8 @@ Signature:
 
 ```orl
 int constraint_copy_scale(
-    matrix source[],
-    matrix destination[],
-    int source_index,
-    int destination_index,
-    int source_count,
-    int destination_count
+    source_xform_handle source,
+    destination_xform_handle destination
 )
 ```
 

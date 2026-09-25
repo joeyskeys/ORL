@@ -30,6 +30,18 @@ static_assert(requires(ORL::CreateJointOp& operation) {
     operation.enter();
 });
 
+struct ModalControlTestOp : ORL::VpOperation<ModalControlTestOp> {
+    static constexpr ORL::OpMode kMode = ORL::OpMode::Modal;
+    bool engaged = false;
+    int evals = 0;
+
+    void on_enter() { engaged = true; }
+    void on_eval(const ORL::InputEvent&) { ++evals; }
+    bool is_active() const { return engaged; }
+    void on_confirm() { engaged = false; }
+    void on_cancel() { engaged = false; }
+};
+
 class TestWindowBackend final : public vkkk::WindowBackend {
 public:
     TestWindowBackend() {
@@ -75,85 +87,10 @@ public:
     vkkk::InputPointer pointer_state{50.0, 50.0};
 };
 
-orlgraph::GraphModule make_controller_to_joint_graph()
+orlgraph::GraphModule make_typed_two_bone_solver_graph()
 {
     orlgraph::GraphModule graph;
-    graph.module_id = "scene.controller_to_joint";
-    graph.add_input(orlgraph::InterfacePort{
-        orlgraph::StableId{"controller_count"}, "controller_count",
-        orlgraph::PortDirection::Input, orlgraph::LogicalType::int64(),
-        orlgraph::Domain::constant(), orlgraph::Shape::scalar(), true,
-        std::nullopt, false,
-        orlrig::scene_controller_count_binding("ctrl"),
-        {}, {}});
-    graph.add_input(orlgraph::InterfacePort{
-        orlgraph::StableId{"joint_count"}, "joint_count",
-        orlgraph::PortDirection::Input, orlgraph::LogicalType::int64(),
-        orlgraph::Domain::constant(), orlgraph::Shape::scalar(), true,
-        std::nullopt, false, std::string{orlrig::kSceneJointCountBinding},
-        {}, {}});
-    graph.add_output(orlgraph::InterfacePort{
-        orlgraph::StableId{"status"}, "status",
-        orlgraph::PortDirection::Output, orlgraph::LogicalType::int64(),
-        orlgraph::Domain::constant(), orlgraph::Shape::scalar(), true,
-        std::nullopt, false, "status", {}, {}});
-    graph.add_node(orlgraph::NodeInstance{
-        orlgraph::StableId{"find_controller"},
-        orlgraph::StableId{"orlrig.input.find_controller"},
-        "find_controller",
-        {{"name", orlgraph::ConstantValue{
-            orlgraph::LogicalType::string(), std::string{"ctrl"}}}},
-        {}, orlgraph::InlinePolicy::Default});
-    graph.add_node(orlgraph::NodeInstance{
-        orlgraph::StableId{"find_joint"},
-        orlgraph::StableId{"orlrig.input.find_joint"},
-        "find_joint",
-        {{"name", orlgraph::ConstantValue{
-            orlgraph::LogicalType::string(), std::string{"root"}}}},
-        {}, orlgraph::InlinePolicy::Default});
-    graph.add_node(orlgraph::NodeInstance{
-        orlgraph::StableId{"copy"},
-        orlgraph::StableId{"orlrig.constraint.copy_xform"},
-        "copy", {}, {}, orlgraph::InlinePolicy::Default});
-    graph.add_connection(orlgraph::Connection{
-        orlgraph::Endpoint::node_port(
-            orlgraph::StableId{"find_controller"},
-            orlgraph::StableId{"xform"}),
-        orlgraph::Endpoint::node_port(
-            orlgraph::StableId{"copy"},
-            orlgraph::StableId{"source"})});
-    graph.add_connection(orlgraph::Connection{
-        orlgraph::Endpoint::node_port(
-            orlgraph::StableId{"find_joint"},
-            orlgraph::StableId{"xform"}),
-        orlgraph::Endpoint::node_port(
-            orlgraph::StableId{"copy"},
-            orlgraph::StableId{"destination"})});
-    graph.add_connection(orlgraph::Connection{
-        orlgraph::Endpoint::graph_input(
-            orlgraph::StableId{"controller_count"}),
-        orlgraph::Endpoint::node_port(
-            orlgraph::StableId{"copy"},
-            orlgraph::StableId{"source_count"})});
-    graph.add_connection(orlgraph::Connection{
-        orlgraph::Endpoint::graph_input(
-            orlgraph::StableId{"joint_count"}),
-        orlgraph::Endpoint::node_port(
-            orlgraph::StableId{"copy"},
-            orlgraph::StableId{"destination_count"})});
-    graph.add_connection(orlgraph::Connection{
-        orlgraph::Endpoint::node_port(
-            orlgraph::StableId{"copy"},
-            orlgraph::StableId{"status"}),
-        orlgraph::Endpoint::graph_output(
-            orlgraph::StableId{"status"})});
-    return graph;
-}
-
-orlgraph::GraphModule make_two_bone_solver_graph()
-{
-    orlgraph::GraphModule graph;
-    graph.module_id = "scene.two_bone_solver";
+    graph.module_id = "scene.typed_two_bone_solver";
     graph.add_output(orlgraph::InterfacePort{
         orlgraph::StableId{"status"}, "status",
         orlgraph::PortDirection::Output, orlgraph::LogicalType::int64(),
@@ -164,38 +101,37 @@ orlgraph::GraphModule make_two_bone_solver_graph()
         std::string id, std::string definition, std::string name) {
         graph.add_node(orlgraph::NodeInstance{
             orlgraph::StableId{id},
-            orlgraph::StableId{std::move(definition)},
+            orlgraph::StableId{definition},
             id,
             {{"name", orlgraph::ConstantValue{
                 orlgraph::LogicalType::string(), std::move(name)}}},
             {}, orlgraph::InlinePolicy::Default});
     };
-    add_find("target", "orlrig.input.find_locator", "target");
-    add_find("pole", "orlrig.input.find_locator", "pole");
     add_find("root", "orlrig.input.find_joint", "root");
     add_find("mid", "orlrig.input.find_joint", "mid");
     add_find("end", "orlrig.input.find_joint", "end");
+    add_find("target", "orlrig.input.find_locator", "target");
+    add_find("pole", "orlrig.input.find_locator", "pole");
     graph.add_node(orlgraph::NodeInstance{
         orlgraph::StableId{"solver"},
         orlgraph::StableId{"orlrig.solver.ik_two_bone"},
         "solver", {}, {}, orlgraph::InlinePolicy::Default});
 
     const auto connect = [&graph](
-        std::string source_node, std::string source_port,
-        std::string destination_port) {
+        std::string source, std::string destination) {
         graph.add_connection(orlgraph::Connection{
             orlgraph::Endpoint::node_port(
-                orlgraph::StableId{std::move(source_node)},
-                orlgraph::StableId{std::move(source_port)}),
+                orlgraph::StableId{source},
+                orlgraph::StableId{"handle"}),
             orlgraph::Endpoint::node_port(
                 orlgraph::StableId{"solver"},
-                orlgraph::StableId{std::move(destination_port)})});
+                orlgraph::StableId{destination})});
     };
-    connect("target", "index", "target_index");
-    connect("pole", "index", "pole_index");
-    connect("root", "index", "root");
-    connect("mid", "index", "mid");
-    connect("end", "index", "end");
+    connect("root", "root");
+    connect("mid", "mid");
+    connect("end", "end");
+    connect("target", "target");
+    connect("pole", "pole");
     graph.add_connection(orlgraph::Connection{
         orlgraph::Endpoint::node_port(
             orlgraph::StableId{"solver"},
@@ -228,33 +164,34 @@ TEST_CASE("scene graph context owns the active LBS graph",
     REQUIRE(context.has_runtime_node("orlrig.deformer.lbs.capture_bind"));
     REQUIRE(context.has_runtime_node("orlrig.deformer.lbs.evaluate"));
     REQUIRE(context.registry().find("orlrig.input.find_mesh") != nullptr);
-    const auto* find_controller =
-        context.registry().find("orlrig.input.find_controller");
     const auto* find_joint =
         context.registry().find("orlrig.input.find_joint");
     const auto* find_locator =
         context.registry().find("orlrig.input.find_locator");
-    REQUIRE(find_controller != nullptr);
+    REQUIRE(context.registry().find("orlrig.input.find_controller")
+        == nullptr);
+    REQUIRE(context.registry().find("orlrig.input.legacy_find_joint")
+        == nullptr);
+    REQUIRE(context.registry().find("orlrig.input.legacy_find_locator")
+        == nullptr);
     REQUIRE(find_joint != nullptr);
     REQUIRE(find_locator != nullptr);
-    REQUIRE(find_controller->output("handle") != nullptr);
-    REQUIRE(find_controller->output("index") != nullptr);
-    REQUIRE(find_controller->output("xform") != nullptr);
+    REQUIRE(find_joint->outputs.size() == 1);
+    REQUIRE(find_locator->outputs.size() == 1);
     REQUIRE(find_joint->output("handle") != nullptr);
-    REQUIRE(find_joint->output("index") != nullptr);
-    REQUIRE(find_joint->output("xform") != nullptr);
-    REQUIRE(find_locator->output("xform") != nullptr);
+    REQUIRE(find_locator->output("handle") != nullptr);
+    REQUIRE(find_joint->output("index") == nullptr);
+    REQUIRE(find_joint->output("xform") == nullptr);
+    REQUIRE(find_locator->output("index") == nullptr);
+    REQUIRE(find_locator->output("xform") == nullptr);
     REQUIRE(find_joint->output("handle")->semantic
         == std::string{orlrig::kSceneJointHandleSemantic});
-    REQUIRE(find_joint->output("index")->semantic
-        == std::string{orlrig::kSceneArrayIndexSemantic});
-    REQUIRE(find_controller->output("xform")->type
-        == orlgraph::LogicalType::buffer(orlgraph::LogicalType::matrix()));
-    REQUIRE(find_locator->output("xform")->type
-        == orlgraph::LogicalType::buffer(
-            orlgraph::LogicalType::struct_type("Locator")));
-    REQUIRE(find_joint->output("xform")->cardinality
-        == orlgraph::PortCardinality::Buffer);
+    REQUIRE(find_joint->output("handle")->type
+        == orlgraph::LogicalType::handle("orlrig::joint_handle"));
+    REQUIRE(find_locator->output("handle")->semantic
+        == std::string{orlrig::kSceneLocatorHandleSemantic});
+    REQUIRE(find_locator->output("handle")->type
+        == orlgraph::LogicalType::handle("orlrig::locator_handle"));
 
     const auto* copy_xform =
         context.registry().find("orlrig.constraint.copy_xform");
@@ -291,13 +228,6 @@ TEST_CASE("scene graph context owns the active LBS graph",
         ORL::SceneElementKind::Controller, "ctrl").has_value());
     REQUIRE(context.scene_inputs().resolve_element_handle(
         ORL::SceneElementKind::Locator, "loc").has_value());
-    REQUIRE(context.scene_inputs().resolve_element_index(
-        ORL::SceneElementKind::Joint, "root") == 0);
-    REQUIRE(context.scene_inputs().resolve_element_index(
-        ORL::SceneElementKind::Controller, "ctrl") == 0);
-    REQUIRE(context.scene_inputs().resolve_element_index(
-        ORL::SceneElementKind::Locator, "loc") == 0);
-
     ORL::exec::GraphInputBinding controllers;
     REQUIRE(context.scene_inputs().resolve_binding(
         orlrig::kSceneControllersBinding, controllers, &error));
@@ -330,6 +260,51 @@ TEST_CASE("scene graph context owns the active LBS graph",
     REQUIRE(components.find(joint_id) != nullptr);
     REQUIRE(components.find(controller_id) != nullptr);
     REQUIRE(components.find(locator_id) != nullptr);
+}
+
+TEST_CASE("solver graph executes typed IK handles",
+    "[scene-graph][runtime][solver][handles]")
+{
+    const auto previous_device = ORL::runtime_config.device;
+    ORL::runtime_config.device = ORL::ComputeDevice::Cpu;
+
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    auto root_joint = orlviewer::make_identity_joint();
+    auto mid_joint = orlviewer::make_identity_joint();
+    mid_joint.parent = 0;
+    mid_joint.translation[0] = 1.0;
+    auto end_joint = orlviewer::make_identity_joint();
+    end_joint.parent = 1;
+    end_joint.translation[0] = 1.0;
+    const auto root = components.create_joint("root", root_joint);
+    components.create_joint("mid", mid_joint);
+    components.create_joint("end", end_joint);
+    components.create_locator(
+        "target", orlrig::make_locator(glm::vec3{0.0f, 1.5f, 0.0f}));
+    components.create_locator(
+        "pole", orlrig::make_locator(glm::vec3{0.0f, 0.0f, 1.0f}));
+
+    ORL::SceneGraphContext context(scene, components);
+    orlgraph::NodeRegistry registry;
+    std::string registry_error;
+    REQUIRE(orlrig::register_rig_node_definitions(
+        registry, &registry_error));
+    orlgraph::GraphModule deformer;
+    deformer.module_id = "scene.empty_deformer";
+    context.set_stage_graphs(
+        make_typed_two_bone_solver_graph(), std::move(deformer),
+        std::move(registry));
+
+    ORL::Selection selection(components, scene);
+    ORL::GraphSceneRuntime runtime(
+        context, selection, {}, {}, orlgraph::GraphStage::Solver);
+    vkkk::Context backend(false);
+    runtime.on_update(backend);
+
+    REQUIRE(components.joint(root)->rotation[3]
+        != Catch::Approx(1.0));
+    ORL::runtime_config.device = previous_device;
 }
 
 TEST_CASE("control map selects the first matching operation overload",
@@ -492,16 +467,7 @@ TEST_CASE("control map separates window and panel bindings",
 TEST_CASE("control map keeps camera navigation live during modal ops",
     "[controls][modal]")
 {
-    struct ModalOp : ORL::VpOperation<ModalOp> {
-        static constexpr ORL::OpMode kMode = ORL::OpMode::Modal;
-        bool engaged = false;
-        int evals = 0;
-        void on_enter() { engaged = true; }
-        void on_eval(const ORL::InputEvent&) { ++evals; }
-        bool is_active() const { return engaged; }
-        void on_confirm() { engaged = false; }
-        void on_cancel() { engaged = false; }
-    } modal;
+    ModalControlTestOp modal;
 
     int pans = 0;
     int others = 0;
@@ -1009,145 +975,6 @@ TEST_CASE("mirror operation copies the selected joint subtree across X",
     }
 }
 
-TEST_CASE("graph runtime executes ORL constraints and commits joint output",
-    "[scene-graph][runtime][constraint]")
-{
-    const auto previous_device = ORL::runtime_config.device;
-    ORL::runtime_config.device = ORL::ComputeDevice::Cpu;
-
-    vkkk::Scene scene;
-    ORL::ComponentManager components;
-    const auto joint_id = components.create_joint("root");
-    const auto controller_id = components.create_controller(
-        "ctrl", orlrig::make_controller(glm::vec3{4.0f, 0.0f, 0.0f}));
-
-    ORL::SceneGraphContext context(scene, components);
-    orlgraph::NodeRegistry registry;
-    std::string registry_error;
-    REQUIRE(orlrig::register_rig_node_definitions(
-        registry, &registry_error));
-    context.set_graph(
-        make_controller_to_joint_graph(), std::move(registry));
-
-    ORL::Selection selection(components, scene);
-    auto runtime = [&]() -> ORL::GraphSceneRuntime {
-        ORL::GraphSceneRuntime temporary(context, selection, {}, {});
-        return std::move(temporary);
-    }();
-    vkkk::Context backend(false);
-    runtime.request_bind();
-    runtime.on_update(backend);
-
-    REQUIRE(components.joint(joint_id)->translation[0]
-        == Catch::Approx(4.0));
-    REQUIRE(components.joint(joint_id)->translation[1]
-        == Catch::Approx(0.0));
-    REQUIRE(components.joint(joint_id)->translation[2]
-        == Catch::Approx(0.0));
-    REQUIRE(components.controller(controller_id) != nullptr);
-
-    orlrig::set_controller_origin(
-        *components.controller(controller_id), glm::vec3{6.0f, 0.0f, 0.0f});
-    runtime.on_update(backend);
-    REQUIRE(components.joint(joint_id)->translation[0]
-        == Catch::Approx(6.0));
-
-    ORL::runtime_config.device = previous_device;
-}
-
-TEST_CASE("graph runtime executes ORL solver mutations",
-    "[scene-graph][runtime][solver]")
-{
-    const auto previous_device = ORL::runtime_config.device;
-    ORL::runtime_config.device = ORL::ComputeDevice::Cpu;
-
-    vkkk::Scene scene;
-    ORL::ComponentManager components;
-    auto root = orlviewer::make_identity_joint();
-    auto mid = orlviewer::make_identity_joint();
-    mid.parent = 0;
-    mid.translation[0] = 1.0;
-    auto end = orlviewer::make_identity_joint();
-    end.parent = 1;
-    end.translation[0] = 1.0;
-    const auto root_id = components.create_joint("root", root);
-    components.create_joint("mid", mid);
-    components.create_joint("end", end);
-    components.create_locator(
-        "target", orlrig::make_locator(glm::vec3{0.0f, 1.5f, 0.0f}));
-    components.create_locator(
-        "pole", orlrig::make_locator(glm::vec3{0.0f, 0.0f, 1.0f}));
-
-    ORL::SceneGraphContext context(scene, components);
-    orlgraph::NodeRegistry registry;
-    std::string registry_error;
-    REQUIRE(orlrig::register_rig_node_definitions(
-        registry, &registry_error));
-    context.set_graph(make_two_bone_solver_graph(), std::move(registry));
-
-    ORL::Selection selection(components, scene);
-    ORL::GraphSceneRuntime runtime(context, selection, {}, {});
-    vkkk::Context backend(false);
-    runtime.request_bind();
-    runtime.on_update(backend);
-
-    REQUIRE(components.joint(root_id)->rotation[3]
-        != Catch::Approx(1.0));
-    ORL::runtime_config.device = previous_device;
-}
-
-TEST_CASE("solver feature path evaluates the staged solver graph",
-    "[scene-graph][runtime][stages][solver]")
-{
-    const auto previous_device = ORL::runtime_config.device;
-    ORL::runtime_config.device = ORL::ComputeDevice::Cpu;
-
-    vkkk::Scene scene;
-    ORL::ComponentManager components;
-    auto root = orlviewer::make_identity_joint();
-    auto mid = orlviewer::make_identity_joint();
-    mid.parent = 0;
-    mid.translation[0] = 1.0;
-    auto end = orlviewer::make_identity_joint();
-    end.parent = 1;
-    end.translation[0] = 1.0;
-    const auto root_id = components.create_joint("root", root);
-    const auto mid_id = components.create_joint("mid", mid);
-    const auto end_id = components.create_joint("end", end);
-    components.create_locator(
-        "target", orlrig::make_locator(glm::vec3{0.0f, 1.5f, 0.0f}));
-    components.create_locator(
-        "pole", orlrig::make_locator(glm::vec3{0.0f, 0.0f, 1.0f}));
-
-    ORL::SceneGraphContext context(scene, components);
-    orlgraph::NodeRegistry registry;
-    std::string registry_error;
-    REQUIRE(orlrig::register_rig_node_definitions(
-        registry, &registry_error));
-    orlgraph::GraphModule deformer;
-    deformer.module_id = "scene.empty_deformer";
-    context.set_stage_graphs(
-        make_two_bone_solver_graph(), std::move(deformer),
-        std::move(registry));
-
-    ORL::Selection selection(components, scene);
-    ORL::GraphSceneRuntime runtime(
-        context, selection, {}, {}, orlgraph::GraphStage::Solver);
-    vkkk::Context backend(false);
-    runtime.on_update(backend);
-
-    REQUIRE(context.hierarchy_plan().has_value());
-    REQUIRE(context.hierarchy_plan()->joint_count == 3);
-    REQUIRE(context.hierarchy_plan()->is_direct_parent(root_id, mid_id));
-    REQUIRE(context.hierarchy_plan()->is_direct_parent(mid_id, end_id));
-    REQUIRE(context.evaluation_plan() != nullptr);
-    REQUIRE(context.evaluation_plan()->regions.size() == 1);
-    REQUIRE_FALSE(context.evaluation_plan()->regions.front().global);
-    REQUIRE(components.joint(root_id)->rotation[3]
-        != Catch::Approx(1.0));
-    ORL::runtime_config.device = previous_device;
-}
-
 TEST_CASE("scene graph commits host-readback joint writeback",
     "[scene-graph][writeback]")
 {
@@ -1355,10 +1182,6 @@ TEST_CASE("stable scene handles survive packed index changes",
         context.scene_inputs().resolve_element_handle(
             ORL::SceneElementKind::Joint, "second");
     REQUIRE(second_handle.has_value());
-    REQUIRE(context.scene_inputs().resolve_element_index(
-        ORL::SceneElementKind::Joint, "second") == 1);
-    REQUIRE(context.scene_inputs().resolve_element_index(
-        ORL::SceneElementKind::Controller, "z_ctrl") == 1);
 
     std::string error;
     ORL::exec::GraphInputBinding binding;
@@ -1372,8 +1195,6 @@ TEST_CASE("stable scene handles survive packed index changes",
     REQUIRE(components.destroy(first_joint));
     REQUIRE(context.scene_inputs().resolve_element_handle(
         ORL::SceneElementKind::Joint, "second") == *second_handle);
-    REQUIRE(context.scene_inputs().resolve_element_index(
-        ORL::SceneElementKind::Joint, "second") == 0);
 
     // The buffer still carries the old stable-ID order, so writeback must
     // resolve its entries by ID rather than using the new packed positions.
@@ -1384,6 +1205,4 @@ TEST_CASE("stable scene handles survive packed index changes",
     REQUIRE(components.rename(second_controller, "z_ctrl_2"));
     context.refresh_scene_inputs();
     REQUIRE(context.scene_input_revision() > initial_revision);
-    REQUIRE(context.scene_inputs().resolve_element_index(
-        ORL::SceneElementKind::Controller, "z_ctrl_2") == 1);
 }

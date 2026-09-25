@@ -23,7 +23,7 @@ bool Port::compatible_value(const Port& source) const {
     if (direction == PortDirection::Output || source.direction == PortDirection::Input) {
         return false;
     }
-    if (type != source.type) {
+    if (!is_assignable(source.type, type)) {
         return false;
     }
     if (cardinality != source.cardinality
@@ -131,7 +131,8 @@ std::vector<const NodeDefinition*> NodeRegistry::definitions_for(
 {
     std::vector<const NodeDefinition*> result;
     for (const auto& [_, definition] : values_) {
-        if (graph_stage_allowed(definition.allowed_stages, stage)) {
+        if (!definition.hidden
+            && graph_stage_allowed(definition.allowed_stages, stage)) {
             result.push_back(&definition);
         }
     }

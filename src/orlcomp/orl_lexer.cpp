@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <charconv>
 #include <string_view>
 #include <unordered_map>
 
@@ -21,6 +22,7 @@ const std::unordered_map<std::string_view, TokenKind> kKeywords = {
     {"or", TokenKind::KwOr},
     {"and", TokenKind::KwAnd},
     {"not", TokenKind::KwNot},
+    {"is", TokenKind::KwIs},
     {"vector", TokenKind::KwVector},
     {"normal", TokenKind::KwNormal},
     {"point", TokenKind::KwPoint},
@@ -33,6 +35,7 @@ const std::unordered_map<std::string_view, TokenKind> kKeywords = {
     {"double", TokenKind::TypeName},
     {"string", TokenKind::KwString},
     {"struct", TokenKind::KwStruct},
+    {"handle", TokenKind::KwHandle},
     {"use", TokenKind::KwUse},
     {"export", TokenKind::KwExport},
     {"vec2", TokenKind::TypeName},
@@ -99,7 +102,12 @@ Token Lexer::NextToken() {
     SkipIgnored();
 
     if (IsAtEnd()) {
-        return Token{TokenKind::EndOfFile, "", line_, column_, 0, 0.0, ""};
+        Token token;
+        token.kind = TokenKind::EndOfFile;
+        token.line = line_;
+        token.column = column_;
+        token.source_origin = source_origin_;
+        return token;
     }
 
     const std::size_t start = index_;
@@ -165,7 +173,7 @@ Token Lexer::NextToken() {
         if (Match('|')) {
             return MakeToken(TokenKind::PipePipe, start, index_, token_line, token_column);
         }
-        return MakeInvalidToken(start, index_, token_line, token_column, "Unexpected '|' (did you mean '||'?)");
+        return MakeToken(TokenKind::Pipe, start, index_, token_line, token_column);
     default:
         return MakeInvalidToken(start, index_, token_line, token_column, "Unexpected character");
     }
@@ -177,6 +185,7 @@ Token Lexer::MakeToken(TokenKind kind, std::size_t start, std::size_t end, int l
     token.lexeme = source_.substr(start, end - start);
     token.line = line;
     token.column = column;
+    token.source_origin = source_origin_;
     return token;
 }
 
@@ -202,6 +211,9 @@ void Lexer::SkipIgnored() {
         }
 
         if (c == '#') {
+            if (ConsumeModuleDirective()) {
+                continue;
+            }
             if (IsPreprocessorLine()) {
                 SkipLine();
                 continue;
@@ -216,6 +228,45 @@ void Lexer::SkipIgnored() {
 
         break;
     }
+}
+
+bool Lexer::ConsumeModuleDirective() {
+    if (!IsPreprocessorLine()) {
+        return false;
+    }
+    const std::size_t start = index_;
+    std::size_t end = start;
+    while (end < source_.size() && source_[end] != '\n') {
+        ++end;
+    }
+    constexpr std::string_view prefix = "#orl_module ";
+    const std::string_view line{source_.data() + start, end - start};
+    if (!line.starts_with(prefix)) {
+        return false;
+    }
+    const std::string_view payload = line.substr(prefix.size());
+    const std::size_t separator = payload.rfind(' ');
+    if (separator == std::string_view::npos) {
+        return false;
+    }
+    const std::string_view origin = payload.substr(0, separator);
+    const std::string_view source_line = payload.substr(separator + 1);
+    int parsed_line = 0;
+    const auto parsed = std::from_chars(source_line.data(),
+        source_line.data() + source_line.size(), parsed_line);
+    if (parsed.ec != std::errc{} || parsed.ptr != source_line.data()
+            + source_line.size()
+        || parsed_line < 1)
+    {
+        return false;
+    }
+    if (!origin.empty()) {
+        source_origin_ = std::string{origin};
+    }
+    SkipLine();
+    line_ = parsed_line;
+    column_ = 1;
+    return true;
 }
 
 bool Lexer::IsPreprocessorLine() const {
@@ -411,6 +462,7 @@ const char *TokenKindName(TokenKind kind) {
     case TokenKind::KwOr: return "KwOr";
     case TokenKind::KwAnd: return "KwAnd";
     case TokenKind::KwNot: return "KwNot";
+    case TokenKind::KwIs: return "KwIs";
     case TokenKind::KwVector: return "KwVector";
     case TokenKind::KwNormal: return "KwNormal";
     case TokenKind::KwPoint: return "KwPoint";
@@ -419,6 +471,7 @@ const char *TokenKindName(TokenKind kind) {
     case TokenKind::KwFloat: return "KwFloat";
     case TokenKind::KwString: return "KwString";
     case TokenKind::KwStruct: return "KwStruct";
+    case TokenKind::KwHandle: return "KwHandle";
     case TokenKind::KwUse: return "KwUse";
     case TokenKind::KwReturn: return "KwReturn";
     case TokenKind::KwExport: return "KwExport";
@@ -437,6 +490,7 @@ const char *TokenKindName(TokenKind kind) {
     case TokenKind::GreaterEqual: return "GreaterEqual";
     case TokenKind::AmpAmp: return "AmpAmp";
     case TokenKind::PipePipe: return "PipePipe";
+    case TokenKind::Pipe: return "Pipe";
     case TokenKind::Comma: return "Comma";
     case TokenKind::Dot: return "Dot";
     case TokenKind::Colon: return "Colon";

@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -69,6 +70,7 @@ struct LoweredGraph {
     std::string entry_function;
     std::vector<GraphLoweringDiagnostic> diagnostics;
     std::vector<LoweredGraphOutput> outputs;
+    std::map<std::string, std::string> handle_type_identities;
     std::size_t scene_revision = 0;
 };
 

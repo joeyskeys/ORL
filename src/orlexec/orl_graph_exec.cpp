@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <unordered_map>
 #include <utility>
 
 #include "orl_runtime_signature.h"
@@ -32,6 +33,9 @@ std::string graph_input_parameter_name(const orlgraph::StableId& id,
     if (result.empty() || std::isdigit(static_cast<unsigned char>(result.front()))) {
         result.insert(result.begin(), '_');
     }
+    if (result == "handle") {
+        result.insert(result.begin(), '_');
+    }
     return result;
 }
 
@@ -54,6 +58,8 @@ ParameterKind parameter_kind_for(const orlgraph::LogicalType& type) {
         return ParameterKind::Int64;
     case orlgraph::LogicalTypeKind::Float64:
         return ParameterKind::Float64;
+    case orlgraph::LogicalTypeKind::Handle:
+        return ParameterKind::Handle;
     default:
         return ParameterKind::Unsupported;
     }
@@ -107,10 +113,17 @@ OrlGraphProgram OrlGraphProgram::Compile(const orlgraph::GraphModule& module,
         return result;
     }
 
+    std::unordered_map<std::string, std::string> handle_identities;
+    for (const auto& [local_name, canonical_name] :
+        lowered.handle_type_identities)
+    {
+        handle_identities.emplace(local_name, canonical_name);
+    }
     result.program_ = OrlProgram::Compile(result.source_, {
         .entry_function = result.entry_function_,
         .source_name = "orl_graph_program",
         .include_paths = include_paths,
+        .handle_type_identities = std::move(handle_identities),
     });
     if (!result.program_->valid()) {
         append_errors(result.errors_, result.program_->errors());
@@ -237,6 +250,21 @@ bool OrlGraphExecution::bind_float(std::string_view parameter, double value) {
     return true;
 }
 
+bool OrlGraphExecution::bind_handle(
+    std::string_view parameter, HandleValue value)
+{
+    if (!execution_.has_value()) {
+        errors_.emplace_back("ORL graph execution is invalid");
+        return false;
+    }
+    if (!execution_->bind_handle(parameter, value)) {
+        errors_ = execution_->errors();
+        return false;
+    }
+    host_handles_[std::string{parameter}] = value;
+    return true;
+}
+
 bool OrlGraphExecution::set_solver_context(
     std::int64_t joint_count, std::int64_t controller_count)
 {
@@ -335,6 +363,7 @@ bool OrlGraphExecution::bind_graph_inputs(const orlgraph::GraphModule& module,
     device_buffers_.clear();
     host_ints_.clear();
     host_floats_.clear();
+    host_handles_.clear();
     last_result_.reset();
     last_outputs_.clear();
     for (const auto& [id, input] : module.inputs()) {
@@ -434,6 +463,30 @@ bool OrlGraphExecution::bind_graph_inputs(const orlgraph::GraphModule& module,
             bound = execution_->bind_int(parameter_name, binding.int_value);
         } else if (parameter->kind == ParameterKind::Float64) {
             bound = execution_->bind_float(parameter_name, binding.float_value);
+        } else if (parameter->kind == ParameterKind::Handle) {
+            if (!orlcomp::IsValidHandleValue(binding.handle_value)) {
+                errors_.push_back(
+                    "Graph input '" + id.value
+                    + "' supplied an invalid handle token");
+                execution_->clear_bindings();
+                return false;
+            }
+            const auto expected_type = orlcomp::HandleTypeIdFor(
+                input.type.name);
+            if (input.type.kind != orlgraph::LogicalTypeKind::Handle
+                || binding.handle_value.type_id != expected_type)
+            {
+                errors_.push_back(
+                    "Graph input '" + id.value
+                    + "' supplied a handle with the wrong nominal type");
+                execution_->clear_bindings();
+                return false;
+            }
+            bound = execution_->bind_handle(
+                parameter_name, binding.handle_value);
+            if (bound) {
+                host_handles_[parameter_name] = binding.handle_value;
+            }
         }
 
         if (!bound) {
@@ -448,6 +501,20 @@ bool OrlGraphExecution::bind_graph_inputs(const orlgraph::GraphModule& module,
     return true;
 }
 
+bool OrlGraphExecution::bind_handle_view_context(
+    orlrig::HandleViewContext& context)
+{
+    if (!execution_.has_value()) {
+        errors_.emplace_back("ORL graph execution is invalid");
+        return false;
+    }
+    if (!execution_->bind_handle_view_context(context)) {
+        errors_ = execution_->errors();
+        return false;
+    }
+    return true;
+}
+
 void OrlGraphExecution::clear_bindings() {
     if (execution_.has_value()) {
         execution_->clear_bindings();
@@ -456,6 +523,7 @@ void OrlGraphExecution::clear_bindings() {
     device_buffers_.clear();
     host_ints_.clear();
     host_floats_.clear();
+    host_handles_.clear();
     last_result_.reset();
     last_outputs_.clear();
 }
@@ -511,6 +579,15 @@ GraphEvaluationResult OrlGraphExecution::evaluate_result(
                 host_floats_.find(descriptor.source_parameter);
             if (found != host_floats_.end()) {
                 value.float_value = found->second;
+            }
+        }
+        if (!descriptor.source_parameter.empty()
+            && descriptor.kind == ParameterKind::Handle)
+        {
+            const auto found = host_handles_.find(
+                descriptor.source_parameter);
+            if (found != host_handles_.end()) {
+                value.handle_value = found->second;
             }
         }
         if (!descriptor.source_parameter.empty()) {

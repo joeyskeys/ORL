@@ -3,6 +3,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "orl_codegen.h"
+#include "orl_handle_views.hpp"
 #include "orl_jit.h"
 #include "orl_optimizer.h"
 #include "orl_parser.h"
@@ -10,6 +11,46 @@
 #include <llvm/IR/Module.h>
 
 using namespace orlcomp;
+
+TEST_CASE("llvm codegen lowers exact handles as two opaque lanes",
+    "[orl][codegen][handle]")
+{
+    Parser parser(R"(
+        handle joint_handle;
+        int echo(joint_handle value) {
+            if (value == value) { return 1; }
+            return 0;
+        }
+    )", "orlrig");
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_handle_lanes");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("%orl.HandleValue = type { i64, i64 }")
+        != std::string::npos);
+    REQUIRE(ir.find("handle.type.equal") != std::string::npos);
+    REQUIRE(ir.find("__orl_host_entry_echo") != std::string::npos);
+    const auto wrapper_start = ir.find(
+        "define i64 @__orl_host_entry_echo(");
+    REQUIRE(wrapper_start != std::string::npos);
+    const auto wrapper_end = ir.find(") {", wrapper_start);
+    REQUIRE(wrapper_end != std::string::npos);
+    const std::string wrapper_signature = ir.substr(
+        wrapper_start, wrapper_end - wrapper_start);
+    std::size_t pointer_count = 0;
+    std::size_t search_position = 0;
+    while ((search_position = wrapper_signature.find(
+                "ptr", search_position))
+        != std::string::npos)
+    {
+        ++pointer_count;
+        search_position += 3;
+    }
+    REQUIRE(pointer_count == 4);
+}
 
 TEST_CASE("llvm codegen emits IR for arithmetic and control flow", "[orl][codegen]") {
     const std::string src =
@@ -307,6 +348,29 @@ TEST_CASE("llvm codegen lowers type constructors in expressions", "[orl][codegen
     REQUIRE(ir.find("matvec") != std::string::npos);
 }
 
+TEST_CASE("llvm codegen folds exact handle is tests",
+    "[orl][codegen][handle][is]")
+{
+    Parser parser(R"(
+        handle joint_handle;
+        int check(joint_handle value) {
+            if (value is joint_handle) {
+                return 1;
+            }
+            return 2;
+        }
+    )", "orlrig");
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen("orl_handle_is_specialization_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+    const auto ir = codegen.DumpIR();
+    REQUIRE(ir.find("handle.type.equal") == std::string::npos);
+    REQUIRE(ir.find("ret i64 1") != std::string::npos);
+}
+
 TEST_CASE("llvm codegen lowers closest-joint auto-weight", "[orl][codegen][stdlib][auto_weight]") {
     const std::string src =
         "use auto_weight/closest_joint;\n"
@@ -463,23 +527,23 @@ TEST_CASE("llvm codegen lowers transform constraints", "[orl][codegen][stdlib][c
         "use constraint/copy_rotation;\n"
         "use constraint/copy_scale;\n"
         "use constraint/parent;\n"
-        "int aim(matrix targets[], matrix subjects[], vector axes[], int target_index, int subject_index, int target_count, int subject_count) {\n"
-        "    return constraint_aim(targets, subjects, axes, target_index, subject_index, target_count, subject_count);\n"
+        "int aim(source_xform_handle target, destination_xform_handle subject, vector axes[]) {\n"
+        "    return constraint_aim(target, subject, axes);\n"
         "}\n"
-        "int copy_xform(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
-        "    return constraint_copy_xform(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "int copy_xform(source_xform_handle source, destination_xform_handle destination) {\n"
+        "    return constraint_copy_xform(source, destination);\n"
         "}\n"
-        "int copy_translation(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
-        "    return constraint_copy_translation(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "int copy_translation(source_xform_handle source, destination_xform_handle destination) {\n"
+        "    return constraint_copy_translation(source, destination);\n"
         "}\n"
-        "int copy_rotation(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
-        "    return constraint_copy_rotation(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "int copy_rotation(source_xform_handle source, destination_xform_handle destination) {\n"
+        "    return constraint_copy_rotation(source, destination);\n"
         "}\n"
-        "int copy_scale(matrix source[], matrix destination[], int source_index, int destination_index, int source_count, int destination_count) {\n"
-        "    return constraint_copy_scale(source, destination, source_index, destination_index, source_count, destination_count);\n"
+        "int copy_scale(source_xform_handle source, destination_xform_handle destination) {\n"
+        "    return constraint_copy_scale(source, destination);\n"
         "}\n"
-        "int parent(matrix source[], matrix destination[], matrix offset, int source_index, int destination_index, int source_count, int destination_count) {\n"
-        "    return constraint_parent(source, destination, offset, source_index, destination_index, source_count, destination_count);\n"
+        "int parent(source_xform_handle source, destination_xform_handle destination, matrix offset) {\n"
+        "    return constraint_parent(source, destination, offset);\n"
         "}\n";
 
     Parser parser(src);
@@ -487,7 +551,22 @@ TEST_CASE("llvm codegen lowers transform constraints", "[orl][codegen][stdlib][c
     REQUIRE(parser.Errors().empty());
 
     LlvmIrCodegen codegen("orl_stdlib_transform_constraints_module");
-    REQUIRE(codegen.Generate(*parser.Ast()));
+    codegen.SetHandleTypeIdentities({
+        {"constraint::handles::source_xform_handle",
+            "orlrig::joint_handle"},
+        {"constraint::handles::destination_xform_handle",
+            "orlrig::joint_handle"},
+    });
+    global_handle_view_registry().clear();
+    REQUIRE(global_handle_view_registry().register_view({
+        "orlrig::joint_handle", "WorldTransform", 1, 1, "joint_arena",
+        {{"xform", HandleViewFieldKind::Matrix, 0,
+            "read_world", "write_world", "matrix"}}}));
+    const bool generated = codegen.Generate(*parser.Ast());
+    for (const auto& error : codegen.Errors()) {
+        INFO(error);
+    }
+    REQUIRE(generated);
     REQUIRE(codegen.Errors().empty());
 
     const std::string ir = codegen.DumpIR();
@@ -497,6 +576,7 @@ TEST_CASE("llvm codegen lowers transform constraints", "[orl][codegen][stdlib][c
     REQUIRE(ir.find("define i64 @constraint_copy_rotation") != std::string::npos);
     REQUIRE(ir.find("define i64 @constraint_copy_scale") != std::string::npos);
     REQUIRE(ir.find("define i64 @constraint_parent") != std::string::npos);
+    global_handle_view_registry().clear();
 }
 
 TEST_CASE("llvm codegen lowers lbs deformer", "[orl][codegen][stdlib][deformer]") {

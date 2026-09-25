@@ -39,6 +39,7 @@ public:
                                     std::string cache_key = {});
     // Loads a previously compiled host object without generating LLVM IR.
     bool LoadObject(std::span<const std::uint8_t> object);
+    void RegisterRuntimeSymbol(std::string name, void* address);
 
     std::optional<int64_t> InvokeInt64(const std::string &name);
     std::optional<int64_t> InvokeInt64(const std::string &name, int64_t arg);
@@ -52,6 +53,12 @@ public:
                                                        void *const *buffers,
                                                        const int64_t *integers,
                                                        const double *floats);
+    std::optional<int64_t> InvokeInt64WithRuntimeArgsAndHandles(
+        const std::string &name,
+        void *const *buffers,
+        const int64_t *integers,
+        const double *floats,
+        const std::uint64_t *handles);
     // Context-aware variant used when the ORL source references the implicit
     // solver_context global.
     std::optional<int64_t> InvokeInt64WithRuntimeArgsAndContext(
@@ -60,6 +67,13 @@ public:
         const int64_t *integers,
         const double *floats,
         void *solver_context);
+    std::optional<int64_t> InvokeInt64WithRuntimeArgsAndHandlesAndContext(
+        const std::string &name,
+        void *const *buffers,
+        const int64_t *integers,
+        const double *floats,
+        const std::uint64_t *handles,
+        void *solver_context);
     std::optional<int64_t> InvokeInt64WithRuntimeArgsAndHierarchyContext(
         const std::string &name,
         void *const *buffers,
@@ -67,11 +81,30 @@ public:
         const double *floats,
         void *hierarchy_context,
         void *hierarchy_data);
+    std::optional<int64_t>
+    InvokeInt64WithRuntimeArgsAndHandlesAndHierarchyContext(
+        const std::string &name,
+        void *const *buffers,
+        const int64_t *integers,
+        const double *floats,
+        const std::uint64_t *handles,
+        void *hierarchy_context,
+        void *hierarchy_data);
     std::optional<int64_t> InvokeInt64WithRuntimeArgsAndContexts(
         const std::string &name,
         void *const *buffers,
         const int64_t *integers,
         const double *floats,
+        void *solver_context,
+        void *hierarchy_context,
+        void *hierarchy_data);
+    std::optional<int64_t>
+    InvokeInt64WithRuntimeArgsAndHandlesAndContexts(
+        const std::string &name,
+        void *const *buffers,
+        const int64_t *integers,
+        const double *floats,
+        const std::uint64_t *handles,
         void *solver_context,
         void *hierarchy_context,
         void *hierarchy_data);

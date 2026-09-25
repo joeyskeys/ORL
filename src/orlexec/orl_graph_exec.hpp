@@ -26,6 +26,7 @@ struct GraphInputBinding {
     std::size_t element_count = 0;
     std::int64_t int_value = 0;
     double float_value = 0.0;
+    HandleValue handle_value{};
 };
 
 using GraphInputResolver = std::function<bool(
@@ -49,6 +50,7 @@ struct GraphOutputValue {
     GraphOutputDescriptor descriptor;
     std::optional<std::int64_t> int_value;
     std::optional<double> float_value;
+    std::optional<HandleValue> handle_value;
     OrlBuffer* buffer = nullptr;
     std::optional<DeviceBufferView> device_view;
 };
@@ -108,6 +110,7 @@ public:
         std::uint64_t device_ptr, std::size_t bytes);
     bool bind_int(std::string_view parameter, std::int64_t value);
     bool bind_float(std::string_view parameter, double value);
+    bool bind_handle(std::string_view parameter, HandleValue value);
     bool set_solver_context(
         std::int64_t joint_count, std::int64_t controller_count);
     bool set_solver_context(const orlrig::SolverContext& context);
@@ -116,6 +119,8 @@ public:
     bool bind_hierarchy_data(OrlBuffer& buffer);
     bool bind_graph_inputs(const orlgraph::GraphModule& module,
         const GraphInputResolver& resolver);
+    bool bind_handle_view_context(
+        orlrig::HandleViewContext& context);
     void clear_bindings();
 
     std::optional<std::int64_t> evaluate(std::uint32_t element_count = 1);
@@ -138,6 +143,7 @@ private:
     std::map<std::string, DeviceBufferView> device_buffers_;
     std::map<std::string, std::int64_t> host_ints_;
     std::map<std::string, double> host_floats_;
+    std::map<std::string, HandleValue> host_handles_;
     std::optional<std::int64_t> last_result_;
     std::vector<GraphOutputValue> last_outputs_;
     std::vector<std::string> errors_;

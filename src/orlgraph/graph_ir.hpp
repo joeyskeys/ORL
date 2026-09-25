@@ -97,19 +97,19 @@ struct PartialEvaluationFootprint {
     bool supports_sparse_dispatch = false;
     PartialPropagation propagation = PartialPropagation::Full;
 
-    std::vector<std::string> read_joint_ports;
-    std::vector<std::string> write_joint_ports;
-    std::vector<std::string> read_controller_ports;
-    std::vector<std::string> write_controller_ports;
-    std::vector<std::string> read_locator_ports;
-    std::vector<std::string> write_locator_ports;
+    struct HandleEffect {
+        StableId parameter;
+        std::string handle_type;
+        std::string view_type;
+        std::string field;
+        AccessMode access = AccessMode::Read;
 
-    std::vector<StableId> read_joints;
-    std::vector<StableId> write_joints;
-    std::vector<StableId> read_controllers;
-    std::vector<StableId> write_controllers;
-    std::vector<StableId> read_locators;
-    std::vector<StableId> write_locators;
+        friend bool operator==(const HandleEffect&,
+            const HandleEffect&) = default;
+    };
+
+    std::vector<HandleEffect> handle_effects;
+
     std::vector<StableId> read_resources;
     std::vector<StableId> write_resources;
 
@@ -189,6 +189,7 @@ struct ParameterSpec {
 struct NodeDefinition {
     StableId id;
     std::string qualified_name;
+    bool hidden = false;
     GraphStageMask allowed_stages = GraphStageMask::None;
     std::map<std::string, ConstantValue> metadata;
     Version version;
@@ -343,7 +344,7 @@ public:
     std::string module_id;
     Version version;
     std::string language_version = "orl-0";
-    std::string logical_abi_version = "orlgraph-0";
+    std::string logical_abi_version = "orlgraph-1";
 
     bool add_node(NodeInstance node, std::string* error = nullptr);
     bool add_connection(Connection connection, std::string* error = nullptr);

@@ -513,7 +513,11 @@ bool SceneGraphContext::bind_graph_inputs(
     {
         return false;
     }
-    return scene_inputs_.bind_solver_context(execution);
+    if (!scene_inputs_.bind_solver_context(execution)) {
+        return false;
+    }
+    return execution.bind_handle_view_context(
+        scene_inputs_.handle_view_context());
 }
 
 bool SceneGraphContext::commit_scene_writes(

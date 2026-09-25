@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace llvm {
@@ -25,6 +26,8 @@ public:
                            OrlCodegenTarget target = OrlCodegenTarget::Host);
     ~LlvmIrCodegen();
 
+    void SetHandleTypeIdentities(
+        std::unordered_map<std::string, std::string> identities);
     bool Generate(const Program &program);
 
     const std::vector<std::string> &Errors() const;

@@ -1,4 +1,5 @@
 #include "orl_codegen.h"
+#include "orl_handle_views.hpp"
 #include "orl_intrinsics.h"
 
 #if __has_include(<llvm/IR/BasicBlock.h>)
@@ -74,6 +75,9 @@ struct LlvmIrCodegen::Impl {
         bool is_buffer = false;
         bool is_fixed_array = false;
         bool is_implicit_context = false;
+        const HandleViewDescriptor* view = nullptr;
+        llvm::Value* view_handle = nullptr;
+        std::string handle_canonical;
     };
 
     struct LoopContext {
@@ -88,6 +92,215 @@ struct LlvmIrCodegen::Impl {
           module_(std::make_unique<llvm::Module>(module_name_, *context_)),
           builder_(*context_) {}
 
+    void SetHandleTypeIdentities(
+        std::unordered_map<std::string, std::string> identities)
+    {
+        handle_type_identities_ = std::move(identities);
+    }
+
+    bool IsHandleType(const std::string &type_name) const {
+        return type_name == "handle"
+            || handle_type_names_.contains(type_name);
+    }
+
+    bool IsUniversalHandleType(const std::string &type_name) const {
+        if (type_name != "handle") {
+            return false;
+        }
+        const auto found = handle_type_identities_.find(type_name);
+        return found == handle_type_identities_.end()
+            || found->second == "handle";
+    }
+
+    bool StatementUsesHandle(const Statement &statement) const {
+        if (const auto *declaration =
+            dynamic_cast<const DeclarationStatement *>(&statement))
+        {
+            return IsUniversalHandleType(declaration->type_name);
+        }
+        if (const auto *block = dynamic_cast<const BlockStatement *>(&statement)) {
+            for (const auto &child : block->statements) {
+                if (child != nullptr && StatementUsesHandle(*child)) {
+                    return true;
+                }
+            }
+        } else if (const auto *conditional =
+            dynamic_cast<const IfStatement *>(&statement))
+        {
+            return StatementUsesHandle(*conditional->then_branch)
+                || (conditional->else_branch != nullptr
+                    && StatementUsesHandle(*conditional->else_branch));
+        } else if (const auto *loop =
+            dynamic_cast<const WhileStatement *>(&statement))
+        {
+            return StatementUsesHandle(*loop->body);
+        } else if (const auto *loop =
+            dynamic_cast<const DoWhileStatement *>(&statement))
+        {
+            return StatementUsesHandle(*loop->body);
+        } else if (const auto *loop =
+            dynamic_cast<const ForStatement *>(&statement))
+        {
+            return StatementUsesHandle(*loop->body);
+        } else if (const auto *loop =
+            dynamic_cast<const ParallelForStatement *>(&statement))
+        {
+            return StatementUsesHandle(*loop->body);
+        }
+        return false;
+    }
+
+    bool ExpressionUsesHandleView(const Expression& expression) const {
+        if (const auto* call =
+                dynamic_cast<const CallExpression*>(&expression))
+        {
+            if (const auto* callee = dynamic_cast<const IdentifierExpression*>(
+                    call->callee.get());
+                callee != nullptr
+                && global_handle_view_registry().has_destination(
+                    callee->name))
+            {
+                return true;
+            }
+            if (ExpressionUsesHandleView(*call->callee)) {
+                return true;
+            }
+            return std::any_of(call->arguments.begin(), call->arguments.end(),
+                [this](const std::unique_ptr<Expression>& argument) {
+                    return argument != nullptr
+                        && ExpressionUsesHandleView(*argument);
+                });
+        }
+        if (const auto* unary =
+                dynamic_cast<const UnaryExpression*>(&expression))
+        {
+            return ExpressionUsesHandleView(*unary->operand);
+        }
+        if (const auto* binary =
+                dynamic_cast<const BinaryExpression*>(&expression))
+        {
+            return ExpressionUsesHandleView(*binary->left)
+                || ExpressionUsesHandleView(*binary->right);
+        }
+        if (const auto* assignment =
+                dynamic_cast<const AssignmentExpression*>(&expression))
+        {
+            return ExpressionUsesHandleView(*assignment->value);
+        }
+        if (const auto* index =
+                dynamic_cast<const IndexExpression*>(&expression))
+        {
+            return ExpressionUsesHandleView(*index->base)
+                || ExpressionUsesHandleView(*index->index);
+        }
+        if (const auto* index_assignment =
+                dynamic_cast<const IndexAssignmentExpression*>(&expression))
+        {
+            return ExpressionUsesHandleView(*index_assignment->target)
+                || ExpressionUsesHandleView(*index_assignment->value);
+        }
+        if (const auto* component =
+                dynamic_cast<const ComponentExpression*>(&expression))
+        {
+            return ExpressionUsesHandleView(*component->base);
+        }
+        if (const auto* member_assignment =
+                dynamic_cast<const MemberAssignmentExpression*>(&expression))
+        {
+            return ExpressionUsesHandleView(*member_assignment->target)
+                || ExpressionUsesHandleView(*member_assignment->value);
+        }
+        return false;
+    }
+
+    bool StatementUsesHandleView(const Statement& statement) const {
+        if (const auto* block = dynamic_cast<const BlockStatement*>(&statement)) {
+            return std::any_of(block->statements.begin(),
+                block->statements.end(),
+                [this](const std::unique_ptr<Statement>& child) {
+                    return child != nullptr && StatementUsesHandleView(*child);
+                });
+        }
+        if (const auto* expression =
+                dynamic_cast<const ExpressionStatement*>(&statement))
+        {
+            return ExpressionUsesHandleView(*expression->expression);
+        }
+        if (const auto* declaration =
+                dynamic_cast<const DeclarationStatement*>(&statement))
+        {
+            if (declaration->initializer != nullptr
+                && ExpressionUsesHandleView(*declaration->initializer))
+            {
+                return true;
+            }
+            return std::any_of(
+                declaration->constructor_arguments.begin(),
+                declaration->constructor_arguments.end(),
+                [this](const std::unique_ptr<Expression>& argument) {
+                    return argument != nullptr
+                        && ExpressionUsesHandleView(*argument);
+                });
+        }
+        if (const auto* return_statement =
+                dynamic_cast<const ReturnStatement*>(&statement))
+        {
+            return return_statement->value != nullptr
+                && ExpressionUsesHandleView(*return_statement->value);
+        }
+        if (const auto* conditional =
+                dynamic_cast<const IfStatement*>(&statement))
+        {
+            return ExpressionUsesHandleView(*conditional->condition)
+                || StatementUsesHandleView(*conditional->then_branch)
+                || (conditional->else_branch != nullptr
+                    && StatementUsesHandleView(*conditional->else_branch));
+        }
+        if (const auto* loop =
+                dynamic_cast<const WhileStatement*>(&statement))
+        {
+            return ExpressionUsesHandleView(*loop->condition)
+                || StatementUsesHandleView(*loop->body);
+        }
+        if (const auto* loop =
+                dynamic_cast<const DoWhileStatement*>(&statement))
+        {
+            return StatementUsesHandleView(*loop->body)
+                || ExpressionUsesHandleView(*loop->condition);
+        }
+        if (const auto* loop =
+                dynamic_cast<const ForStatement*>(&statement))
+        {
+            return (loop->init != nullptr
+                    && ExpressionUsesHandleView(*loop->init))
+                || (loop->condition != nullptr
+                    && ExpressionUsesHandleView(*loop->condition))
+                || (loop->increment != nullptr
+                    && ExpressionUsesHandleView(*loop->increment))
+                || StatementUsesHandleView(*loop->body);
+        }
+        if (const auto* loop =
+                dynamic_cast<const ParallelForStatement*>(&statement))
+        {
+            return ExpressionUsesHandleView(*loop->bound)
+                || StatementUsesHandleView(*loop->body);
+        }
+        return false;
+    }
+
+    bool ProgramUsesHandleViews(const Program& program) const {
+        for (const auto& item : program.items) {
+            const auto* function =
+                dynamic_cast<const FunctionDefinitionStatement*>(item.get());
+            if (function != nullptr && function->body != nullptr
+                && StatementUsesHandleView(*function->body))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool Generate(const Program &program) {
         errors_.clear();
         module_ = std::make_unique<llvm::Module>(module_name_, *context_);
@@ -96,15 +309,87 @@ struct LlvmIrCodegen::Impl {
         struct_types_.clear();
         struct_field_indices_.clear();
         function_names_.clear();
+        handle_type_names_.clear();
+        handle_canonical_names_.clear();
+        handle_type_ = nullptr;
+        parallel_body_counter_ = 0;
         current_function_ = nullptr;
         current_function_return_type_ = nullptr;
         current_function_definition_ = nullptr;
         solver_context_argument_ = nullptr;
         hierarchy_context_argument_ = nullptr;
         hierarchy_data_argument_ = nullptr;
+        handle_context_argument_ = nullptr;
         generating_parallel_body_ = false;
         uses_solver_context_ = program.uses_solver_context;
         uses_hierarchy_context_ = program.uses_hierarchy_context;
+
+        for (const auto &item : program.items) {
+            if (const auto *handle =
+                dynamic_cast<const HandleDefinitionStatement *>(item.get()))
+            {
+                handle_type_names_.insert(handle->name);
+                handle_canonical_names_[handle->name] =
+                    handle->canonical_name;
+            }
+        }
+        for (const auto& [local, canonical] : handle_type_identities_) {
+            if (local == "handle") {
+                handle_canonical_names_[local] = canonical;
+                continue;
+            }
+            if (handle_type_names_.contains(local)) {
+                handle_canonical_names_[local] = canonical;
+                continue;
+            }
+            for (const auto& item : program.items) {
+                const auto* handle =
+                    dynamic_cast<const HandleDefinitionStatement*>(
+                        item.get());
+                if (handle != nullptr && handle->canonical_name == local) {
+                    handle_canonical_names_[handle->name] = canonical;
+                }
+            }
+        }
+        if (!handle_type_names_.empty()) {
+            handle_type_ = llvm::StructType::create(
+                *context_, "orl.HandleValue");
+            handle_type_->setBody({
+                builder_.getInt64Ty(),
+                builder_.getInt64Ty(),
+            }, false);
+        }
+        uses_handle_context_ = target_ == OrlCodegenTarget::Cuda
+            && ProgramUsesHandleViews(program);
+        for (const auto &item : program.items) {
+            if (const auto *structure =
+                dynamic_cast<const StructDefinitionStatement *>(item.get()))
+            {
+                for (const auto &field : structure->fields) {
+                    if (IsUniversalHandleType(field.type_name)) {
+                        AddError("Handle runtime ABI is not enabled");
+                        return false;
+                    }
+                }
+            }
+            if (const auto *function =
+                dynamic_cast<const FunctionDefinitionStatement *>(item.get()))
+            {
+                bool uses_handle = IsUniversalHandleType(
+                    function->return_type);
+                for (const auto &parameter : function->parameters) {
+                    uses_handle = uses_handle
+                        || IsUniversalHandleType(parameter.type_name);
+                }
+                if (uses_handle
+                    || (function->body != nullptr
+                        && StatementUsesHandle(*function->body)))
+                {
+                    AddError("Handle runtime ABI is not enabled");
+                    return false;
+                }
+            }
+        }
 
         if (target_ == OrlCodegenTarget::Host && !ApplyNativeDataLayout()) {
             return false;
@@ -178,7 +463,8 @@ struct LlvmIrCodegen::Impl {
         for (const auto &item : program.items) {
             const auto *function = dynamic_cast<const FunctionDefinitionStatement *>(item.get());
             if (function == nullptr) {
-                if (dynamic_cast<const StructDefinitionStatement *>(item.get()) == nullptr) {
+                if (dynamic_cast<const StructDefinitionStatement *>(item.get()) == nullptr
+                    && dynamic_cast<const HandleDefinitionStatement *>(item.get()) == nullptr) {
                     AddError("Unsupported top-level statement in IR codegen");
                 }
                 continue;
@@ -214,6 +500,12 @@ struct LlvmIrCodegen::Impl {
     }
 
     llvm::Type *MapTypeName(const std::string &type_name) {
+        if (handle_type_names_.contains(type_name)) {
+            return handle_type_;
+        }
+        if (type_name == "handle") {
+            return nullptr;
+        }
         if (type_name == "int") {
             return builder_.getInt64Ty();
         }
@@ -238,6 +530,388 @@ struct LlvmIrCodegen::Impl {
             return custom_type->second;
         }
         return nullptr;
+    }
+
+    const HandleViewDescriptor* FindViewConversion(
+        std::string_view source_canonical,
+        std::string_view destination) const
+    {
+        return global_handle_view_registry().find(
+            source_canonical, destination);
+    }
+
+    std::string HandleCanonicalForExpression(
+        const Expression& expression)
+    {
+        const auto* identifier =
+            dynamic_cast<const IdentifierExpression*>(&expression);
+        if (identifier == nullptr) {
+            return {};
+        }
+        const auto* variable = FindVariable(identifier->name);
+        return variable == nullptr ? std::string{}
+            : variable->handle_canonical;
+    }
+
+    llvm::Value* HandleTypeLane(llvm::Value* handle) {
+        return builder_.CreateExtractValue(handle, {0}, "view.type_id");
+    }
+
+    llvm::Value* HandleSlotLane(llvm::Value* handle) {
+        return builder_.CreateExtractValue(handle, {1}, "view.slot");
+    }
+
+    llvm::Value* CudaArenaBase(
+        const HandleViewDescriptor& view)
+    {
+        if (handle_context_argument_ == nullptr) {
+            AddError("CUDA handle view context is unavailable");
+            return nullptr;
+        }
+        const bool locator = view.destination_struct == "Locator";
+        const unsigned base_index = locator ? 1 : 0;
+        const unsigned stride_index = locator ? 5 : 4;
+        auto* base_address = builder_.CreateInBoundsGEP(
+            builder_.getInt64Ty(), handle_context_argument_,
+            builder_.getInt64(base_index), "handle.arena.base.address");
+        auto* base = CreatePackedLoad(
+            builder_.getInt64Ty(), base_address, "handle.arena.base");
+        return builder_.CreateIntToPtr(
+            base, builder_.getPtrTy(), "handle.arena.pointer");
+    }
+
+    llvm::Value* CudaViewAddress(
+        const HandleViewDescriptor& view,
+        llvm::Value* handle, std::uint32_t byte_offset)
+    {
+        auto* base = CudaArenaBase(view);
+        if (base == nullptr) {
+            return nullptr;
+        }
+        const bool locator = view.destination_struct == "Locator";
+        const unsigned stride_index = locator ? 5 : 4;
+        auto* stride_address = builder_.CreateInBoundsGEP(
+            builder_.getInt64Ty(), handle_context_argument_,
+            builder_.getInt64(stride_index),
+            "handle.arena.stride.address");
+        auto* stride = CreatePackedLoad(
+            builder_.getInt64Ty(), stride_address, "handle.arena.stride");
+        auto* byte_index = builder_.CreateAdd(
+            builder_.CreateMul(HandleSlotLane(handle), stride),
+            builder_.getInt64(byte_offset), "handle.field.offset");
+        return builder_.CreateInBoundsGEP(
+            builder_.getInt8Ty(), base,
+            byte_index, "handle.field.address");
+    }
+
+    llvm::Value* GenerateCudaViewRead(
+        const VariableInfo& variable,
+        const HandleViewFieldDescriptor& field)
+    {
+        if ((variable.view->backend_mask & 2u) == 0
+            || field.byte_size == 0)
+        {
+            AddError("CUDA lowering is unavailable for handle view field '"
+                + field.name + "'");
+            return nullptr;
+        }
+        auto* address = CudaViewAddress(
+            *variable.view, variable.view_handle, field.byte_offset);
+        if (address == nullptr) {
+            return nullptr;
+        }
+        if (field.kind == HandleViewFieldKind::Int64) {
+            return CreatePackedLoad(
+                builder_.getInt64Ty(), address, "cuda.view.read.i64");
+        }
+        if (field.kind == HandleViewFieldKind::Vec4) {
+            return CreatePackedLoad(
+                llvm::FixedVectorType::get(builder_.getDoubleTy(), 4),
+                address, "cuda.view.read.vec4");
+        }
+        auto* array_type = llvm::ArrayType::get(
+            builder_.getDoubleTy(), 16);
+        llvm::Value* result = llvm::UndefValue::get(array_type);
+        for (unsigned index = 0; index < 16; ++index) {
+            auto* element = builder_.CreateInBoundsGEP(
+                builder_.getDoubleTy(), address,
+                builder_.getInt64(index), "cuda.view.read.element");
+            result = builder_.CreateInsertValue(
+                result,
+                CreatePackedLoad(builder_.getDoubleTy(), element,
+                    "cuda.view.read.value"),
+                {index}, "cuda.view.read.insert");
+        }
+        return result;
+    }
+
+    llvm::Value* GenerateCudaWorldRead(
+        const VariableInfo& variable)
+    {
+        if (variable.view->destination_struct != "WorldTransform"
+            || (variable.view->backend_mask & 2u) == 0)
+        {
+            AddError("CUDA WorldTransform lowering is unavailable");
+            return nullptr;
+        }
+        auto* joints = CudaArenaBase(*variable.view);
+        if (joints == nullptr) {
+            return nullptr;
+        }
+        auto* matrix = llvm::ArrayType::get(
+            builder_.getDoubleTy(), 16);
+        auto function = module_->getOrInsertFunction(
+            "joint_world_matrix",
+            llvm::FunctionType::get(
+                matrix, {builder_.getPtrTy(), builder_.getInt64Ty()},
+                false));
+        return builder_.CreateCall(function, {
+            joints, HandleSlotLane(variable.view_handle)},
+            "cuda.world.read");
+    }
+
+    llvm::Value* GenerateCudaWorldWrite(
+        const VariableInfo& variable, llvm::Value* value)
+    {
+        if (variable.view->destination_struct != "WorldTransform"
+            || (variable.view->backend_mask & 2u) == 0)
+        {
+            AddError("CUDA WorldTransform lowering is unavailable");
+            return nullptr;
+        }
+        auto* joints = CudaArenaBase(*variable.view);
+        if (joints == nullptr) {
+            return nullptr;
+        }
+        auto* matrix = llvm::ArrayType::get(
+            builder_.getDoubleTy(), 16);
+        value = CastValue(value, matrix,
+            "CUDA WorldTransform field assignment");
+        if (value == nullptr) {
+            return nullptr;
+        }
+        auto function = module_->getOrInsertFunction(
+            "joint_write_world_matrix",
+            llvm::FunctionType::get(
+                builder_.getInt64Ty(),
+                {builder_.getPtrTy(), builder_.getInt64Ty(), matrix},
+                false));
+        builder_.CreateCall(function, {
+            joints, HandleSlotLane(variable.view_handle), value},
+            "cuda.world.write");
+        return value;
+    }
+
+    llvm::Value* GenerateCudaViewWrite(
+        const VariableInfo& variable,
+        const HandleViewFieldDescriptor& field,
+        llvm::Value* value)
+    {
+        if ((variable.view->backend_mask & 2u) == 0
+            || field.byte_size == 0)
+        {
+            AddError("CUDA lowering is unavailable for handle view field '"
+                + field.name + "'");
+            return nullptr;
+        }
+        auto* address = CudaViewAddress(
+            *variable.view, variable.view_handle, field.byte_offset);
+        if (address == nullptr) {
+            return nullptr;
+        }
+        if (field.kind == HandleViewFieldKind::Int64) {
+            value = CastValue(value, builder_.getInt64Ty(),
+                "CUDA handle view field assignment");
+            if (value == nullptr) {
+                return nullptr;
+            }
+            CreatePackedStore(value, address);
+            return value;
+        }
+        const unsigned count = field.kind == HandleViewFieldKind::Vec4
+            ? 4 : 16;
+        for (unsigned index = 0; index < count; ++index) {
+            auto* element = field.kind == HandleViewFieldKind::Vec4
+                ? builder_.CreateExtractElement(
+                    value, builder_.getInt32(index),
+                    "cuda.view.write.element")
+                : builder_.CreateExtractValue(
+                    value, {index}, "cuda.view.write.element");
+            element = CastValue(element, builder_.getDoubleTy(),
+                "CUDA handle view field assignment");
+            if (element == nullptr) {
+                return nullptr;
+            }
+            CreatePackedStore(element,
+                builder_.CreateInBoundsGEP(
+                    builder_.getDoubleTy(), address,
+                    builder_.getInt64(index),
+                    "cuda.view.write.address"));
+        }
+        return value;
+    }
+
+    llvm::Value* GenerateViewRead(
+        const VariableInfo& variable, std::string_view field_name)
+    {
+        if (variable.view == nullptr || variable.view_handle == nullptr) {
+            AddError("Handle-backed view is unavailable");
+            return nullptr;
+        }
+        const auto* field = global_handle_view_registry().field(
+            *variable.view, field_name);
+        if (field == nullptr) {
+            AddError("Unknown field '" + std::string{field_name}
+                + "' on handle-backed view "
+                + variable.view->destination_struct);
+            return nullptr;
+        }
+        if (target_ == OrlCodegenTarget::Cuda) {
+            if (variable.view->destination_struct == "WorldTransform") {
+                return GenerateCudaWorldRead(variable);
+            }
+            return GenerateCudaViewRead(variable, *field);
+        }
+        llvm::Value* type_id = HandleTypeLane(variable.view_handle);
+        llvm::Value* slot = HandleSlotLane(variable.view_handle);
+        const auto field_id = builder_.getInt64(field->field_id);
+        if (field->kind == HandleViewFieldKind::Int64) {
+            auto function = module_->getOrInsertFunction(
+                field->read_symbol,
+                llvm::FunctionType::get(
+                    builder_.getInt64Ty(),
+                    {builder_.getInt64Ty(), builder_.getInt64Ty(),
+                        builder_.getInt64Ty()},
+                    false));
+            return builder_.CreateCall(function,
+                {type_id, slot, field_id}, "view.read.i64");
+        }
+
+        const unsigned count = field->kind == HandleViewFieldKind::Vec4
+            ? 4 : 16;
+        auto* array_type = llvm::ArrayType::get(
+            builder_.getDoubleTy(), count);
+        auto* storage = CreateEntryAlloca(
+            "view.read", array_type);
+        auto function = module_->getOrInsertFunction(
+            field->read_symbol,
+            llvm::FunctionType::get(
+                builder_.getVoidTy(),
+                {builder_.getPtrTy(), builder_.getInt64Ty(),
+                    builder_.getInt64Ty(), builder_.getInt64Ty()},
+                false));
+        llvm::Value* address = builder_.CreateInBoundsGEP(
+            array_type, storage,
+            {builder_.getInt64(0), builder_.getInt64(0)},
+            "view.read.address");
+        builder_.CreateCall(function, {address, type_id, slot, field_id});
+        if (field->kind == HandleViewFieldKind::Vec4) {
+            llvm::Value* value = llvm::UndefValue::get(
+                llvm::FixedVectorType::get(builder_.getDoubleTy(), 4));
+            for (unsigned index = 0; index < count; ++index) {
+                auto* element = builder_.CreateInBoundsGEP(
+                    builder_.getDoubleTy(), address,
+                    builder_.getInt64(index), "view.read.element");
+                value = builder_.CreateInsertElement(
+                    value,
+                    CreatePackedLoad(builder_.getDoubleTy(), element,
+                        "view.read.value"),
+                    builder_.getInt32(index), "view.read.insert");
+            }
+            return value;
+        }
+        llvm::Value* value = llvm::UndefValue::get(array_type);
+        for (unsigned index = 0; index < count; ++index) {
+            auto* element = builder_.CreateInBoundsGEP(
+                builder_.getDoubleTy(), address,
+                builder_.getInt64(index), "view.read.element");
+            value = builder_.CreateInsertValue(
+                value,
+                CreatePackedLoad(builder_.getDoubleTy(), element,
+                    "view.read.value"),
+                {index}, "view.read.insert");
+        }
+        return value;
+    }
+
+    llvm::Value* GenerateViewWrite(
+        const VariableInfo& variable, std::string_view field_name,
+        llvm::Value* value)
+    {
+        if (variable.view == nullptr || variable.view_handle == nullptr) {
+            AddError("Handle-backed view is unavailable");
+            return nullptr;
+        }
+        const auto* field = global_handle_view_registry().field(
+            *variable.view, field_name);
+        if (field == nullptr) {
+            AddError("Unknown field '" + std::string{field_name}
+                + "' on handle-backed view "
+                + variable.view->destination_struct);
+            return nullptr;
+        }
+        if (target_ == OrlCodegenTarget::Cuda) {
+            if (variable.view->destination_struct == "WorldTransform") {
+                return GenerateCudaWorldWrite(variable, value);
+            }
+            return GenerateCudaViewWrite(variable, *field, value);
+        }
+        llvm::Value* type_id = HandleTypeLane(variable.view_handle);
+        llvm::Value* slot = HandleSlotLane(variable.view_handle);
+        const auto field_id = builder_.getInt64(field->field_id);
+        if (field->kind == HandleViewFieldKind::Int64) {
+            value = CastValue(value, builder_.getInt64Ty(),
+                "handle view field assignment");
+            if (value == nullptr) {
+                return nullptr;
+            }
+            auto function = module_->getOrInsertFunction(
+                field->write_symbol,
+                llvm::FunctionType::get(
+                    builder_.getVoidTy(),
+                    {builder_.getInt64Ty(), builder_.getInt64Ty(),
+                        builder_.getInt64Ty(), builder_.getInt64Ty()},
+                    false));
+            builder_.CreateCall(function,
+                {type_id, slot, field_id, value});
+            return value;
+        }
+
+        const unsigned count = field->kind == HandleViewFieldKind::Vec4
+            ? 4 : 16;
+        auto* array_type = llvm::ArrayType::get(
+            builder_.getDoubleTy(), count);
+        auto* storage = CreateEntryAlloca(
+            "view.write", array_type);
+        auto* address = builder_.CreateInBoundsGEP(
+            array_type, storage,
+            {builder_.getInt64(0), builder_.getInt64(0)},
+            "view.write.address");
+        for (unsigned index = 0; index < count; ++index) {
+            llvm::Value* element = field->kind == HandleViewFieldKind::Vec4
+                ? builder_.CreateExtractElement(
+                    value, builder_.getInt32(index), "view.write.element")
+                : builder_.CreateExtractValue(
+                    value, {index}, "view.write.element");
+            element = CastValue(element, builder_.getDoubleTy(),
+                "handle view field assignment");
+            if (element == nullptr) {
+                return nullptr;
+            }
+            CreatePackedStore(element,
+                builder_.CreateInBoundsGEP(
+                    builder_.getDoubleTy(), address,
+                    builder_.getInt64(index), "view.write.address"));
+        }
+        auto function = module_->getOrInsertFunction(
+            field->write_symbol,
+            llvm::FunctionType::get(
+                builder_.getVoidTy(),
+                {builder_.getPtrTy(), builder_.getInt64Ty(),
+                    builder_.getInt64Ty(), builder_.getInt64Ty()},
+                false));
+        builder_.CreateCall(function, {address, type_id, slot, field_id});
+        return value;
     }
 
     bool DefineStruct(const StructDefinitionStatement &definition) {
@@ -426,6 +1100,9 @@ struct LlvmIrCodegen::Impl {
             parameter_types.push_back(builder_.getPtrTy());
             parameter_types.push_back(builder_.getPtrTy());
         }
+        if (uses_handle_context_) {
+            parameter_types.push_back(builder_.getPtrTy());
+        }
 
         auto *function_type = llvm::FunctionType::get(return_type, parameter_types, false);
         llvm::Function::Create(function_type, llvm::Function::ExternalLinkage, function_definition.name, module_.get());
@@ -469,8 +1146,14 @@ struct LlvmIrCodegen::Impl {
             llvm::AllocaInst *slot = CreateEntryAlloca(
                 parameter_ast.name, argument->getType());
             builder_.CreateStore(&*argument, slot);
-            AddVariable(parameter_ast.name,
-                VariableInfo{slot, argument->getType()});
+            VariableInfo parameter_info{slot, argument->getType()};
+            if (const auto found = handle_canonical_names_.find(
+                    parameter_ast.type_name);
+                found != handle_canonical_names_.end())
+            {
+                parameter_info.handle_canonical = found->second;
+            }
+            AddVariable(parameter_ast.name, std::move(parameter_info));
             ++argument;
         }
         if (uses_solver_context_) {
@@ -509,6 +1192,11 @@ struct LlvmIrCodegen::Impl {
                     true,
                 });
         }
+        if (uses_handle_context_) {
+            handle_context_argument_ = &*argument;
+            handle_context_argument_->setName("__orl_handle_context");
+            ++argument;
+        }
 
         GenerateBlock(*function_definition.body);
 
@@ -526,6 +1214,7 @@ struct LlvmIrCodegen::Impl {
         solver_context_argument_ = nullptr;
         hierarchy_context_argument_ = nullptr;
         hierarchy_data_argument_ = nullptr;
+        handle_context_argument_ = nullptr;
 
         if (llvm::verifyFunction(*function, &llvm::errs())) {
             AddError("LLVM verifier failed for function: " + function_definition.name);
@@ -544,11 +1233,21 @@ struct LlvmIrCodegen::Impl {
             return;
         }
 
+        const bool has_handle_parameters = std::any_of(
+            definition.parameters.begin(), definition.parameters.end(),
+            [this](const Parameter &parameter) {
+                return !parameter.is_buffer
+                    && handle_type_names_.contains(parameter.type_name);
+            });
         std::vector<llvm::Type *> parameter_types = {
             builder_.getPtrTy(), // void* const* buffers
             builder_.getPtrTy(), // const int64_t* integers
             builder_.getPtrTy(), // const double* floats
         };
+        if (has_handle_parameters) {
+            parameter_types.push_back(builder_.getPtrTy());
+            // const uint64_t* flattened handle lanes
+        }
         if (uses_solver_context_) {
             parameter_types.push_back(builder_.getPtrTy());
         }
@@ -571,6 +1270,8 @@ struct LlvmIrCodegen::Impl {
                 ++int_index;
             } else if (parameter.type_name == "float") {
                 ++float_index;
+            } else if (handle_type_names_.contains(parameter.type_name)) {
+                // Handle parameters use the separate flattened lane array.
             } else {
                 return;
             }
@@ -583,6 +1284,7 @@ struct LlvmIrCodegen::Impl {
         llvm::Value *buffers = &*argument++;
         llvm::Value *integers = &*argument++;
         llvm::Value *floats = &*argument++;
+        llvm::Value *handles = has_handle_parameters ? &*argument++ : nullptr;
         llvm::Value *solver_context = uses_solver_context_
             ? &*argument++ : nullptr;
         llvm::Value *hierarchy_context = uses_hierarchy_context_
@@ -597,6 +1299,7 @@ struct LlvmIrCodegen::Impl {
         buffer_index = 0;
         int_index = 0;
         float_index = 0;
+        std::size_t handle_index = 0;
 
         for (const Parameter &parameter : definition.parameters) {
             if (parameter.is_buffer) {
@@ -607,6 +1310,24 @@ struct LlvmIrCodegen::Impl {
                 llvm::Value *slot = wrapper_builder.CreateInBoundsGEP(
                     builder_.getInt64Ty(), integers, wrapper_builder.getInt64(int_index++));
                 call_arguments.push_back(wrapper_builder.CreateLoad(builder_.getInt64Ty(), slot));
+            } else if (handle_type_names_.contains(parameter.type_name)) {
+                llvm::Value *slot = wrapper_builder.CreateInBoundsGEP(
+                    builder_.getInt64Ty(), handles,
+                    wrapper_builder.getInt64(handle_index * 2));
+                llvm::Value *type_id = wrapper_builder.CreateLoad(
+                    builder_.getInt64Ty(), slot);
+                llvm::Value *slot_value = wrapper_builder.CreateLoad(
+                    builder_.getInt64Ty(),
+                    wrapper_builder.CreateInBoundsGEP(
+                        builder_.getInt64Ty(), handles,
+                        wrapper_builder.getInt64(handle_index * 2 + 1)));
+                llvm::Value *handle = llvm::UndefValue::get(handle_type_);
+                handle = wrapper_builder.CreateInsertValue(
+                    handle, type_id, {0}, "handle.type_id");
+                handle = wrapper_builder.CreateInsertValue(
+                    handle, slot_value, {1}, "handle.slot");
+                call_arguments.push_back(handle);
+                ++handle_index;
             } else {
                 llvm::Value *slot = wrapper_builder.CreateInBoundsGEP(
                     builder_.getDoubleTy(), floats, wrapper_builder.getInt64(float_index++));
@@ -689,6 +1410,40 @@ struct LlvmIrCodegen::Impl {
                 + "' is reserved for an implicit runtime global");
             return false;
         }
+        if (declaration.array_size == 0
+            && declaration.constructor_arguments.empty()
+            && declaration.initializer != nullptr)
+        {
+            const auto* call = dynamic_cast<const CallExpression*>(
+                declaration.initializer.get());
+            const auto* callee = call == nullptr ? nullptr
+                : dynamic_cast<const IdentifierExpression*>(
+                    call->callee.get());
+            if (call != nullptr && callee != nullptr
+                && call->arguments.size() == 1)
+            {
+                const std::string source_type =
+                    HandleCanonicalForExpression(*call->arguments.front());
+                const auto* view = source_type.empty() ? nullptr
+                    : FindViewConversion(source_type, declaration.type_name);
+                if (view != nullptr) {
+                    llvm::Type* view_type =
+                        MapTypeName(declaration.type_name);
+                    llvm::Value* handle = GenerateExpression(
+                        *call->arguments.front());
+                    if (view_type == nullptr || handle == nullptr) {
+                        return false;
+                    }
+                    VariableInfo info;
+                    info.type = view_type;
+                    info.view = view;
+                    info.view_handle = handle;
+                    AddVariable(declaration.variable_name,
+                        std::move(info));
+                    return true;
+                }
+            }
+        }
         llvm::Type *element_type = MapTypeName(declaration.type_name);
         if (element_type == nullptr) {
             AddError("Unsupported declaration type: " + declaration.type_name);
@@ -725,11 +1480,22 @@ struct LlvmIrCodegen::Impl {
         }
 
         builder_.CreateStore(value, slot);
-        AddVariable(declaration.variable_name, VariableInfo{slot, element_type});
+        VariableInfo info{slot, element_type};
+        if (const auto found = handle_canonical_names_.find(
+                declaration.type_name);
+            found != handle_canonical_names_.end())
+        {
+            info.handle_canonical = found->second;
+        }
+        AddVariable(declaration.variable_name, std::move(info));
         return true;
     }
 
     llvm::Value *BuildValueFromArgs(const std::string &type_name, const std::vector<llvm::Value *> &args) {
+        if (handle_type_names_.contains(type_name)) {
+            AddError("Handle values cannot be constructed explicitly");
+            return nullptr;
+        }
         llvm::Type *declared_type = MapTypeName(type_name);
         if (declared_type == nullptr) {
             return nullptr;
@@ -830,6 +1596,24 @@ struct LlvmIrCodegen::Impl {
     }
 
     bool GenerateIf(const IfStatement &if_statement) {
+        if (const auto* handle_test =
+                dynamic_cast<const HandleTestExpression*>(
+                    if_statement.condition.get()))
+        {
+            const auto source =
+                HandleCanonicalForExpression(*handle_test->operand);
+            const auto found = handle_canonical_names_.find(
+                handle_test->type_name);
+            if (!source.empty() && found != handle_canonical_names_.end()) {
+                const bool select_then = source == found->second;
+                if (select_then) {
+                    return GenerateStatement(*if_statement.then_branch);
+                }
+                return if_statement.else_branch != nullptr
+                    ? GenerateStatement(*if_statement.else_branch)
+                    : true;
+            }
+        }
         llvm::Value *condition_value = GenerateExpression(*if_statement.condition);
         condition_value = ToBoolean(condition_value, "if condition");
         if (condition_value == nullptr) {
@@ -1002,45 +1786,174 @@ struct LlvmIrCodegen::Impl {
             return false;
         }
 
-        llvm::Function *function = builder_.GetInsertBlock()->getParent();
-        llvm::AllocaInst *index_slot = CreateEntryAlloca(parallel_for.index_name, builder_.getInt64Ty());
-        builder_.CreateStore(builder_.getInt64(0), index_slot);
+        llvm::Function *outer_function = current_function_;
+        llvm::Type *outer_return_type = current_function_return_type_;
+        const FunctionDefinitionStatement *outer_definition = current_function_definition_;
+        llvm::BasicBlock *outer_block = builder_.GetInsertBlock();
+        llvm::Value *outer_solver_context = solver_context_argument_;
+        llvm::Value *outer_hierarchy_context = hierarchy_context_argument_;
+        llvm::Value *outer_hierarchy_data = hierarchy_data_argument_;
+        llvm::Value *outer_handle_context = handle_context_argument_;
+        const std::uint32_t body_id = parallel_body_counter_++;
 
-        auto *cond_block = llvm::BasicBlock::Create(*context_, "parallel.cond", function);
-        auto *body_block = llvm::BasicBlock::Create(*context_, "parallel.body", function);
-        auto *inc_block = llvm::BasicBlock::Create(*context_, "parallel.inc", function);
-        auto *after_block = llvm::BasicBlock::Create(*context_, "parallel.end", function);
-        builder_.CreateBr(cond_block);
+        std::vector<llvm::Type *> capture_types;
+        capture_types.reserve(outer_function->arg_size());
+        for (llvm::Argument &argument : outer_function->args()) {
+            capture_types.push_back(argument.getType());
+        }
+        llvm::StructType *context_type = llvm::StructType::create(
+            *context_, capture_types,
+            "orl.parallel.context." + std::to_string(body_id));
+        llvm::AllocaInst *context_slot = CreateEntryAlloca(
+            "parallel.context", context_type);
+        for (std::size_t index = 0;
+             index < capture_types.size(); ++index)
+        {
+            llvm::Value *value = nullptr;
+            if (index < outer_definition->parameters.size()) {
+                const Parameter &parameter =
+                    outer_definition->parameters[index];
+                VariableInfo *variable = FindVariable(parameter.name);
+                if (variable == nullptr) {
+                    AddError(
+                        "Parallel for cannot capture missing function "
+                        "parameter: " + parameter.name);
+                    return false;
+                }
+                value = parameter.is_buffer
+                    ? variable->slot
+                    : builder_.CreateLoad(
+                        variable->type, variable->slot,
+                        parameter.name + ".capture");
+            } else {
+                value = outer_function->getArg(index);
+            }
+            llvm::Value *field = builder_.CreateStructGEP(
+                context_type, context_slot, index,
+                "parallel.capture.field");
+            builder_.CreateStore(value, field);
+        }
 
-        builder_.SetInsertPoint(cond_block);
-        llvm::Value *index_value = builder_.CreateLoad(builder_.getInt64Ty(), index_slot, parallel_for.index_name);
-        llvm::Value *condition = builder_.CreateICmpSLT(index_value, bound, "parallel.condition");
-        builder_.CreateCondBr(condition, body_block, after_block);
+        auto *body_type = llvm::FunctionType::get(
+            builder_.getVoidTy(),
+            {builder_.getPtrTy(), builder_.getInt64Ty()}, false);
+        llvm::Function *body_function = llvm::Function::Create(
+            body_type,
+            llvm::GlobalValue::ExternalLinkage,
+            "orl.parallel.body." + std::to_string(body_id),
+            module_.get());
+        body_function->setCallingConv(llvm::CallingConv::C);
+        body_function->addFnAttr(llvm::Attribute::NoUnwind);
+        auto body_argument = body_function->arg_begin();
+        body_argument->setName("context");
+        llvm::Value *body_context = &*body_argument++;
+        body_argument->setName(parallel_for.index_name);
 
+        auto outer_scopes = std::move(scopes_);
         const bool outer_generating_parallel_body = generating_parallel_body_;
+        current_function_ = body_function;
+        current_function_return_type_ = body_function->getReturnType();
+        scopes_.clear();
         generating_parallel_body_ = true;
-        loops_.push_back(LoopContext{after_block, inc_block});
+        auto *entry_block = llvm::BasicBlock::Create(
+            *context_, "entry", body_function);
+        builder_.SetInsertPoint(entry_block);
         EnterScope();
-        AddVariable(parallel_for.index_name, VariableInfo{index_slot, builder_.getInt64Ty()});
-        builder_.SetInsertPoint(body_block);
+        llvm::AllocaInst *index_slot = CreateEntryAlloca(
+            parallel_for.index_name, builder_.getInt64Ty());
+        builder_.CreateStore(&*body_argument, index_slot);
+        AddVariable(parallel_for.index_name,
+            VariableInfo{index_slot, builder_.getInt64Ty()});
+
+        for (std::size_t index = 0;
+             index < outer_definition->parameters.size(); ++index)
+        {
+            const Parameter &parameter = outer_definition->parameters[index];
+            llvm::Value *field = builder_.CreateStructGEP(
+                context_type, body_context, index,
+                parameter.name + ".field");
+            llvm::Type *field_type = capture_types[index];
+            llvm::Value *value = builder_.CreateLoad(
+                field_type, field, parameter.name + ".capture");
+            if (parameter.is_buffer) {
+                llvm::Type *element_type = MapTypeName(parameter.type_name);
+                AddVariable(parameter.name,
+                    VariableInfo{value, element_type, true, false});
+            } else {
+                llvm::AllocaInst *slot = CreateEntryAlloca(
+                    parameter.name, field_type);
+                builder_.CreateStore(value, slot);
+                AddVariable(parameter.name,
+                    VariableInfo{slot, field_type});
+            }
+        }
+        std::size_t implicit_index = outer_definition->parameters.size();
+        if (uses_solver_context_) {
+            auto* field = builder_.CreateStructGEP(
+                context_type, body_context, implicit_index++,
+                "parallel.solver.context.field");
+            solver_context_argument_ = CreatePackedLoad(
+                builder_.getPtrTy(), field, "parallel.solver.context");
+            solver_context_argument_->setName("__orl_solver_context");
+        }
+        if (uses_hierarchy_context_) {
+            auto* context_field = builder_.CreateStructGEP(
+                context_type, body_context, implicit_index++,
+                "parallel.hierarchy.context.field");
+            hierarchy_context_argument_ = CreatePackedLoad(
+                builder_.getPtrTy(), context_field,
+                "parallel.hierarchy.context");
+            hierarchy_context_argument_->setName(
+                "__orl_hierarchy_context");
+            auto* data_field = builder_.CreateStructGEP(
+                context_type, body_context, implicit_index++,
+                "parallel.hierarchy.data.field");
+            hierarchy_data_argument_ = CreatePackedLoad(
+                builder_.getPtrTy(), data_field,
+                "parallel.hierarchy.data");
+            hierarchy_data_argument_->setName("__orl_hierarchy_data");
+        }
+        if (uses_handle_context_) {
+            auto* field = builder_.CreateStructGEP(
+                context_type, body_context, implicit_index++,
+                "parallel.handle.context.field");
+            handle_context_argument_ = CreatePackedLoad(
+                builder_.getPtrTy(), field, "parallel.handle.context");
+            handle_context_argument_->setName("__orl_handle_context");
+        }
+
         const bool generated_body = GenerateStatement(*parallel_for.body);
         if (generated_body && builder_.GetInsertBlock()->getTerminator() == nullptr) {
-            builder_.CreateBr(inc_block);
+            builder_.CreateRetVoid();
         }
         LeaveScope();
-        loops_.pop_back();
+        scopes_ = std::move(outer_scopes);
         generating_parallel_body_ = outer_generating_parallel_body;
+        current_function_ = outer_function;
+        current_function_return_type_ = outer_return_type;
+        current_function_definition_ = outer_definition;
+        solver_context_argument_ = outer_solver_context;
+        hierarchy_context_argument_ = outer_hierarchy_context;
+        hierarchy_data_argument_ = outer_hierarchy_data;
+        handle_context_argument_ = outer_handle_context;
+        builder_.SetInsertPoint(outer_block);
         if (!generated_body) {
             return false;
         }
 
-        builder_.SetInsertPoint(inc_block);
-        llvm::Value *current = builder_.CreateLoad(builder_.getInt64Ty(), index_slot, "parallel.i");
-        builder_.CreateStore(
-            builder_.CreateAdd(current, builder_.getInt64(1), "parallel.next"), index_slot);
-        builder_.CreateBr(cond_block);
-
-        builder_.SetInsertPoint(after_block);
+        llvm::FunctionCallee runtime = module_->getOrInsertFunction(
+            "__orl_parallel_for",
+            llvm::FunctionType::get(
+                builder_.getVoidTy(),
+                {builder_.getInt64Ty(), builder_.getInt64Ty(),
+                 builder_.getPtrTy(), builder_.getPtrTy()},
+                false));
+        if (auto *runtime_fn = module_->getFunction("__orl_parallel_for")) {
+            runtime_fn->setCallingConv(llvm::CallingConv::C);
+        }
+        auto *call = builder_.CreateCall(runtime,
+            {builder_.getInt64(0), bound, body_function, context_slot});
+        call->setCallingConv(llvm::CallingConv::C);
         return true;
     }
 
@@ -1112,6 +2025,11 @@ struct LlvmIrCodegen::Impl {
         }
         if (const auto *binary = dynamic_cast<const BinaryExpression *>(&expression)) {
             return GenerateBinary(*binary);
+        }
+        if (const auto* handle_test =
+                dynamic_cast<const HandleTestExpression*>(&expression))
+        {
+            return GenerateHandleTest(*handle_test);
         }
         if (const auto *assignment = dynamic_cast<const AssignmentExpression *>(&expression)) {
             return GenerateAssignment(*assignment);
@@ -1329,6 +2247,17 @@ struct LlvmIrCodegen::Impl {
     }
 
     llvm::Value *GenerateComponent(const ComponentExpression &component) {
+        if (const auto* identifier =
+                dynamic_cast<const IdentifierExpression*>(
+                    component.base.get()))
+        {
+            if (VariableInfo* variable = FindVariable(identifier->name);
+                variable != nullptr && variable->view != nullptr)
+            {
+                return GenerateViewRead(
+                    *variable, component.component);
+            }
+        }
         const auto *context_identifier =
             dynamic_cast<const IdentifierExpression *>(
                 component.base.get());
@@ -1418,6 +2347,11 @@ struct LlvmIrCodegen::Impl {
         VariableInfo *variable = FindVariable(identifier.name);
         if (variable == nullptr) {
             AddError("Undefined variable: " + identifier.name);
+            return nullptr;
+        }
+        if (variable->view != nullptr) {
+            AddError(
+                "Handle-backed views cannot be used as whole values");
             return nullptr;
         }
         if (variable->is_implicit_context) {
@@ -1527,11 +2461,52 @@ struct LlvmIrCodegen::Impl {
         return result;
     }
 
+    llvm::Value* GenerateHandleTest(
+        const HandleTestExpression& expression)
+    {
+        const std::string source =
+            HandleCanonicalForExpression(*expression.operand);
+        const auto found = handle_canonical_names_.find(
+            expression.type_name);
+        if (source.empty() || found == handle_canonical_names_.end()) {
+            AddError("Unresolved handle 'is' specialization");
+            return nullptr;
+        }
+        return builder_.getInt1(source == found->second);
+    }
+
     llvm::Value *GenerateBinary(const BinaryExpression &binary) {
         llvm::Value *left = GenerateExpression(*binary.left);
         llvm::Value *right = GenerateExpression(*binary.right);
         if (left == nullptr || right == nullptr) {
             return nullptr;
+        }
+
+        const bool left_is_handle = handle_type_ != nullptr
+            && left->getType() == handle_type_;
+        const bool right_is_handle = handle_type_ != nullptr
+            && right->getType() == handle_type_;
+        if (left_is_handle || right_is_handle) {
+            if (!(left_is_handle && right_is_handle)
+                || (binary.op != BinaryOp::Equal
+                    && binary.op != BinaryOp::NotEqual))
+            {
+                AddError(
+                    "Handle values only support equality and inequality");
+                return nullptr;
+            }
+            llvm::Value *type_equal = builder_.CreateICmpEQ(
+                builder_.CreateExtractValue(left, {0}, "handle.lhs.type"),
+                builder_.CreateExtractValue(right, {0}, "handle.rhs.type"),
+                "handle.type.equal");
+            llvm::Value *slot_equal = builder_.CreateICmpEQ(
+                builder_.CreateExtractValue(left, {1}, "handle.lhs.slot"),
+                builder_.CreateExtractValue(right, {1}, "handle.rhs.slot"),
+                "handle.slot.equal");
+            llvm::Value *equal = builder_.CreateAnd(
+                type_equal, slot_equal, "handle.equal");
+            return binary.op == BinaryOp::Equal
+                ? equal : builder_.CreateNot(equal, "handle.not_equal");
         }
 
         const bool left_is_vector = IsThreeComponentVector(left->getType());
@@ -1740,6 +2715,21 @@ struct LlvmIrCodegen::Impl {
     }
 
     llvm::Value *GenerateMemberAssignment(const MemberAssignmentExpression &assignment) {
+        if (assignment.target != nullptr) {
+            if (const auto* identifier =
+                    dynamic_cast<const IdentifierExpression*>(
+                        assignment.target->base.get()))
+            {
+                if (VariableInfo* variable =
+                        FindVariable(identifier->name);
+                    variable != nullptr && variable->view != nullptr)
+                {
+                    return GenerateViewWrite(
+                        *variable, assignment.target->component,
+                        GenerateExpression(*assignment.value));
+                }
+            }
+        }
         llvm::Type *field_type = nullptr;
         llvm::Value *address = GenerateAddress(*assignment.target, &field_type);
         if (address == nullptr) {
@@ -1935,6 +2925,18 @@ struct LlvmIrCodegen::Impl {
         }
 
         if (MapTypeName(callee_identifier->name) != nullptr) {
+            const std::string source_type =
+                call.arguments.size() == 1
+                ? HandleCanonicalForExpression(*call.arguments.front())
+                : std::string{};
+            if (!source_type.empty()
+                && FindViewConversion(
+                    source_type, callee_identifier->name) != nullptr)
+            {
+                AddError(
+                    "Handle-backed views must be bound to a local declaration");
+                return nullptr;
+            }
             return BuildValueFromArgs(callee_identifier->name, arguments);
         }
 
@@ -1998,6 +3000,16 @@ struct LlvmIrCodegen::Impl {
             arguments.push_back(hierarchy_context_argument_);
             arguments.push_back(hierarchy_data_argument_);
         }
+        if (uses_handle_context_
+            && function_names_.contains(callee_identifier->name))
+        {
+            if (handle_context_argument_ == nullptr) {
+                AddError(
+                    "Handle view context is unavailable outside an ORL function");
+                return nullptr;
+            }
+            arguments.push_back(handle_context_argument_);
+        }
 
         llvm::Function *callee = GetOrCreateExtern(callee_identifier->name, arguments);
         if (callee == nullptr) {
@@ -2045,14 +3057,21 @@ struct LlvmIrCodegen::Impl {
     std::unordered_map<std::string, llvm::StructType *> struct_types_;
     std::unordered_map<std::string, std::unordered_map<std::string, unsigned int>> struct_field_indices_;
     std::unordered_set<std::string> function_names_;
+    std::unordered_set<std::string> handle_type_names_;
+    std::unordered_map<std::string, std::string> handle_canonical_names_;
+    std::unordered_map<std::string, std::string> handle_type_identities_;
+    llvm::StructType *handle_type_ = nullptr;
     llvm::Function *current_function_ = nullptr;
     llvm::Type *current_function_return_type_ = nullptr;
     const FunctionDefinitionStatement *current_function_definition_ = nullptr;
+    std::uint32_t parallel_body_counter_ = 0;
     llvm::Value *solver_context_argument_ = nullptr;
     llvm::Value *hierarchy_context_argument_ = nullptr;
     llvm::Value *hierarchy_data_argument_ = nullptr;
+    llvm::Value *handle_context_argument_ = nullptr;
     bool uses_solver_context_ = false;
     bool uses_hierarchy_context_ = false;
+    bool uses_handle_context_ = false;
     bool generating_parallel_body_ = false;
     std::vector<std::string> errors_;
 };
@@ -2060,6 +3079,12 @@ struct LlvmIrCodegen::Impl {
 LlvmIrCodegen::LlvmIrCodegen(std::string module_name, OrlCodegenTarget target)
     : impl_(std::make_unique<Impl>(std::move(module_name), target)) {}
 LlvmIrCodegen::~LlvmIrCodegen() = default;
+
+void LlvmIrCodegen::SetHandleTypeIdentities(
+    std::unordered_map<std::string, std::string> identities)
+{
+    impl_->SetHandleTypeIdentities(std::move(identities));
+}
 
 bool LlvmIrCodegen::Generate(const Program &program) {
     return impl_->Generate(program);
@@ -2113,6 +3138,11 @@ struct LlvmIrCodegen::Impl {
 LlvmIrCodegen::LlvmIrCodegen(std::string module_name, OrlCodegenTarget target)
     : impl_(std::make_unique<Impl>(std::move(module_name), target)) {}
 LlvmIrCodegen::~LlvmIrCodegen() = default;
+
+void LlvmIrCodegen::SetHandleTypeIdentities(
+    std::unordered_map<std::string, std::string>)
+{
+}
 
 bool LlvmIrCodegen::Generate(const Program &program) {
     return impl_->Generate(program);

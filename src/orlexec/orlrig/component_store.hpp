@@ -96,6 +96,7 @@ public:
     std::size_t size() const { return records.size(); }
     std::size_t size(ComponentKind kind) const;
     bool contains(std::string_view name) const;
+    std::uint64_t topology_revision() const { return revision; }
 
     // Parent indices refer to this deterministic creation-order packing.
     std::vector<Joint> packed_joints() const;
@@ -137,6 +138,7 @@ private:
     const T* payload_as(ComponentId id) const;
 
     std::uint64_t next_id = 1;
+    std::uint64_t revision = 1;
     std::unordered_map<std::uint64_t, Record> records;
     std::unordered_map<std::string, std::uint64_t> names;
     std::vector<ComponentId> joint_order;

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <map>
 #include <set>
 #include <sstream>
@@ -34,10 +35,14 @@ std::string identifier(std::string_view value) {
     if (result.empty() || std::isdigit(static_cast<unsigned char>(result.front()))) {
         result.insert(result.begin(), '_');
     }
+    if (result == "handle") {
+        result.insert(result.begin(), '_');
+    }
     return result;
 }
 
-std::string type_name(const orlgraph::LogicalType& type) {
+std::string type_name(const orlgraph::LogicalType& type,
+    const std::map<std::string, std::string>* handle_names = nullptr) {
     using Kind = orlgraph::LogicalTypeKind;
     switch (type.kind) {
     case Kind::Bool: return "bool";
@@ -51,10 +56,33 @@ std::string type_name(const orlgraph::LogicalType& type) {
     case Kind::Quaternion: return "quat";
     case Kind::Matrix: return "matrix";
     case Kind::Struct: return type.name;
+    case Kind::Handle:
+        if (handle_names == nullptr) {
+            return {};
+        }
+        if (const auto found = handle_names->find(type.name);
+            found != handle_names->end())
+        {
+            return found->second;
+        }
+        return {};
     case Kind::Buffer:
-        return type.element == nullptr ? "int" : type_name(*type.element);
+        return type.element == nullptr
+            ? "int" : type_name(*type.element, handle_names);
     default:
         return {};
+    }
+}
+
+void collect_handle_types(const orlgraph::LogicalType& type,
+    std::map<std::string, std::string>* names)
+{
+    if (type.is_handle()) {
+        names->emplace(type.name,
+            "__orl_handle_" + identifier(type.name));
+    }
+    if (type.element != nullptr) {
+        collect_handle_types(*type.element, names);
     }
 }
 
@@ -238,11 +266,40 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
         }
     }
 
+    std::map<std::string, std::string> handle_names;
+    for (const auto& [_, input] : module.inputs()) {
+        collect_handle_types(input.type, &handle_names);
+    }
+    for (const auto& [_, output] : module.outputs()) {
+        collect_handle_types(output.type, &handle_names);
+    }
+    for (const auto& [_, node] : module.nodes()) {
+        const auto* definition = registry.find(node.definition);
+        if (definition == nullptr) {
+            continue;
+        }
+        for (const auto& port : definition->inputs) {
+            collect_handle_types(port.type, &handle_names);
+        }
+        for (const auto& port : definition->outputs) {
+            collect_handle_types(port.type, &handle_names);
+        }
+        for (const auto& parameter : definition->parameters) {
+            collect_handle_types(parameter.type, &handle_names);
+        }
+    }
+    for (const auto& [canonical_name, local_name] : handle_names) {
+        result.handle_type_identities[local_name] = canonical_name;
+    }
+
     std::ostringstream source;
     for (const auto& module_name : modules) {
         source << "use " << module_name << ";\n";
     }
-    if (!modules.empty()) {
+    for (const auto& [_, name] : handle_names) {
+        source << "handle " << name << ";\n";
+    }
+    if (!modules.empty() || !handle_names.empty()) {
         source << '\n';
     }
     source << options.source_preamble;
@@ -262,7 +319,7 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
         first = false;
         const std::string name = identifier(input.name.empty() ? id.value : input.name);
         input_names.emplace(id, name);
-        const std::string value_type = type_name(input.type);
+        const std::string value_type = type_name(input.type, &handle_names);
         if (value_type.empty()) {
             error(result, "ORL_LOWERING_TYPE",
                 "Graph input has no ORL type: " + id.value);
@@ -294,8 +351,77 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
             return std::string{};
         };
 
+    const auto type_for_endpoint =
+        [&module, &registry](
+            const orlgraph::Endpoint& endpoint)
+            -> std::optional<orlgraph::LogicalType> {
+        if (endpoint.kind == orlgraph::EndpointKind::GraphInput) {
+            const auto* input = module.input(endpoint.owner);
+            return input == nullptr
+                ? std::nullopt
+                : std::optional<orlgraph::LogicalType>{input->type};
+        }
+        if (endpoint.kind != orlgraph::EndpointKind::NodePort) {
+            return std::nullopt;
+        }
+        const auto* node = module.node(endpoint.owner);
+        const auto* definition = node == nullptr
+            ? nullptr : registry.find(node->definition);
+        const auto* output = definition == nullptr
+            ? nullptr : definition->output(endpoint.port.value);
+        return output == nullptr
+            ? std::nullopt
+            : std::optional<orlgraph::LogicalType>{output->type};
+    };
+
+    // Generic handle node inputs are specialized by the exact handle type
+    // carried by their incoming graph edge. The canonical union name is used
+    // as the alias key so imported function declarations can be narrowed
+    // without introducing runtime type dispatch.
+    for (const auto& [node_id, node] : module.nodes()) {
+        const auto* definition = registry.find(node.definition);
+        if (definition == nullptr
+            || definition->implementation.kind
+                != orlgraph::ImplementationKind::OrlFunction)
+        {
+            continue;
+        }
+        for (const auto& port : definition->inputs) {
+            if (!port.type.is_handle()
+                || (!port.type.open_handle
+                    && port.type.accepted_handles.empty()))
+            {
+                continue;
+            }
+            const auto* connection = connection_to(
+                module, node_id, port.id);
+            const auto source_type = connection == nullptr
+                ? std::nullopt
+                : type_for_endpoint(connection->source);
+            if (!source_type.has_value()
+                || !source_type->is_handle()
+                || source_type->open_handle
+                || !source_type->accepted_handles.empty())
+            {
+                continue;
+            }
+            const auto found = result.handle_type_identities.find(
+                port.type.name);
+            if (found != result.handle_type_identities.end()
+                && found->second != source_type->name)
+            {
+                error(result, "ORL_LOWERING_SPECIALIZATION",
+                    "Generic handle input '" + port.name
+                        + "' receives incompatible exact substitutions");
+                return result;
+            }
+            result.handle_type_identities[port.type.name] =
+                source_type->name;
+        }
+    }
+
     const auto emit_conversion =
-        [&source, &module, &input_names, &result](
+        [&source, &module, &input_names, &handle_names, &result](
             const orlgraph::ConversionDefinition& conversion,
             std::string_view source_expression,
             std::string_view instance_key,
@@ -347,7 +473,7 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
                        << conversion.implementation.function << "(";
             } else {
                 const std::string output_type =
-                    type_name(conversion.output.type);
+                    type_name(conversion.output.type, &handle_names);
                 if (output_type.empty()
                     || conversion.output.type.kind
                         == orlgraph::LogicalTypeKind::Buffer)
@@ -566,7 +692,8 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
                 const auto& output = definition->outputs.front();
                 const std::string variable = "node_" + identifier(node_id.value)
                     + "_" + identifier(output.name);
-                source << type_name(output.type) << " " << variable << " = "
+                source << type_name(output.type, &handle_names) << " "
+                       << variable << " = "
                        << definition->implementation.function << "(";
                 output_expressions[node_id.value + ":" + output.id.value] =
                     variable;
@@ -726,6 +853,16 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
             if (lowered_output.source_parameter.empty()) {
                 error(result, "ORL_LOWERING_RESULT",
                     "Float graph output '" + output.name
+                    + "' must resolve to a bound graph-input parameter");
+                return result;
+            }
+            result.outputs.push_back(std::move(lowered_output));
+            continue;
+        }
+        if (output.type.kind == orlgraph::LogicalTypeKind::Handle) {
+            if (lowered_output.source_parameter.empty()) {
+                error(result, "ORL_LOWERING_RESULT",
+                    "Handle graph output '" + output.name
                     + "' must resolve to a bound graph-input parameter");
                 return result;
             }

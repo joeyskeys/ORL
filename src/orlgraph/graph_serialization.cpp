@@ -65,6 +65,14 @@ Json type_value(const LogicalType& type, Allocator& allocator) {
     add(result, "name", string_value(type.name, allocator), allocator);
     add(result, "lanes", Json(type.lanes), allocator);
     add(result, "extent", Json(static_cast<std::uint64_t>(type.extent)), allocator);
+    if (type.kind == LogicalTypeKind::Handle) {
+        add(result, "open_handle", Json(type.open_handle), allocator);
+        Json accepted(rapidjson::kArrayType);
+        for (const auto& value : type.accepted_handles) {
+            accepted.PushBack(string_value(value, allocator), allocator);
+        }
+        add(result, "accepted_handles", std::move(accepted), allocator);
+    }
     if (type.element != nullptr) {
         add(result, "element", type_value(*type.element, allocator), allocator);
     } else {
@@ -238,30 +246,22 @@ Json partial_footprint_value(
         Json(footprint.supports_sparse_dispatch), allocator);
     add(result, "propagation",
         Json(static_cast<std::uint32_t>(footprint.propagation)), allocator);
-    add(result, "read_joint_ports",
-        string_array(footprint.read_joint_ports, allocator), allocator);
-    add(result, "write_joint_ports",
-        string_array(footprint.write_joint_ports, allocator), allocator);
-    add(result, "read_controller_ports",
-        string_array(footprint.read_controller_ports, allocator), allocator);
-    add(result, "write_controller_ports",
-        string_array(footprint.write_controller_ports, allocator), allocator);
-    add(result, "read_locator_ports",
-        string_array(footprint.read_locator_ports, allocator), allocator);
-    add(result, "write_locator_ports",
-        string_array(footprint.write_locator_ports, allocator), allocator);
-    add(result, "read_joints",
-        stable_id_array(footprint.read_joints, allocator), allocator);
-    add(result, "write_joints",
-        stable_id_array(footprint.write_joints, allocator), allocator);
-    add(result, "read_controllers",
-        stable_id_array(footprint.read_controllers, allocator), allocator);
-    add(result, "write_controllers",
-        stable_id_array(footprint.write_controllers, allocator), allocator);
-    add(result, "read_locators",
-        stable_id_array(footprint.read_locators, allocator), allocator);
-    add(result, "write_locators",
-        stable_id_array(footprint.write_locators, allocator), allocator);
+    Json handle_effects(rapidjson::kArrayType);
+    for (const auto& effect : footprint.handle_effects) {
+        Json value(rapidjson::kObjectType);
+        add(value, "parameter",
+            string_value(effect.parameter.value, allocator), allocator);
+        add(value, "handle_type",
+            string_value(effect.handle_type, allocator), allocator);
+        add(value, "view_type",
+            string_value(effect.view_type, allocator), allocator);
+        add(value, "field",
+            string_value(effect.field, allocator), allocator);
+        add(value, "access",
+            Json(static_cast<std::uint32_t>(effect.access)), allocator);
+        handle_effects.PushBack(std::move(value), allocator);
+    }
+    add(result, "handle_effects", std::move(handle_effects), allocator);
     add(result, "read_resources",
         stable_id_array(footprint.read_resources, allocator), allocator);
     add(result, "write_resources",
@@ -273,6 +273,9 @@ Json definition_value(const NodeDefinition& definition, Allocator& allocator) {
     Json result(rapidjson::kObjectType);
     add(result, "id", string_value(definition.id.value, allocator), allocator);
     add(result, "qualified_name", string_value(definition.qualified_name, allocator), allocator);
+    if (definition.hidden) {
+        add(result, "hidden", Json(true), allocator);
+    }
     add(result, "allowed_stages",
         Json(static_cast<std::uint32_t>(definition.allowed_stages)), allocator);
     Json metadata(rapidjson::kObjectType);
@@ -657,6 +660,26 @@ bool parse_partial_footprint(const Json& value,
         });
         return false;
     }
+    for (const char* key : {
+             "read_joint_ports", "write_joint_ports",
+             "read_controller_ports", "write_controller_ports",
+             "read_locator_ports", "write_locator_ports",
+             "read_joints", "write_joints",
+             "read_controllers", "write_controllers",
+             "read_locators", "write_locators",
+         })
+    {
+        if (member(value, key) != nullptr) {
+            diagnostics->push_back({
+                DiagnosticSeverity::Error,
+                "ORLGRAPH_REMOVED_PARTIAL_METADATA",
+                std::string{"Kind-specific partial metadata was removed: "}
+                    + key,
+                {}, {}, {},
+            });
+            return false;
+        }
+    }
     read_bool(value, "declared", &output->declared, diagnostics);
     read_bool(value, "global", &output->global, diagnostics);
     read_bool(value, "stateful", &output->stateful, diagnostics);
@@ -677,53 +700,55 @@ bool parse_partial_footprint(const Json& value,
     }
     output->propagation =
         static_cast<PartialPropagation>(propagation);
-    if (member(value, "read_joint_ports") != nullptr) {
-        read_string_array(value, "read_joint_ports",
-            &output->read_joint_ports, diagnostics);
-    }
-    if (member(value, "write_joint_ports") != nullptr) {
-        read_string_array(value, "write_joint_ports",
-            &output->write_joint_ports, diagnostics);
-    }
-    if (member(value, "read_controller_ports") != nullptr) {
-        read_string_array(value, "read_controller_ports",
-            &output->read_controller_ports, diagnostics);
-    }
-    if (member(value, "write_controller_ports") != nullptr) {
-        read_string_array(value, "write_controller_ports",
-            &output->write_controller_ports, diagnostics);
-    }
-    if (member(value, "read_locator_ports") != nullptr) {
-        read_string_array(value, "read_locator_ports",
-            &output->read_locator_ports, diagnostics);
-    }
-    if (member(value, "write_locator_ports") != nullptr) {
-        read_string_array(value, "write_locator_ports",
-            &output->write_locator_ports, diagnostics);
-    }
-    if (member(value, "read_joints") != nullptr) {
-        read_stable_id_array(value, "read_joints",
-            &output->read_joints, diagnostics);
-    }
-    if (member(value, "write_joints") != nullptr) {
-        read_stable_id_array(value, "write_joints",
-            &output->write_joints, diagnostics);
-    }
-    if (member(value, "read_controllers") != nullptr) {
-        read_stable_id_array(value, "read_controllers",
-            &output->read_controllers, diagnostics);
-    }
-    if (member(value, "write_controllers") != nullptr) {
-        read_stable_id_array(value, "write_controllers",
-            &output->write_controllers, diagnostics);
-    }
-    if (member(value, "read_locators") != nullptr) {
-        read_stable_id_array(value, "read_locators",
-            &output->read_locators, diagnostics);
-    }
-    if (member(value, "write_locators") != nullptr) {
-        read_stable_id_array(value, "write_locators",
-            &output->write_locators, diagnostics);
+    const Json* handle_effects = member(value, "handle_effects");
+    if (handle_effects != nullptr) {
+        if (!handle_effects->IsArray()) {
+            diagnostics->push_back({
+                DiagnosticSeverity::Error,
+                "ORLGRAPH_INVALID_HANDLE_EFFECTS",
+                "Handle effects are not an array",
+                {}, {}, {},
+            });
+            return false;
+        }
+        for (const auto& item : handle_effects->GetArray()) {
+            if (!item.IsObject()) {
+                diagnostics->push_back({
+                    DiagnosticSeverity::Error,
+                    "ORLGRAPH_INVALID_HANDLE_EFFECT",
+                    "Handle effect is not an object",
+                    {}, {}, {},
+                });
+                return false;
+            }
+            PartialEvaluationFootprint::HandleEffect effect;
+            if (!read_string(item, "parameter",
+                    &effect.parameter.value, diagnostics)
+                || !read_string(item, "handle_type",
+                    &effect.handle_type, diagnostics)
+                || !read_string(item, "view_type",
+                    &effect.view_type, diagnostics)
+                || !read_string(item, "field",
+                    &effect.field, diagnostics))
+            {
+                return false;
+            }
+            std::uint32_t access = 0;
+            if (!read_u32(item, "access", &access, diagnostics)
+                || access > static_cast<std::uint32_t>(
+                    AccessMode::ReadWrite))
+            {
+                diagnostics->push_back({
+                    DiagnosticSeverity::Error,
+                    "ORLGRAPH_INVALID_HANDLE_EFFECT_ACCESS",
+                    "Handle effect access value is out of range",
+                    {}, {}, {},
+                });
+                return false;
+            }
+            effect.access = static_cast<AccessMode>(access);
+            output->handle_effects.push_back(std::move(effect));
+        }
     }
     if (member(value, "read_resources") != nullptr) {
         read_stable_id_array(value, "read_resources",
@@ -763,7 +788,7 @@ bool parse_type(const Json& value, LogicalType* type,
     }
     std::uint32_t kind = 0;
     if (!read_u32(value, "kind", &kind, diagnostics)
-        || kind > static_cast<std::uint32_t>(LogicalTypeKind::Unknown))
+        || kind > static_cast<std::uint32_t>(LogicalTypeKind::Handle))
     {
         diagnostics->push_back({
             DiagnosticSeverity::Error, "ORLGRAPH_INVALID_TYPE",
@@ -772,8 +797,43 @@ bool parse_type(const Json& value, LogicalType* type,
         return false;
     }
     type->kind = static_cast<LogicalTypeKind>(kind);
-    read_string(value, "name", &type->name, diagnostics, false);
+    const bool has_name = read_string(
+        value, "name", &type->name, diagnostics, false);
     read_u32(value, "lanes", &type->lanes, diagnostics);
+    if (type->kind == LogicalTypeKind::Handle) {
+        read_bool(value, "open_handle", &type->open_handle,
+            diagnostics, false);
+        const Json* accepted = member(value, "accepted_handles");
+        if (accepted != nullptr) {
+            if (!accepted->IsArray()) {
+                diagnostics->push_back({
+                    DiagnosticSeverity::Error,
+                    "ORLGRAPH_INVALID_HANDLE_UNION",
+                    "Handle accepted_handles is not an array",
+                    {}, {}, {},
+                });
+                return false;
+            }
+            for (const auto& item : accepted->GetArray()) {
+                if (!item.IsString()) {
+                    diagnostics->push_back({
+                        DiagnosticSeverity::Error,
+                        "ORLGRAPH_INVALID_HANDLE_UNION",
+                        "Handle accepted_handles contains a non-string",
+                        {}, {}, {},
+                    });
+                    return false;
+                }
+                type->accepted_handles.emplace_back(item.GetString());
+            }
+            std::sort(type->accepted_handles.begin(),
+                type->accepted_handles.end());
+            type->accepted_handles.erase(std::unique(
+                type->accepted_handles.begin(),
+                type->accepted_handles.end()),
+                type->accepted_handles.end());
+        }
+    }
     const Json* extent = member(value, "extent");
     if (extent != nullptr && extent->IsUint64()) {
         type->extent = static_cast<std::size_t>(extent->GetUint64());
@@ -781,7 +841,41 @@ bool parse_type(const Json& value, LogicalType* type,
     const Json* element = member(value, "element");
     if (element != nullptr && !element->IsNull()) {
         type->element = std::make_shared<LogicalType>();
-        return parse_type(*element, type->element.get(), diagnostics);
+        if (!parse_type(*element, type->element.get(), diagnostics)) {
+            return false;
+        }
+    }
+    if (type->kind == LogicalTypeKind::Handle
+        && (!has_name
+            || (type->open_handle
+                ? type->name != "handle"
+                : !is_valid_handle_name(type->name))
+            || type->lanes != 0 || type->extent != 0
+            || type->element != nullptr
+            || (!type->open_handle
+                && !type->accepted_handles.empty()
+                && std::any_of(type->accepted_handles.begin(),
+                    type->accepted_handles.end(),
+                    [](const std::string& value) {
+                        return !is_valid_handle_name(value);
+                    }))))
+    {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error,
+            "ORLGRAPH_INVALID_HANDLE_TYPE",
+            "Handle logical types require a canonical scalar name",
+            {}, {}, {},
+        });
+        return false;
+    }
+    if (contains_handle(*type) && !type->is_handle()) {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error,
+            "ORLGRAPH_INVALID_HANDLE_TYPE",
+            "Handle logical types cannot be nested in collections",
+            {}, {}, {},
+        });
+        return false;
     }
     return true;
 }
@@ -906,6 +1000,15 @@ bool parse_constant(const Json& value, ConstantValue* output,
         || !parse_type(*type, &output->type, diagnostics)
         || !parse_value(*item, &output->value, diagnostics))
     {
+        return false;
+    }
+    if (output->type.is_handle()) {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error,
+            "ORLGRAPH_HANDLE_CONSTANT",
+            "Handle constants are not supported",
+            {}, {}, {},
+        });
         return false;
     }
     return true;
@@ -1061,6 +1164,7 @@ bool parse_definition(const Json& value, NodeDefinition* output,
         return false;
     }
     output->id = StableId{std::move(id)};
+    read_bool(value, "hidden", &output->hidden, diagnostics);
     std::uint32_t allowed_stages = static_cast<std::uint32_t>(
         GraphStageMask::None);
     read_u32(value, "allowed_stages", &allowed_stages, diagnostics);

@@ -57,9 +57,6 @@ std::optional<SceneElementKind> find_element_kind(
     if (qualified_name == "orlrig.input.find_joint") {
         return SceneElementKind::Joint;
     }
-    if (qualified_name == "orlrig.input.find_controller") {
-        return SceneElementKind::Controller;
-    }
     if (qualified_name == "orlrig.input.find_locator") {
         return SceneElementKind::Locator;
     }
@@ -1902,9 +1899,6 @@ void NodeGraphEditor::draw_node(QPainter& painter, int index) const
     const auto port_label = [](const Port& port) {
         if (port.semantic.endsWith(QStringLiteral(".handle"))) {
             return port.name + QStringLiteral(" (stable)");
-        }
-        if (port.semantic == QStringLiteral("scene.array_index")) {
-            return port.name + QStringLiteral(" (packed)");
         }
         return port.name;
     };

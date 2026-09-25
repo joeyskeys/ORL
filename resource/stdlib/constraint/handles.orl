@@ -1,0 +1,39 @@
+// Generic transform-handle helpers for solver constraints.
+//
+// The accepted component kind is fixed by graph specialization. `is` is
+// therefore folded before the helper reaches LLVM; no runtime type switch is
+// emitted.
+
+use rig/handles;
+use locator;
+
+handle source_xform_handle = joint_handle | locator_handle;
+handle destination_xform_handle = joint_handle | locator_handle;
+
+matrix constraint_handle_read(source_xform_handle value) {
+    matrix result;
+    if (value is joint_handle) {
+        WorldTransform data = WorldTransform(value);
+        result = data.xform;
+    } else {
+        Locator data = Locator(value);
+        result = data.xform;
+    }
+    return result;
+}
+
+int constraint_handle_write(
+    destination_xform_handle value, matrix data)
+{
+    int result = 0;
+    if (value is joint_handle) {
+        WorldTransform destination = WorldTransform(value);
+        destination.xform = data;
+        result = 1;
+    } else {
+        Locator destination = Locator(value);
+        destination.xform = data;
+        result = 1;
+    }
+    return result;
+}

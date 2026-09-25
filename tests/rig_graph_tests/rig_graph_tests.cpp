@@ -70,9 +70,6 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
         "orlrig.auto_weight.bounded_biharmonic",
         "orlrig.solver.fk",
         "orlrig.solver.ik_two_bone",
-        "orlrig.solver.hd_id",
-        "orlrig.solver.spline_ik",
-        "orlrig.solver.full_body_ik",
         "orlrig.constraint.aim",
         "orlrig.constraint.aim_locator",
         "orlrig.constraint.copy_xform",
@@ -81,7 +78,6 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
         "orlrig.constraint.copy_scale",
         "orlrig.constraint.parent",
         "orlrig.input.find_joint",
-        "orlrig.input.find_controller",
         "orlrig.input.find_locator",
         "orlrig.input.find_mesh",
         "orlrig.stage.computed_joints",
@@ -114,17 +110,16 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
                 REQUIRE(definition->outputs.size() == 1);
                 continue;
             }
-            const bool has_transform =
-                name == "orlrig.input.find_joint"
-                || name == "orlrig.input.find_controller"
-                || name == "orlrig.input.find_locator";
-            REQUIRE(definition->outputs.size() == (has_transform ? 3 : 1));
+            REQUIRE(definition->outputs.size() == 1);
             REQUIRE(definition->output("handle") != nullptr);
-            if (has_transform) {
-                REQUIRE(definition->output("index") != nullptr);
-                REQUIRE(definition->output("xform") != nullptr);
-                REQUIRE(definition->output("index")->semantic
-                    == std::string{kSceneArrayIndexSemantic});
+            REQUIRE(definition->output("index") == nullptr);
+            REQUIRE(definition->output("xform") == nullptr);
+            if (name == "orlrig.input.find_joint") {
+                REQUIRE(definition->output("handle")->type
+                    == LogicalType::handle("orlrig::joint_handle"));
+            } else if (name == "orlrig.input.find_locator") {
+                REQUIRE(definition->output("handle")->type
+                    == LogicalType::handle("orlrig::locator_handle"));
             }
             REQUIRE(definition->parameter("name") != nullptr);
         } else {
@@ -142,93 +137,116 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
         }
     }
 
-    const auto* conversion = graph.registry.find_conversion(
-        kJointWorldMatrixConversion);
-    REQUIRE(conversion != nullptr);
-    REQUIRE(conversion->source.type == LogicalType::int64());
-    REQUIRE(conversion->source.semantic
-        == std::string{kSceneArrayIndexSemantic});
-    REQUIRE(conversion->output.type
-        == LogicalType::buffer(LogicalType::matrix()));
-    REQUIRE(conversion->auxiliary_inputs.size() == 1);
-    REQUIRE(conversion->auxiliary_inputs.front().semantic
-        == std::string{kSceneJointsBinding});
-    const auto* writeback = graph.registry.find_conversion(
-        kJointWorldMatrixWritebackConversion);
-    REQUIRE(writeback != nullptr);
-    REQUIRE(writeback->source.type
-        == LogicalType::buffer(LogicalType::matrix()));
-    REQUIRE(writeback->output.type
-        == LogicalType::buffer(LogicalType::struct_type("Joint")));
-    REQUIRE(writeback->selector.has_value());
-    REQUIRE(writeback->selector->type == LogicalType::int64());
-    REQUIRE(writeback->selector->semantic
-        == std::string{kSceneJointHandleSemantic});
-    REQUIRE(writeback->emitter
-        == ConversionEmitterKind::OrlFunctionWriteback);
-
-    const auto* find_joint = graph.registry.find("orlrig.input.find_joint");
-    REQUIRE(find_joint != nullptr);
-    const auto* xform = find_joint->output("xform");
-    REQUIRE(xform != nullptr);
-    REQUIRE(xform->output_adapter.has_value());
-    REQUIRE(xform->output_adapter->conversion
-        == StableId{std::string{kJointWorldMatrixConversion}});
-    REQUIRE(xform->output_adapter->source_port == StableId{"index"});
-    REQUIRE(xform->output_adapter->writeback_conversion
-        == StableId{std::string{kJointWorldMatrixWritebackConversion}});
-    REQUIRE(xform->output_adapter->writeback_source_port
-        == StableId{"handle"});
+    REQUIRE(graph.registry.find("orlrig.input.find_controller")
+        == nullptr);
+    REQUIRE(graph.registry.find("orlrig.input.legacy_find_joint")
+        == nullptr);
+    REQUIRE(graph.registry.find("orlrig.input.legacy_find_locator")
+        == nullptr);
+    REQUIRE(graph.registry.find("orlrig.solver.hd_id") == nullptr);
+    REQUIRE(graph.registry.find("orlrig.solver.spline_ik") == nullptr);
+    REQUIRE(graph.registry.find("orlrig.solver.full_body_ik") == nullptr);
 }
 
-TEST_CASE("scene handle and packed index semantics are not interchangeable",
-    "[orlrig][graph][semantics]")
+TEST_CASE("two-bone solver exposes typed handles and inferred effects",
+    "[orlrig][graph][handles][effects]")
+{
+    const auto graph = make_lbs_graph();
+    const auto* definition =
+        graph.registry.find("orlrig.solver.ik_two_bone");
+    REQUIRE(definition != nullptr);
+    REQUIRE(definition->inputs.size() == 5);
+    REQUIRE(definition->input("root")->type
+        == LogicalType::handle("orlrig::joint_handle"));
+    REQUIRE(definition->input("mid")->type
+        == LogicalType::handle("orlrig::joint_handle"));
+    REQUIRE(definition->input("end")->type
+        == LogicalType::handle("orlrig::joint_handle"));
+    REQUIRE(definition->input("target")->type
+        == LogicalType::handle("orlrig::locator_handle"));
+    REQUIRE(definition->input("pole")->type
+        == LogicalType::handle("orlrig::locator_handle"));
+
+    REQUIRE(definition->metadata.find("partial_read_joint_ports")
+        == definition->metadata.end());
+    REQUIRE(definition->metadata.find("partial_write_joint_ports")
+        == definition->metadata.end());
+    REQUIRE(definition->metadata.find("partial_read_locator_ports")
+        == definition->metadata.end());
+    REQUIRE(definition->partial_footprint.has_value());
+    const auto& footprint = *definition->partial_footprint;
+    REQUIRE_FALSE(footprint.global);
+    REQUIRE(footprint.handle_effects.size() >= 5);
+
+    const auto access_for = [&footprint](std::string_view parameter) {
+        bool reads = false;
+        bool writes = false;
+        for (const auto& effect : footprint.handle_effects) {
+            if (effect.parameter.value != parameter) {
+                continue;
+            }
+            reads = reads
+                || effect.access == orlgraph::AccessMode::Read
+                || effect.access == orlgraph::AccessMode::ReadWrite;
+            writes = writes
+                || effect.access == orlgraph::AccessMode::Write
+                || effect.access == orlgraph::AccessMode::ReadWrite;
+        }
+        return reads && writes
+            ? orlgraph::AccessMode::ReadWrite
+            : writes ? orlgraph::AccessMode::Write
+            : orlgraph::AccessMode::Read;
+    };
+    REQUIRE(access_for("root") == orlgraph::AccessMode::ReadWrite);
+    REQUIRE(access_for("mid") == orlgraph::AccessMode::ReadWrite);
+    REQUIRE(access_for("end") == orlgraph::AccessMode::Read);
+    REQUIRE(access_for("target") == orlgraph::AccessMode::Read);
+    REQUIRE(access_for("pole") == orlgraph::AccessMode::Read);
+}
+
+TEST_CASE("exact scene handles are not interchangeable",
+    "[orlrig][graph][semantics][handle]")
 {
     auto rig = make_lbs_graph();
     NodeDefinition sink;
-    sink.id = StableId{"test.index_sink"};
-    sink.qualified_name = "test.index_sink";
+    sink.id = StableId{"test.locator_sink"};
+    sink.qualified_name = "test.locator_sink";
     sink.implementation.kind = ImplementationKind::Runtime;
-    sink.implementation.runtime_name = "test.index_sink";
+    sink.implementation.runtime_name = "test.locator_sink";
     Port input;
-    input.id = StableId{"index"};
-    input.name = "index";
+    input.id = StableId{"value"};
+    input.name = "value";
     input.direction = PortDirection::Input;
-    input.type = LogicalType::int64();
-    input.semantic = std::string{kSceneArrayIndexSemantic};
+    input.type = LogicalType::handle("orlrig::locator_handle");
     sink.inputs.push_back(std::move(input));
     REQUIRE(rig.registry.register_definition(std::move(sink)));
 
-    const auto validate_connection =
-        [&rig](StableId output) {
+    const auto validate_connection = [&rig](
+        StableId definition, StableId output) {
             GraphModule module;
             module.add_node(NodeInstance{
-                StableId{"find"}, StableId{"orlrig.input.find_controller"},
+                StableId{"find"}, std::move(definition),
                 "find",
-                {{"name", ConstantValue{
-                    LogicalType::string(), std::string{"ctrl"}}}},
+                {{"name", ConstantValue{LogicalType::string(),
+                    std::string{"root"}}}},
                 {}, InlinePolicy::Default});
             module.add_node(NodeInstance{
-                StableId{"sink"}, StableId{"test.index_sink"}, "sink",
+                StableId{"sink"}, StableId{"test.locator_sink"}, "sink",
                 {}, {}, InlinePolicy::Default});
             REQUIRE(module.add_connection(Connection{
                 Endpoint::node_port(StableId{"find"}, std::move(output)),
-                Endpoint::node_port(StableId{"sink"}, StableId{"index"})}));
+                Endpoint::node_port(StableId{"sink"}, StableId{"value"})}));
             return validate(module, rig.registry);
         };
 
-    const auto handle_validation =
-        validate_connection(StableId{"handle"});
-    REQUIRE_FALSE(handle_validation.ok());
-    REQUIRE(std::any_of(handle_validation.diagnostics.begin(),
-        handle_validation.diagnostics.end(),
+    const auto joint_validation = validate_connection(
+        StableId{"orlrig.input.find_joint"}, StableId{"handle"});
+    REQUIRE_FALSE(joint_validation.ok());
+    REQUIRE(std::any_of(joint_validation.diagnostics.begin(),
+        joint_validation.diagnostics.end(),
         [](const auto& diagnostic) {
-            return diagnostic.code == "ORLGRAPH_SEMANTIC_MISMATCH";
+            return diagnostic.code == "ORLGRAPH_TYPE_MISMATCH";
         }));
-
-    const auto index_validation =
-        validate_connection(StableId{"index"});
-    REQUIRE(index_validation.ok());
 }
 
 #endif

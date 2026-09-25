@@ -16,15 +16,21 @@ Add the resolved sets on `SolverRegion`:
 - `write_controllers`
 - `write_locators`
 
-`resolve_port` already follows one wire to `find_joint`, `find_controller`, or `find_locator` and reads the `name` parameter. A write port uses that same resolver. The `find_*` node decides the kind, so one index port can be a locator in one graph and a joint in another. A port that matches none of those nodes stays global, as an unresolved read does today.
+`resolve_port` follows one wire to `find_joint` or `find_locator` and reads the
+`name` parameter. A write port uses that same resolver. The typed `handle`
+socket decides the component kind; there is no controller find node or
+ambiguous index port. A port that matches none of those nodes stays global, as
+an unresolved read does today.
 
 Declare those ports on the nodes that need them:
 
-- `ik_two_bone` already reads `target_index` and `pole_index` and writes `root` and `mid`. It only needs to consume the new edges.
-- `aim` and `aim_locator` write `subject_index`. `aim_locator` also reads `target_index` as a locator.
-- Each `copy_*` constraint reads `source_index` and writes `destination_index`.
+- `ik_two_bone` reads typed `target`/`pole` locator handles and writes typed
+  `root`/`mid` joint handles. Its footprint comes from imported handle effects.
+- `aim` and `aim_locator` use typed source/destination transform handles.
+- Each `copy_*` constraint uses typed source and destination transform handles.
 
-A constraint that writes one element gets a declared footprint with `PartialPropagation::None` when the element is a locator or controller, and `Descendants` when it is a joint. Constraints are global today because they have no footprint. Declaring it is what makes the locator example visible.
+Typed view effects identify the exact joint/locator read and write. No
+kind-specific port strings are consulted.
 
 ## Three edge rules
 

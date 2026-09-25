@@ -1,9 +1,11 @@
 #include "orl_parser.h"
 #include "orl_preprocessor.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <limits>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 namespace orlcomp {
@@ -28,9 +30,29 @@ void AddDefaultStdlibPaths(Preprocessor *preprocessor) {
     }
 }
 
+std::string CanonicalHandleName(
+    std::string_view module_name, std::string_view type_name)
+{
+    if (module_name == "rig/handles") {
+        return "orlrig::" + std::string{type_name};
+    }
+    std::string canonical;
+    canonical.reserve(module_name.size() + type_name.size() + 2);
+    for (const char c : module_name) {
+        canonical += c == '/' ? "::" : std::string(1, c);
+    }
+    canonical += "::";
+    canonical += type_name;
+    return canonical;
+}
+
 } // namespace
 
-Parser::Parser(std::string source) : source_(std::move(source)), lexer_("") {}
+Parser::Parser(std::string source, std::string module_name)
+    : source_(std::move(source))
+    , module_name_(std::move(module_name))
+    , lexer_("")
+{}
 
 void Parser::AddIncludePath(std::string path) {
     if (!path.empty()) {
@@ -41,6 +63,8 @@ void Parser::AddIncludePath(std::string path) {
 bool Parser::Parse() {
     errors_.clear();
     struct_names_.clear();
+    handle_type_names_.clear();
+    handle_type_leaves_.clear();
     buffered_tokens_.clear();
     program_ = std::make_unique<Program>();
 
@@ -50,7 +74,7 @@ bool Parser::Parse() {
         preprocessor.AddIncludePath(path);
     }
     std::string expanded;
-    if (!preprocessor.Process(source_, &expanded)) {
+    if (!preprocessor.Process(source_, &expanded, module_name_)) {
         errors_ = preprocessor.Errors();
         return false;
     }
@@ -120,6 +144,18 @@ bool Parser::ParseTopLevel() {
     if (Peek().kind == TokenKind::KwStruct) {
         return ParseStructDefinition();
     }
+    if (Peek().kind == TokenKind::KwHandle
+        && Peek(1).kind == TokenKind::Identifier
+        && Peek(2).kind == TokenKind::Assign)
+    {
+        return ParseHandleUnionDefinition();
+    }
+    if (Peek().kind == TokenKind::KwHandle
+        && Peek(1).kind == TokenKind::Identifier
+        && Peek(2).kind == TokenKind::Semi)
+    {
+        return ParseHandleDefinition();
+    }
 
     const bool exported = Match(TokenKind::KwExport);
     if (exported) {
@@ -146,6 +182,10 @@ bool Parser::ParseStructDefinition() {
     const Token name = Advance();
     if (struct_names_.find(name.lexeme) != struct_names_.end()) {
         AddError(name, "Duplicate struct definition: " + name.lexeme);
+        return false;
+    }
+    if (handle_type_names_.contains(name.lexeme)) {
+        AddError(name, "Type name already declared as a handle: " + name.lexeme);
         return false;
     }
     if (name.lexeme == "SolverContext"
@@ -188,6 +228,100 @@ bool Parser::ParseStructDefinition() {
     auto definition = std::make_unique<StructDefinitionStatement>();
     definition->name = name.lexeme;
     definition->fields = std::move(fields);
+    last_statement_ = std::move(definition);
+    return true;
+}
+
+bool Parser::ParseHandleDefinition() {
+    Advance();
+    if (Peek().kind != TokenKind::Identifier) {
+        AddError(Peek(), "Expected handle type name");
+        return false;
+    }
+    const Token name = Advance();
+    if (struct_names_.contains(name.lexeme)) {
+        AddError(name, "Type name already declared as a struct: " + name.lexeme);
+        return false;
+    }
+    if (handle_type_names_.contains(name.lexeme)) {
+        AddError(name, "Duplicate handle definition: " + name.lexeme);
+        return false;
+    }
+    if (!Expect(TokenKind::Semi, "Expected ';' after handle definition")) {
+        return false;
+    }
+
+    const std::string canonical = CanonicalHandleName(
+        name.source_origin, name.lexeme);
+    handle_type_names_.emplace(name.lexeme, canonical);
+    auto definition = std::make_unique<HandleDefinitionStatement>();
+    definition->name = name.lexeme;
+    definition->canonical_name = canonical;
+    definition->source = {name.source_origin, name.line, name.column};
+    last_statement_ = std::move(definition);
+    return true;
+}
+
+bool Parser::ParseHandleUnionDefinition() {
+    Advance();
+    if (Peek().kind != TokenKind::Identifier) {
+        AddError(Peek(), "Expected handle union name");
+        return false;
+    }
+    const Token name = Advance();
+    if (struct_names_.contains(name.lexeme)
+        || handle_type_names_.contains(name.lexeme))
+    {
+        AddError(name, "Duplicate handle type name: " + name.lexeme);
+        return false;
+    }
+    if (!Expect(TokenKind::Assign,
+            "Expected '=' after handle union name"))
+    {
+        return false;
+    }
+
+    std::vector<std::string> leaves;
+    do {
+        if (Peek().kind != TokenKind::Identifier
+            || !handle_type_names_.contains(Peek().lexeme))
+        {
+            AddError(Peek(),
+                "Handle unions may contain only previously declared "
+                "exact handle types");
+            return false;
+        }
+        const Token leaf = Advance();
+        const auto found = handle_type_leaves_.find(leaf.lexeme);
+        if (found == handle_type_leaves_.end()) {
+            leaves.push_back(handle_type_names_.at(leaf.lexeme));
+        } else {
+            leaves.insert(leaves.end(),
+                found->second.begin(), found->second.end());
+        }
+    } while (Match(TokenKind::Pipe));
+
+    if (!Expect(TokenKind::Semi,
+            "Expected ';' after handle union declaration"))
+    {
+        return false;
+    }
+    std::sort(leaves.begin(), leaves.end());
+    leaves.erase(std::unique(leaves.begin(), leaves.end()), leaves.end());
+    if (leaves.empty()) {
+        AddError(name, "Handle unions cannot be empty");
+        return false;
+    }
+
+    const std::string canonical = CanonicalHandleName(
+        name.source_origin, name.lexeme);
+    handle_type_names_.emplace(name.lexeme, canonical);
+    handle_type_leaves_.emplace(name.lexeme, leaves);
+    auto definition = std::make_unique<HandleDefinitionStatement>();
+    definition->name = name.lexeme;
+    definition->canonical_name = canonical;
+    definition->accepted_handles = std::move(leaves);
+    definition->source = {name.source_origin, name.line, name.column};
     last_statement_ = std::move(definition);
     return true;
 }
@@ -252,6 +386,14 @@ bool Parser::ParseFunctionDefinition(bool exported) {
                     return false;
                 }
                 is_buffer = true;
+            }
+            if (is_buffer
+                && (parameter_type.kind == TokenKind::KwHandle
+                    || handle_type_names_.contains(parameter_type.lexeme)))
+            {
+                AddError(parameter_type,
+                    "Handle parameters cannot be buffers");
+                return false;
             }
             parameters.push_back(Parameter{parameter_type.lexeme, parameter_name.lexeme, is_buffer});
         } while (Match(TokenKind::Comma));
@@ -434,6 +576,12 @@ bool Parser::ParseDeclarationStatement() {
     declaration->variable_name = variable_name.lexeme;
 
     if (Match(TokenKind::LBracket)) {
+        if (type_name.kind == TokenKind::KwHandle
+            || handle_type_names_.contains(type_name.lexeme))
+        {
+            AddError(type_name, "Handle declarations cannot be arrays");
+            return false;
+        }
         if (Peek().kind != TokenKind::IntLiteral) {
             AddError(Peek(), "Array size must be an integer literal");
             return false;
@@ -816,6 +964,18 @@ bool Parser::ParseEquality() {
         return false;
     }
     auto lhs = TakeExpression();
+    while (Peek().kind == TokenKind::KwIs) {
+        Advance();
+        if (!IsTypeName(Peek())) {
+            AddError(Peek(), "Expected exact handle type after 'is'");
+            return false;
+        }
+        const Token type = Advance();
+        auto expression = std::make_unique<HandleTestExpression>();
+        expression->operand = std::move(lhs);
+        expression->type_name = type.lexeme;
+        lhs = std::move(expression);
+    }
     while (Peek().kind == TokenKind::EqualEqual || Peek().kind == TokenKind::BangEqual) {
         const TokenKind op = Advance().kind;
         if (!ParseComparison()) {
@@ -1041,12 +1201,15 @@ bool Parser::IsTypeToken(TokenKind kind) const {
            kind == TokenKind::KwNormal ||
            kind == TokenKind::KwPoint ||
            kind == TokenKind::KwMatrix ||
+           kind == TokenKind::KwHandle ||
            kind == TokenKind::TypeName;
 }
 
 bool Parser::IsTypeName(const Token &token) const {
     return IsTypeToken(token.kind) ||
-           (token.kind == TokenKind::Identifier && struct_names_.find(token.lexeme) != struct_names_.end());
+           (token.kind == TokenKind::Identifier
+               && (struct_names_.contains(token.lexeme)
+                   || handle_type_names_.contains(token.lexeme)));
 }
 
 bool Parser::IsUnaryOperator(TokenKind kind) const {

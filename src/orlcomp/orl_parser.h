@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -12,7 +13,8 @@ namespace orlcomp {
 
 class Parser {
 public:
-    explicit Parser(std::string source);
+    explicit Parser(std::string source,
+        std::string module_name = "<source>");
 
     void AddIncludePath(std::string path);
     bool Parse();
@@ -28,6 +30,8 @@ private:
 
     bool ParseTopLevel();
     bool ParseStructDefinition();
+    bool ParseHandleDefinition();
+    bool ParseHandleUnionDefinition();
     bool ParseFunctionDefinition(bool exported);
     bool ParseFunctionMetadata(std::vector<FunctionMetadata>* metadata);
     bool ParseTypeName();
@@ -66,11 +70,15 @@ private:
     std::unique_ptr<Statement> TakeStatement();
 
     std::string source_;
+    std::string module_name_;
     std::vector<std::string> include_paths_;
     Lexer lexer_;
     std::vector<Token> buffered_tokens_;
     std::vector<std::string> errors_;
     std::unordered_set<std::string> struct_names_;
+    std::unordered_map<std::string, std::string> handle_type_names_;
+    std::unordered_map<std::string, std::vector<std::string>>
+        handle_type_leaves_;
     std::unique_ptr<Program> program_;
     std::unique_ptr<Expression> last_expression_;
     std::unique_ptr<Statement> last_statement_;

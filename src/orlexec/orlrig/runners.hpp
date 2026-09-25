@@ -11,6 +11,7 @@
 
 #include "component_store.hpp"
 #include "evaluation.hpp"
+#include "handle_registry.hpp"
 #include "hierarchy.hpp"
 #include "locator.hpp"
 #include "mesh.hpp"
@@ -141,6 +142,7 @@ private:
     ORL::exec::OrlBuffer solver_locators;
     ORL::exec::OrlBuffer solver_context_storage;
     ORL::exec::OrlBuffer hierarchy_data;
+    HandleViewContext handle_view_context;
     HierarchyContext hierarchy_context;
     std::optional<HierarchyPlan> compiled_hierarchy_plan;
 };

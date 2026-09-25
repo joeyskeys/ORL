@@ -1,6 +1,7 @@
 #pragma once
 
 #include "orl_optimizer.h"
+#include "orl_runtime_signature.h"
 
 #include <cstddef>
 #include <cstring>
@@ -34,12 +35,17 @@ enum class OrlGpuKernelParameterType : std::uint8_t {
     Buffer,
     Int64,
     Float64,
+    Handle,
     Unsupported
 };
 
 struct OrlGpuKernelParameter {
     std::string name;
     OrlGpuKernelParameterType type = OrlGpuKernelParameterType::Unsupported;
+    std::size_t byte_size = 0;
+    std::size_t alignment = 0;
+    std::uint32_t lane_count = 0;
+    std::string lane_order;
 };
 
 struct OrlGpuBufferBinding {
@@ -56,6 +62,9 @@ struct OrlGpuKernelArgument {
     std::size_t buffer_offset = 0;
     OrlGpuKernelParameterType scalar_type = OrlGpuKernelParameterType::Unsupported;
     std::vector<std::uint8_t> scalar_bytes;
+    std::size_t scalar_alignment = 0;
+    std::uint32_t lane_count = 0;
+    std::string lane_order;
 };
 
 class OrlGpuEngine {
@@ -126,6 +135,22 @@ private:
         argument.is_buffer = true;
         argument.buffer = binding.buffer;
         argument.scalar_type = OrlGpuKernelParameterType::Buffer;
+        return argument;
+    }
+
+    static OrlGpuKernelArgument MakeKernelArgument(
+        const HandleValue& value) {
+        OrlGpuKernelArgument argument;
+        argument.scalar_type = OrlGpuKernelParameterType::Handle;
+        argument.scalar_bytes.resize(sizeof(std::uint64_t) * 2);
+        argument.scalar_alignment = alignof(HandleValue);
+        argument.lane_count = 2;
+        argument.lane_order = "type_id,slot";
+        std::memcpy(argument.scalar_bytes.data(),
+            &value.type_id, sizeof(std::uint64_t));
+        const auto slot = static_cast<std::uint64_t>(value.slot);
+        std::memcpy(argument.scalar_bytes.data() + sizeof(std::uint64_t),
+            &slot, sizeof(std::uint64_t));
         return argument;
     }
 

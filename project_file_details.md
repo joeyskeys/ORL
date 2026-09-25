@@ -15,7 +15,7 @@ Current constants:
 - Nested graph-stages magic: `ORL_GRAPH_STAGES`
 - Graph-stages `format_version`: `1`
 - `language_version`: `orl-0`
-- `logical_abi_version`: `orlgraph-0`
+- `logical_abi_version`: `orlgraph-1`
 
 Node definitions are **not** stored in the project. Graph nodes refer to
 registry IDs such as `orlrig.solver.ik_two_bone`. The viewer registers those
@@ -296,11 +296,9 @@ the `locators` array order.
 | 6 | Arrow | |
 | 7 | Polygon | IK pole (viewer default) |
 
-`find_controller` matches `name`.
-
-Controllers are not a packed solver buffer in new graphs. They are
-authoring handles. Driving a joint or locator is done with an attachment,
-or with solver-graph nodes such as `orlrig.constraint.copy_xform`.
+Controllers are authoring objects, not graph nodes or handle values. Their
+`xform` and `input_xform` fields are used by viewport attachment and transform
+tools; they are not serialized as rig graph inputs.
 
 ### 3.4 Attachment
 
@@ -413,7 +411,7 @@ This object is an `ORL_GRAPH_STAGES` document embedded as `project.graph`.
     "magic": "ORL_GRAPH_STAGES",
     "format_version": 1,
     "language_version": "orl-0",
-    "logical_abi_version": "orlgraph-0",
+    "logical_abi_version": "orlgraph-1",
     "module_id": "human.solver",
     "content_hash": ""
   },
@@ -443,7 +441,7 @@ are valid.
   "module_id": "human.solver",
   "version": { "major": 1, "minor": 0, "patch": 0 },
   "language_version": "orl-0",
-  "logical_abi_version": "orlgraph-0",
+    "logical_abi_version": "orlgraph-1",
   "inputs": [],
   "outputs": [],
   "resources": [],
@@ -493,11 +491,10 @@ Useful registry IDs (not stored; referenced by `definition`):
 
 Solver stage:
 
-- `orlrig.input.find_joint` — outputs `handle`, `index`, `xform`; param `name`
-- `orlrig.input.find_controller` — same ports; param `name`
-- `orlrig.input.find_locator` — same ports; param `name`
+- `orlrig.input.find_joint` — output `joint_handle`-typed `handle`; param `name`
+- `orlrig.input.find_locator` — output `locator_handle`-typed `handle`; param `name`
 - `orlrig.input.find_mesh` — output `handle`; param `name`
-- `orlrig.solver.ik_two_bone` — inputs `root`, `mid`, `end`, `target_index`, `pole_index` (all packed indices / array-index semantics); output `status`
+- `orlrig.solver.ik_two_bone` — inputs `root`, `mid`, `end` (`joint_handle`) and `target`, `pole` (`locator_handle`); output `status`
 - `orlrig.solver.fk`
 - `orlrig.constraint.copy_xform` (and copy_translation / rotation / scale, aim, aim_locator)
 
@@ -507,14 +504,15 @@ Deformer stage:
 - `orlrig.deformer.lbs.capture_bind` / `orlrig.deformer.lbs.evaluate`
 - `orlrig.auto_weight.*`
 
-`find_*` `index` is a packed index at eval time, not a file component ID.
+Joint and locator `handle` values are nominal graph values. Their dispatch-local
+storage slot is resolved at bind time and is never serialized in the project.
 
 ### 4.3 Connection endpoint
 
 ```json
 {
-  "source": { "kind": 0, "owner": "find_root", "port": "index" },
-  "destination": { "kind": 0, "owner": "solver", "port": "root" },
+  "source": { "kind": 0, "owner": "find_root", "port": "handle" },
+  "destination": { "kind": 0, "owner": "typed_solver", "port": "root" },
   "conversion": "",
   "shape": [],
   "provenance": { "locations": [], "source_nodes": [], "description": "" },

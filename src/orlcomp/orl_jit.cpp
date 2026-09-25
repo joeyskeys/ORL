@@ -3,6 +3,8 @@
 #include "orl_optimizer.h"
 #include "orl_parallel_runtime.h"
 
+#include <unordered_map>
+
 #if __has_include(<llvm/ExecutionEngine/Orc/LLJIT.h>)
 
 #include <llvm/ExecutionEngine/ObjectCache.h>
@@ -164,6 +166,12 @@ struct OrlJitEngine::Impl {
             llvm::orc::ExecutorAddr::fromPtr(&__orl_parallel_for),
             llvm::JITSymbolFlags::Exported,
         };
+        for (const auto& [name, address] : runtime_symbols_) {
+            runtime_symbols[mangle(name)] = {
+                llvm::orc::ExecutorAddr::fromPtr(address),
+                llvm::JITSymbolFlags::Exported,
+            };
+        }
         if (auto error = jit_->getMainJITDylib().define(
                 llvm::orc::absoluteSymbols(std::move(runtime_symbols))))
         {
@@ -354,6 +362,64 @@ struct OrlJitEngine::Impl {
         return function(buffers, integers, floats);
     }
 
+    std::optional<int64_t> InvokeInt64WithRuntimeArgsAndHandles(
+        const std::string &name,
+        void *const *buffers,
+        const int64_t *integers,
+        const double *floats,
+        const std::uint64_t *handles,
+        void *solver_context = nullptr,
+        void *hierarchy_context = nullptr,
+        void *hierarchy_data = nullptr,
+        int context_mode = 0)
+    {
+        if (IsGpuTarget(target_kind_)) {
+            errors_.push_back(
+                std::string{
+                    "Handle runtime invocation is unsupported for JIT target '"}
+                + TargetName(target_kind_) + "'");
+            return std::nullopt;
+        }
+        if (jit_ == nullptr) {
+            errors_.push_back("JIT engine has no loaded module");
+            return std::nullopt;
+        }
+        auto symbol_or_error = jit_->lookup(name);
+        if (!symbol_or_error) {
+            errors_.push_back("Failed to lookup function '" + name + "': "
+                + FormatLlvmError(symbol_or_error.takeError()));
+            return std::nullopt;
+        }
+        if (context_mode == 0) {
+            using FunctionType = int64_t (*)(
+                void *const *, const int64_t *, const double *,
+                const std::uint64_t *);
+            return symbol_or_error->toPtr<FunctionType>()(
+                buffers, integers, floats, handles);
+        }
+        if (context_mode == 1) {
+            using FunctionType = int64_t (*)(
+                void *const *, const int64_t *, const double *,
+                const std::uint64_t *, void *);
+            return symbol_or_error->toPtr<FunctionType>()(
+                buffers, integers, floats, handles, solver_context);
+        }
+        if (context_mode == 2) {
+            using FunctionType = int64_t (*)(
+                void *const *, const int64_t *, const double *,
+                const std::uint64_t *, void *, void *);
+            return symbol_or_error->toPtr<FunctionType>()(
+                buffers, integers, floats, handles,
+                hierarchy_context, hierarchy_data);
+        }
+        using FunctionType = int64_t (*)(
+            void *const *, const int64_t *, const double *,
+            const std::uint64_t *, void *, void *, void *);
+        return symbol_or_error->toPtr<FunctionType>()(
+            buffers, integers, floats, handles,
+            solver_context, hierarchy_context, hierarchy_data);
+    }
+
     std::optional<int64_t> InvokeInt64WithRuntimeArgsAndContext(
         const std::string &name,
         void *const *buffers,
@@ -451,11 +517,57 @@ struct OrlJitEngine::Impl {
             hierarchy_context, hierarchy_data);
     }
 
+    std::optional<int64_t>
+    InvokeInt64WithRuntimeArgsAndHandlesAndContext(
+        const std::string &name,
+        void *const *buffers,
+        const int64_t *integers,
+        const double *floats,
+        const std::uint64_t *handles,
+        void *solver_context)
+    {
+        return InvokeInt64WithRuntimeArgsAndHandles(
+            name, buffers, integers, floats, handles,
+            solver_context, nullptr, nullptr, 1);
+    }
+
+    std::optional<int64_t>
+    InvokeInt64WithRuntimeArgsAndHandlesAndHierarchyContext(
+        const std::string &name,
+        void *const *buffers,
+        const int64_t *integers,
+        const double *floats,
+        const std::uint64_t *handles,
+        void *hierarchy_context,
+        void *hierarchy_data)
+    {
+        return InvokeInt64WithRuntimeArgsAndHandles(
+            name, buffers, integers, floats, handles,
+            nullptr, hierarchy_context, hierarchy_data, 2);
+    }
+
+    std::optional<int64_t>
+    InvokeInt64WithRuntimeArgsAndHandlesAndContexts(
+        const std::string &name,
+        void *const *buffers,
+        const int64_t *integers,
+        const double *floats,
+        const std::uint64_t *handles,
+        void *solver_context,
+        void *hierarchy_context,
+        void *hierarchy_data)
+    {
+        return InvokeInt64WithRuntimeArgsAndHandles(
+            name, buffers, integers, floats, handles,
+            solver_context, hierarchy_context, hierarchy_data, 3);
+    }
+
     OrlJitTarget target_kind_ = OrlJitTarget::Native;
     OrlBinaryCacheOptions cache_options_;
     std::unique_ptr<llvm::ObjectCache> object_cache_;
     std::unique_ptr<llvm::orc::LLJIT> jit_;
     std::vector<std::string> errors_;
+    std::unordered_map<std::string, void*> runtime_symbols_;
 };
 
 OrlJitEngine::OrlJitEngine(
@@ -484,6 +596,12 @@ bool OrlJitEngine::LoadModuleWithOptimization(std::unique_ptr<llvm::Module> modu
 
 bool OrlJitEngine::LoadObject(std::span<const std::uint8_t> object) {
     return impl_->LoadObject(object);
+}
+
+void OrlJitEngine::RegisterRuntimeSymbol(
+    std::string name, void* address)
+{
+    impl_->runtime_symbols_[std::move(name)] = address;
 }
 
 std::optional<int64_t> OrlJitEngine::InvokeInt64(const std::string &name) {
@@ -539,6 +657,62 @@ std::optional<int64_t> OrlJitEngine::InvokeInt64WithRuntimeArgsAndContexts(
     return impl_->InvokeInt64WithRuntimeArgsAndContexts(
         name, buffers, integers, floats, solver_context,
         hierarchy_context, hierarchy_data);
+}
+
+std::optional<int64_t>
+OrlJitEngine::InvokeInt64WithRuntimeArgsAndHandles(
+    const std::string &name,
+    void *const *buffers,
+    const int64_t *integers,
+    const double *floats,
+    const std::uint64_t *handles)
+{
+    return impl_->InvokeInt64WithRuntimeArgsAndHandles(
+        name, buffers, integers, floats, handles);
+}
+
+std::optional<int64_t>
+OrlJitEngine::InvokeInt64WithRuntimeArgsAndHandlesAndContext(
+    const std::string &name,
+    void *const *buffers,
+    const int64_t *integers,
+    const double *floats,
+    const std::uint64_t *handles,
+    void *solver_context)
+{
+    return impl_->InvokeInt64WithRuntimeArgsAndHandlesAndContext(
+        name, buffers, integers, floats, handles, solver_context);
+}
+
+std::optional<int64_t>
+OrlJitEngine::InvokeInt64WithRuntimeArgsAndHandlesAndHierarchyContext(
+    const std::string &name,
+    void *const *buffers,
+    const int64_t *integers,
+    const double *floats,
+    const std::uint64_t *handles,
+    void *hierarchy_context,
+    void *hierarchy_data)
+{
+    return impl_->InvokeInt64WithRuntimeArgsAndHandlesAndHierarchyContext(
+        name, buffers, integers, floats, handles,
+        hierarchy_context, hierarchy_data);
+}
+
+std::optional<int64_t>
+OrlJitEngine::InvokeInt64WithRuntimeArgsAndHandlesAndContexts(
+    const std::string &name,
+    void *const *buffers,
+    const int64_t *integers,
+    const double *floats,
+    const std::uint64_t *handles,
+    void *solver_context,
+    void *hierarchy_context,
+    void *hierarchy_data)
+{
+    return impl_->InvokeInt64WithRuntimeArgsAndHandlesAndContexts(
+        name, buffers, integers, floats, handles,
+        solver_context, hierarchy_context, hierarchy_data);
 }
 
 OrlJitTarget OrlJitEngine::Target() const {
@@ -602,12 +776,25 @@ struct OrlJitEngine::Impl {
         return std::nullopt;
     }
 
+    std::optional<int64_t> InvokeInt64WithRuntimeArgsAndHandles(
+        const std::string &, void *const *, const int64_t *,
+        const double *, const std::uint64_t *) {
+        return std::nullopt;
+    }
+
     std::optional<int64_t> InvokeInt64WithRuntimeArgsAndContext(
         const std::string &,
         void *const *,
         const int64_t *,
         const double *,
         void *) {
+        return std::nullopt;
+    }
+
+    std::optional<int64_t>
+    InvokeInt64WithRuntimeArgsAndHandlesAndContext(
+        const std::string &, void *const *, const int64_t *,
+        const double *, const std::uint64_t *, void *) {
         return std::nullopt;
     }
 
@@ -618,6 +805,13 @@ struct OrlJitEngine::Impl {
         const double *,
         void *,
         void *) {
+        return std::nullopt;
+    }
+
+    std::optional<int64_t>
+    InvokeInt64WithRuntimeArgsAndHandlesAndHierarchyContext(
+        const std::string &, void *const *, const int64_t *,
+        const double *, const std::uint64_t *, void *, void *) {
         return std::nullopt;
     }
 
@@ -632,8 +826,16 @@ struct OrlJitEngine::Impl {
         return std::nullopt;
     }
 
+    std::optional<int64_t>
+    InvokeInt64WithRuntimeArgsAndHandlesAndContexts(
+        const std::string &, void *const *, const int64_t *,
+        const double *, const std::uint64_t *, void *, void *, void *) {
+        return std::nullopt;
+    }
+
     OrlJitTarget target_kind_ = OrlJitTarget::Native;
     std::vector<std::string> errors_;
+    std::unordered_map<std::string, void*> runtime_symbols_;
 };
 
 OrlJitEngine::OrlJitEngine(
@@ -661,6 +863,12 @@ bool OrlJitEngine::LoadModuleWithOptimization(std::unique_ptr<llvm::Module> modu
 
 bool OrlJitEngine::LoadObject(std::span<const std::uint8_t> object) {
     return impl_->LoadObject(object);
+}
+
+void OrlJitEngine::RegisterRuntimeSymbol(
+    std::string name, void* address)
+{
+    impl_->runtime_symbols_[std::move(name)] = address;
 }
 
 std::optional<int64_t> OrlJitEngine::InvokeInt64(const std::string &name) {
@@ -716,6 +924,62 @@ std::optional<int64_t> OrlJitEngine::InvokeInt64WithRuntimeArgsAndContexts(
     return impl_->InvokeInt64WithRuntimeArgsAndContexts(
         name, buffers, integers, floats, solver_context,
         hierarchy_context, hierarchy_data);
+}
+
+std::optional<int64_t>
+OrlJitEngine::InvokeInt64WithRuntimeArgsAndHandles(
+    const std::string &name,
+    void *const *buffers,
+    const int64_t *integers,
+    const double *floats,
+    const std::uint64_t *handles)
+{
+    return impl_->InvokeInt64WithRuntimeArgsAndHandles(
+        name, buffers, integers, floats, handles);
+}
+
+std::optional<int64_t>
+OrlJitEngine::InvokeInt64WithRuntimeArgsAndHandlesAndContext(
+    const std::string &name,
+    void *const *buffers,
+    const int64_t *integers,
+    const double *floats,
+    const std::uint64_t *handles,
+    void *solver_context)
+{
+    return impl_->InvokeInt64WithRuntimeArgsAndHandlesAndContext(
+        name, buffers, integers, floats, handles, solver_context);
+}
+
+std::optional<int64_t>
+OrlJitEngine::InvokeInt64WithRuntimeArgsAndHandlesAndHierarchyContext(
+    const std::string &name,
+    void *const *buffers,
+    const int64_t *integers,
+    const double *floats,
+    const std::uint64_t *handles,
+    void *hierarchy_context,
+    void *hierarchy_data)
+{
+    return impl_->InvokeInt64WithRuntimeArgsAndHandlesAndHierarchyContext(
+        name, buffers, integers, floats, handles,
+        hierarchy_context, hierarchy_data);
+}
+
+std::optional<int64_t>
+OrlJitEngine::InvokeInt64WithRuntimeArgsAndHandlesAndContexts(
+    const std::string &name,
+    void *const *buffers,
+    const int64_t *integers,
+    const double *floats,
+    const std::uint64_t *handles,
+    void *solver_context,
+    void *hierarchy_context,
+    void *hierarchy_data)
+{
+    return impl_->InvokeInt64WithRuntimeArgsAndHandlesAndContexts(
+        name, buffers, integers, floats, handles,
+        solver_context, hierarchy_context, hierarchy_data);
 }
 
 OrlJitTarget OrlJitEngine::Target() const {

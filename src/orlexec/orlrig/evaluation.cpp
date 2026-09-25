@@ -1,5 +1,7 @@
 #include "evaluation.hpp"
 
+#include "graph_validation.hpp"
+
 #include <algorithm>
 #include <functional>
 #include <iterator>
@@ -55,23 +57,16 @@ bool is_kind(const ComponentStore& components, ComponentId id,
     return false;
 }
 
-void resolve_explicit_components(
-    const ComponentStore& components,
-    const std::vector<orlgraph::StableId>& selectors,
-    ExpectedKind expected,
-    std::vector<ComponentId>* output,
-    bool* global)
+std::optional<ExpectedKind> expected_kind_for_handle(
+    std::string_view canonical_type)
 {
-    for (const auto& selector : selectors) {
-        const auto* component = components.find(selector.value);
-        if (component == nullptr
-            || !is_kind(components, component->id, expected))
-        {
-            *global = true;
-            continue;
-        }
-        append_unique(output, component->id);
+    if (canonical_type == "orlrig::joint_handle") {
+        return ExpectedKind::Joint;
     }
+    if (canonical_type == "orlrig::locator_handle") {
+        return ExpectedKind::Locator;
+    }
+    return std::nullopt;
 }
 
 std::optional<ComponentId> constant_component(
@@ -83,7 +78,6 @@ std::optional<ComponentId> constant_component(
     // The input adapter nodes use a "name" parameter. Keeping this resolver
     // deliberately narrow makes unresolved symbolic selectors conservative.
     if (definition.qualified_name != "orlrig.input.find_joint"
-        && definition.qualified_name != "orlrig.input.find_controller"
         && definition.qualified_name != "orlrig.input.find_locator")
     {
         return std::nullopt;
@@ -170,88 +164,51 @@ ConnectedElement connected_element(
     return {};
 }
 
-struct PortFlags {
-    bool joint = false;
-    bool controller = false;
-    bool locator = false;
-};
-
-struct PortEntry {
-    std::string name;
-    PortFlags flags;
-};
-
-void note_port(std::vector<PortEntry>* ports, const std::vector<std::string>& names,
-    void (*mark)(PortFlags*))
-{
-    for (const auto& name : names) {
-        const auto found = std::find_if(ports->begin(), ports->end(),
-            [&](const PortEntry& entry) { return entry.name == name; });
-        PortEntry* entry = nullptr;
-        if (found == ports->end()) {
-            ports->push_back(PortEntry{name, {}});
-            entry = &ports->back();
-        } else {
-            entry = &*found;
-        }
-        mark(&entry->flags);
-    }
-}
-
-void resolve_element_ports(
+void resolve_handle_effects(
     const orlgraph::GraphModule& graph,
     const orlgraph::NodeRegistry& registry,
     const ComponentStore& components,
     const orlgraph::StableId& node_id,
-    const orlgraph::PartialEvaluationFootprint& footprint,
-    bool writing,
+    const std::vector<orlgraph::PartialEvaluationFootprint::HandleEffect>&
+        effects,
     SolverRegion* region,
     bool* global)
 {
-    std::vector<PortEntry> ports;
-    if (writing) {
-        note_port(&ports, footprint.write_joint_ports,
-            [](PortFlags* flags) { flags->joint = true; });
-        note_port(&ports, footprint.write_controller_ports,
-            [](PortFlags* flags) { flags->controller = true; });
-        note_port(&ports, footprint.write_locator_ports,
-            [](PortFlags* flags) { flags->locator = true; });
-    } else {
-        note_port(&ports, footprint.read_joint_ports,
-            [](PortFlags* flags) { flags->joint = true; });
-        note_port(&ports, footprint.read_controller_ports,
-            [](PortFlags* flags) { flags->controller = true; });
-        note_port(&ports, footprint.read_locator_ports,
-            [](PortFlags* flags) { flags->locator = true; });
-    }
-    for (const auto& entry : ports) {
+    for (const auto& effect : effects) {
+        const auto expected =
+            expected_kind_for_handle(effect.handle_type);
         const auto connected = connected_element(
-            graph, registry, components, node_id, entry.name);
-        const bool allowed = connected.kind == ConnectedKind::Joint
-                ? entry.flags.joint
-            : connected.kind == ConnectedKind::Controller
-                ? entry.flags.controller
-            : connected.kind == ConnectedKind::Locator
-                ? entry.flags.locator
-            : false;
-        if (!allowed) {
+            graph, registry, components, node_id,
+            effect.parameter.value);
+        if (!expected.has_value()
+            || (connected.kind == ConnectedKind::Joint
+                && *expected != ExpectedKind::Joint)
+            || (connected.kind == ConnectedKind::Locator
+                && *expected != ExpectedKind::Locator)
+            || (connected.kind != ConnectedKind::Joint
+                && connected.kind != ConnectedKind::Locator))
+        {
             *global = true;
             continue;
         }
-        if (writing) {
-            if (connected.kind == ConnectedKind::Joint) {
+        const bool reads = effect.access == orlgraph::AccessMode::Read
+            || effect.access == orlgraph::AccessMode::ReadWrite;
+        const bool writes = effect.access == orlgraph::AccessMode::Write
+            || effect.access == orlgraph::AccessMode::ReadWrite;
+        if (connected.kind == ConnectedKind::Joint) {
+            if (reads) {
+                append_unique(&region->read_joints, connected.id);
+            }
+            if (writes) {
                 append_unique(&region->write_joints, connected.id);
-            } else if (connected.kind == ConnectedKind::Controller) {
-                append_unique(&region->write_controllers, connected.id);
-            } else {
+            }
+        } else {
+            if (reads) {
+                append_unique(&region->read_locators, connected.id);
+            }
+            if (writes) {
                 append_unique(&region->write_locators, connected.id);
             }
-        } else if (connected.kind == ConnectedKind::Joint) {
-            append_unique(&region->read_joints, connected.id);
-        } else if (connected.kind == ConnectedKind::Controller) {
-            append_unique(&region->read_controllers, connected.id);
-        } else {
-            append_unique(&region->read_locators, connected.id);
         }
     }
 }
@@ -422,6 +379,17 @@ EvaluationPlanCompileResult compile_evaluation_plan(
     EvaluationPlan plan;
     plan.topology_revision = hierarchy.topology_revision;
 
+    const auto validation = orlgraph::validate(graph, registry);
+    if (!validation.ok()) {
+        for (const auto& diagnostic : validation.diagnostics) {
+            if (diagnostic.severity == orlgraph::DiagnosticSeverity::Error) {
+                result.errors.push_back(
+                    diagnostic.code + ": " + diagnostic.message);
+            }
+        }
+        return result;
+    }
+
     const auto schedule = orlgraph::topological_schedule(graph);
     if (!schedule.ok) {
         result.errors = schedule.errors;
@@ -463,29 +431,48 @@ EvaluationPlanCompileResult compile_evaluation_plan(
             region.supports_sparse_dispatch =
                 footprint.supports_sparse_dispatch;
             region.propagation = footprint.propagation;
-            resolve_explicit_components(components, footprint.read_joints,
-                ExpectedKind::Joint, &region.read_joints, &region.global);
-            resolve_explicit_components(components, footprint.write_joints,
-                ExpectedKind::Joint, &region.write_joints, &region.global);
-            resolve_explicit_components(components,
-                footprint.read_controllers, ExpectedKind::Controller,
-                &region.read_controllers, &region.global);
-            resolve_explicit_components(components, footprint.read_locators,
-                ExpectedKind::Locator, &region.read_locators, &region.global);
-            resolve_explicit_components(components,
-                footprint.write_controllers, ExpectedKind::Controller,
-                &region.write_controllers, &region.global);
-            resolve_explicit_components(components, footprint.write_locators,
-                ExpectedKind::Locator, &region.write_locators, &region.global);
             append_unique_stable_ids(&region.read_resources,
                 footprint.read_resources);
             append_unique_stable_ids(&region.write_resources,
                 footprint.write_resources);
 
-            resolve_element_ports(graph, registry, components, node_id,
-                footprint, false, &region, &region.global);
-            resolve_element_ports(graph, registry, components, node_id,
-                footprint, true, &region, &region.global);
+            resolve_handle_effects(
+                graph, registry, components, node_id,
+                footprint.handle_effects, &region, &region.global);
+            if (definition->qualified_name
+                == "orlrig.solver.ik_two_bone")
+            {
+                const auto connected_joint = [&](std::string_view port) {
+                    return connected_element(
+                        graph, registry, components, node_id, port);
+                };
+                const auto root = connected_joint("root");
+                const auto mid = connected_joint("mid");
+                const auto end = connected_joint("end");
+                if (root.kind == ConnectedKind::Joint
+                    && mid.kind == ConnectedKind::Joint
+                    && end.kind == ConnectedKind::Joint)
+                {
+                    const auto root_index =
+                        components.joint_index(root.id);
+                    const auto mid_index =
+                        components.joint_index(mid.id);
+                    const auto end_index =
+                        components.joint_index(end.id);
+                    const auto* mid_data = components.joint(mid.id);
+                    const auto* end_data = components.joint(end.id);
+                    if (root_index < 0 || mid_index < 0 || end_index < 0
+                        || mid_data == nullptr || end_data == nullptr
+                        || mid_data->parent != root_index
+                        || end_data->parent != mid_index)
+                    {
+                        result.errors.push_back(
+                            "Two-bone solver handles do not form a "
+                            "root-mid-end hierarchy at node '"
+                            + node_id.value + "'");
+                    }
+                }
+            }
         } else {
             // Missing metadata is deliberately opaque. It can never silently
             // become a sparse region.

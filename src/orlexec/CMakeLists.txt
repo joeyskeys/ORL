@@ -7,6 +7,8 @@ add_library(orlexec
     orl_exec.hpp
     orl_graph_exec.cpp
     orl_graph_exec.hpp
+    orlrig/handle_registry.cpp
+    orlrig/handle_registry.hpp
 )
 
 target_include_directories(orlexec
@@ -19,6 +21,14 @@ target_link_libraries(orlexec
         orlcomp_codegen
         orlcomp_graph_lowering
 )
+
+if(TARGET GLM::GLM)
+    target_link_libraries(orlexec PUBLIC GLM::GLM)
+elseif(TARGET glm::glm)
+    target_link_libraries(orlexec PUBLIC glm::glm)
+else()
+    target_include_directories(orlexec PUBLIC "${GLM_INCLUDE_DIRS}")
+endif()
 
 add_executable(orlc
     ../orlcomp/orlc_main.cpp

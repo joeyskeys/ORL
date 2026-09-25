@@ -20,6 +20,12 @@ struct Statement : AstNode {
     virtual ~Statement() = default;
 };
 
+struct AstSourceLocation {
+    std::string source = "<source>";
+    int line = 1;
+    int column = 1;
+};
+
 enum class UnaryOp : std::uint8_t {
     Plus,
     Minus,
@@ -68,6 +74,11 @@ struct BinaryExpression final : Expression {
     BinaryOp op = BinaryOp::Add;
     std::unique_ptr<Expression> left;
     std::unique_ptr<Expression> right;
+};
+
+struct HandleTestExpression final : Expression {
+    std::unique_ptr<Expression> operand;
+    std::string type_name;
 };
 
 struct AssignmentExpression final : Expression {
@@ -172,6 +183,14 @@ struct StructField {
 struct StructDefinitionStatement final : Statement {
     std::string name;
     std::vector<StructField> fields;
+};
+
+struct HandleDefinitionStatement final : Statement {
+    std::string name;
+    std::string canonical_name;
+    std::vector<std::string> accepted_handles;
+    bool open = false;
+    AstSourceLocation source;
 };
 
 struct FunctionMetadata {

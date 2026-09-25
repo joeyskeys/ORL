@@ -1,6 +1,7 @@
 #include "orl_graph_import.h"
 #include "orl_parser.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -48,6 +49,23 @@ orlgraph::AccessMode port_access(ParameterAccess access)
     return orlgraph::AccessMode::Read;
 }
 
+orlgraph::LogicalType graph_type(
+    const SemanticType& resolved, const orlgraph::LogicalType& fallback)
+{
+    if (resolved.kind == SemanticTypeKind::NominalHandle) {
+        return orlgraph::LogicalType::handle(resolved.canonical_name);
+    }
+    if (resolved.kind == SemanticTypeKind::HandleUnion) {
+        return orlgraph::LogicalType::handle_union(
+            resolved.canonical_name, resolved.accepted_handles);
+    }
+    if (resolved.kind == SemanticTypeKind::UniversalHandle) {
+        return orlgraph::LogicalType::handle_union(
+            "handle", {}, true);
+    }
+    return fallback;
+}
+
 orlgraph::Port make_input(const FunctionSummary& function,
     const FunctionParameterSummary& parameter)
 {
@@ -58,9 +76,11 @@ orlgraph::Port make_input(const FunctionSummary& function,
     port.cardinality = parameter.is_buffer
         ? orlgraph::PortCardinality::Buffer
         : orlgraph::PortCardinality::Scalar;
+    const auto element_type = graph_type(
+        parameter.resolved_type, parameter.logical_type);
     port.type = parameter.is_buffer
-        ? orlgraph::LogicalType::buffer(parameter.logical_type)
-        : parameter.logical_type;
+        ? orlgraph::LogicalType::buffer(element_type)
+        : element_type;
     port.domain = parameter.is_buffer
         ? orlgraph::Domain::buffer()
         : orlgraph::Domain::constant();
@@ -166,22 +186,34 @@ bool metadata_flag(const FunctionSummary& function, std::string_view key) {
 bool add_partial_footprint(const FunctionSummary& function,
     orlgraph::NodeDefinition* definition, std::string* error)
 {
-    const bool declared = function.metadata.contains("partial")
+    for (const auto key : {
+             "partial_read_joint_ports",
+             "partial_write_joint_ports",
+             "partial_read_controller_ports",
+             "partial_write_controller_ports",
+             "partial_read_locator_ports",
+             "partial_write_locator_ports",
+             "partial_read_joints",
+             "partial_write_joints",
+             "partial_read_controllers",
+             "partial_write_controllers",
+             "partial_read_locators",
+             "partial_write_locators",
+         })
+    {
+        if (function.metadata.contains(key)) {
+            if (error != nullptr) {
+                *error = std::string{"Kind-specific partial metadata '"} + key
+                    + "' was removed; use typed handle effects";
+            }
+            return false;
+        }
+    }
+    const bool declared = !function.handle_view_effects.empty()
+        || function.metadata.contains("partial")
         || function.metadata.contains("partial_propagation")
         || function.metadata.contains("partial_global")
         || function.metadata.contains("partial_sparse")
-        || function.metadata.contains("partial_read_joint_ports")
-        || function.metadata.contains("partial_write_joint_ports")
-        || function.metadata.contains("partial_read_controller_ports")
-        || function.metadata.contains("partial_write_controller_ports")
-        || function.metadata.contains("partial_read_locator_ports")
-        || function.metadata.contains("partial_write_locator_ports")
-        || function.metadata.contains("partial_read_joints")
-        || function.metadata.contains("partial_write_joints")
-        || function.metadata.contains("partial_read_controllers")
-        || function.metadata.contains("partial_write_controllers")
-        || function.metadata.contains("partial_read_locators")
-        || function.metadata.contains("partial_write_locators")
         || function.metadata.contains("partial_read_resources")
         || function.metadata.contains("partial_write_resources");
     if (!declared) {
@@ -227,43 +259,28 @@ bool add_partial_footprint(const FunctionSummary& function,
     } else {
         footprint.propagation = orlgraph::PartialPropagation::None;
     }
-    footprint.read_joint_ports = metadata_list(
-        function, "partial_read_joint_ports");
-    footprint.write_joint_ports = metadata_list(
-        function, "partial_write_joint_ports");
-    footprint.read_controller_ports = metadata_list(
-        function, "partial_read_controller_ports");
-    footprint.write_controller_ports = metadata_list(
-        function, "partial_write_controller_ports");
-    footprint.read_locator_ports = metadata_list(
-        function, "partial_read_locator_ports");
-    footprint.write_locator_ports = metadata_list(
-        function, "partial_write_locator_ports");
-    for (const auto& value :
-        metadata_list(function, "partial_read_controllers"))
-    {
-        footprint.read_controllers.push_back(orlgraph::StableId{value});
-    }
-    for (const auto& value :
-        metadata_list(function, "partial_write_controllers"))
-    {
-        footprint.write_controllers.push_back(orlgraph::StableId{value});
-    }
-    for (const auto& value :
-        metadata_list(function, "partial_read_locators"))
-    {
-        footprint.read_locators.push_back(orlgraph::StableId{value});
-    }
-    for (const auto& value :
-        metadata_list(function, "partial_write_locators"))
-    {
-        footprint.write_locators.push_back(orlgraph::StableId{value});
-    }
-    for (const auto& value : metadata_list(function, "partial_read_joints")) {
-        footprint.read_joints.push_back(orlgraph::StableId{value});
-    }
-    for (const auto& value : metadata_list(function, "partial_write_joints")) {
-        footprint.write_joints.push_back(orlgraph::StableId{value});
+    for (const auto& effect : function.handle_view_effects) {
+        const auto parameter = std::find_if(
+            function.parameters.begin(), function.parameters.end(),
+            [&](const FunctionParameterSummary& candidate) {
+                return candidate.name == effect.parameter;
+            });
+        if (parameter == function.parameters.end()
+            || !parameter->resolved_type.is_handle())
+        {
+            if (error != nullptr) {
+                *error = "Handle effect references a non-nominal parameter: "
+                    + effect.parameter;
+            }
+            return false;
+        }
+        footprint.handle_effects.push_back({
+            orlgraph::StableId{effect.parameter},
+            parameter->resolved_type.canonical_name,
+            effect.view_type,
+            effect.field,
+            port_access(effect.access),
+        });
     }
     for (const auto& value :
         metadata_list(function, "partial_read_resources"))
@@ -275,18 +292,7 @@ bool add_partial_footprint(const FunctionSummary& function,
     {
         footprint.write_resources.push_back(orlgraph::StableId{value});
     }
-    if (footprint.read_joint_ports.empty()
-        && footprint.write_joint_ports.empty()
-        && footprint.read_joints.empty()
-        && footprint.write_joints.empty()
-        && footprint.read_controller_ports.empty()
-        && footprint.write_controller_ports.empty()
-        && footprint.read_locator_ports.empty()
-        && footprint.write_locator_ports.empty()
-        && footprint.read_controllers.empty()
-        && footprint.write_controllers.empty()
-        && footprint.read_locators.empty()
-        && footprint.write_locators.empty()
+    if (footprint.handle_effects.empty()
         && footprint.read_resources.empty()
         && footprint.write_resources.empty())
     {
@@ -370,19 +376,6 @@ void stamp_stdlib_node(orlgraph::NodeDefinition* definition,
         }
         if (!port.semantic.empty()) {
             continue;
-        }
-        const bool index_buffer = port.cardinality
-                == orlgraph::PortCardinality::Buffer
-            && port.name == "target_indices"
-            && port.type.element != nullptr
-            && port.type.element->kind == orlgraph::LogicalTypeKind::Int64;
-        const bool index_scalar = port.cardinality
-                == orlgraph::PortCardinality::Scalar
-            && port.type.kind == orlgraph::LogicalTypeKind::Int64
-            && port.name != "iterations"
-            && !port.name.ends_with("_count");
-        if (index_buffer || index_scalar) {
-            port.semantic = "scene.array_index";
         }
     }
 
@@ -551,14 +544,17 @@ NodeImportResult import_node_definitions(const AnalysisResult& analysis,
             definition.effects.push_back(std::move(effect));
         }
 
-        if (function.return_type.kind != orlgraph::LogicalTypeKind::Void) {
+        if (function.return_type.kind != orlgraph::LogicalTypeKind::Void
+            || function.resolved_return_type.is_handle())
+        {
             orlgraph::Port output;
             output.id = orlgraph::StableId::from(
                 "orl.port", function.name + ".out.result");
             output.name = "result";
             output.direction = orlgraph::PortDirection::Output;
             output.cardinality = orlgraph::PortCardinality::Scalar;
-            output.type = function.return_type;
+            output.type = graph_type(
+                function.resolved_return_type, function.return_type);
             output.domain = orlgraph::Domain::constant();
             output.shape = orlgraph::Shape::scalar();
             output.required = false;
@@ -588,7 +584,7 @@ NodeImportResult import_node_definitions(std::string_view source,
     if (options.source_name.empty()) {
         options.source_name = "<source>";
     }
-    orlcomp::Parser parser(std::string{source});
+    orlcomp::Parser parser(std::string{source}, options.module_name);
     for (const auto& include_path : options.include_paths) {
         parser.AddIncludePath(include_path);
     }

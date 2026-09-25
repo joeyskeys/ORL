@@ -11,11 +11,13 @@
 #include <utility>
 
 #include "orl_codegen.h"
+#include "orl_analysis.h"
 #include "orl_gpu.h"
 #include "orl_jit.h"
 #include "orl_parser.h"
 #include "orl_runtime_signature.h"
 #include "orlrig/abi.hpp"
+#include "orlrig/handle_registry.hpp"
 
 #include <llvm/Config/llvm-config.h>
 #include <llvm/IR/LLVMContext.h>
@@ -95,6 +97,33 @@ const char* backend_label(Backend backend) {
     return backend == Backend::Cuda ? "CUDA" : "CPU";
 }
 
+void register_handle_view_symbols(orlcomp::OrlJitEngine& jit) {
+    jit.RegisterRuntimeSymbol(
+        "__orlrig_joint_read_i64",
+        reinterpret_cast<void*>(&orlrig::__orlrig_joint_read_i64));
+    jit.RegisterRuntimeSymbol(
+        "__orlrig_joint_write_i64",
+        reinterpret_cast<void*>(&orlrig::__orlrig_joint_write_i64));
+    jit.RegisterRuntimeSymbol(
+        "__orlrig_joint_read_vec4",
+        reinterpret_cast<void*>(&orlrig::__orlrig_joint_read_vec4));
+    jit.RegisterRuntimeSymbol(
+        "__orlrig_joint_write_vec4",
+        reinterpret_cast<void*>(&orlrig::__orlrig_joint_write_vec4));
+    jit.RegisterRuntimeSymbol(
+        "__orlrig_locator_read_matrix",
+        reinterpret_cast<void*>(&orlrig::__orlrig_locator_read_matrix));
+    jit.RegisterRuntimeSymbol(
+        "__orlrig_locator_write_matrix",
+        reinterpret_cast<void*>(&orlrig::__orlrig_locator_write_matrix));
+    jit.RegisterRuntimeSymbol(
+        "__orlrig_world_read_matrix",
+        reinterpret_cast<void*>(&orlrig::__orlrig_world_read_matrix));
+    jit.RegisterRuntimeSymbol(
+        "__orlrig_world_write_matrix",
+        reinterpret_cast<void*>(&orlrig::__orlrig_world_write_matrix));
+}
+
 std::string execution_cache_material(
     Backend backend, std::string_view source, std::string_view entry,
     std::string_view source_name,
@@ -105,7 +134,13 @@ std::string execution_cache_material(
     material += backend == Backend::Cuda ? "cuda\n" : "cpu\n";
     material += "target=";
     material += backend == Backend::Cuda ? "cuda-sm-52\n" : "native-host\n";
-    material += "runtime_abi=orl-runtime-signature-v1\n";
+    material += "runtime_abi=orl-runtime-signature-v2\n";
+    material += "handle_abi=";
+    material += orlcomp::kHandleAbiVersion;
+    material += "\n";
+    material += "handle_view_registry=";
+    material += orlcomp::global_handle_view_registry().fingerprint();
+    material += "\n";
     material += "llvm_version=";
     material += LLVM_VERSION_STRING;
     material += "\nhost_triple=";
@@ -140,6 +175,8 @@ orlcomp::OrlGpuKernelParameterType gpu_parameter_type(ParameterKind kind) {
         return orlcomp::OrlGpuKernelParameterType::Int64;
     case ParameterKind::Float64:
         return orlcomp::OrlGpuKernelParameterType::Float64;
+    case ParameterKind::Handle:
+        return orlcomp::OrlGpuKernelParameterType::Handle;
     case ParameterKind::Unsupported:
         return orlcomp::OrlGpuKernelParameterType::Unsupported;
     }
@@ -319,6 +356,14 @@ struct OrlProgram::Impl {
     CompileOptions options;
     std::vector<ParameterDesc> parameters;
     std::vector<std::string> errors;
+    bool handle_views = false;
+
+    bool has_handle_parameters() const {
+        return std::any_of(parameters.begin(), parameters.end(),
+            [](const ParameterDesc& parameter) {
+                return parameter.kind == ParameterKind::Handle;
+            });
+    }
 };
 
 OrlProgram::OrlProgram(std::shared_ptr<Impl> impl)
@@ -330,16 +375,55 @@ OrlProgram OrlProgram::Compile(std::string source, CompileOptions options) {
     auto impl = std::make_shared<Impl>();
     impl->source = std::move(source);
     impl->options = std::move(options);
+    std::string view_error;
+    if (!orlrig::register_rig_handle_views(
+            orlcomp::global_handle_view_registry(), &view_error))
+    {
+        impl->errors.push_back(
+            "ORL handle view registration failed: " + view_error);
+        return OrlProgram(std::move(impl));
+    }
+    impl->handle_views = impl->source.find("Joint(")
+            != std::string::npos
+        || impl->source.find("Locator(") != std::string::npos
+        || impl->source.find("WorldTransform(")
+            != std::string::npos;
 
-    orlcomp::Parser parser(impl->source);
+    orlcomp::Parser parser(
+        impl->source, impl->options.source_name);
     for (const auto& include_path : impl->options.include_paths) {
         parser.AddIncludePath(include_path);
     }
     if (!parse_source(impl->source, parser, impl->errors)) {
         return OrlProgram(std::move(impl));
     }
+    const auto analysis = orlcomp::SemanticAnalyzer{}.analyze(
+        *parser.Ast(), impl->options.source_name,
+        impl->options.handle_type_identities);
+    if (!analysis.ok()) {
+        for (const auto& diagnostic : analysis.diagnostics) {
+            impl->errors.push_back(
+                diagnostic.code + ": " + diagnostic.message);
+        }
+        return OrlProgram(std::move(impl));
+    }
+    orlcomp::HandleTypeRegistry handle_registry;
+    for (const auto& handle : analysis.handle_types) {
+        std::string collision_error;
+        if (!handle_registry.register_type(
+                handle.canonical_name, &collision_error))
+        {
+            impl->errors.push_back(
+                "ORL_RUNTIME_HANDLE_TYPE: " + collision_error);
+        }
+    }
+    if (!impl->errors.empty()) {
+        return OrlProgram(std::move(impl));
+    }
     const auto signature =
-        orlcomp::DescribeRuntimeFunction(*parser.Ast(), impl->options.entry_function);
+        orlcomp::DescribeRuntimeFunction(
+            *parser.Ast(), impl->options.entry_function,
+            impl->options.handle_type_identities);
     if (!signature.has_value()) {
         impl->errors.emplace_back("ORL entry function '" + impl->options.entry_function + "' was not found");
         return OrlProgram(std::move(impl));
@@ -359,7 +443,18 @@ OrlProgram OrlProgram::Compile(std::string source, CompileOptions options) {
             if (desc.element_stride == 0) {
                 desc.kind = ParameterKind::Unsupported;
             }
+        } else if (parameter.kind
+            == orlcomp::OrlRuntimeParameterKind::Handle) {
+            desc.kind = ParameterKind::Handle;
+            desc.canonical_type_name = parameter.canonical_type_name;
+            desc.handle_type_id = parameter.handle_type_id;
         } else {
+            if (parameter.type_name == "handle") {
+                impl->errors.emplace_back(
+                    "ORL_RUNTIME_HANDLE_UNSUPPORTED: universal handle "
+                    "parameters are not supported by this ABI");
+                continue;
+            }
             desc.kind = parameter.kind == orlcomp::OrlRuntimeParameterKind::Int64
                 ? ParameterKind::Int64
                 : parameter.kind == orlcomp::OrlRuntimeParameterKind::Float64
@@ -382,6 +477,18 @@ const std::string& OrlProgram::entry_function() const {
 
 const std::vector<ParameterDesc>& OrlProgram::parameters() const {
     return impl_->parameters;
+}
+
+bool OrlProgram::has_handle_parameters() const {
+    return impl_ != nullptr && std::any_of(
+        impl_->parameters.begin(), impl_->parameters.end(),
+        [](const ParameterDesc& parameter) {
+            return parameter.kind == ParameterKind::Handle;
+        });
+}
+
+bool OrlProgram::has_handle_views() const {
+    return impl_ != nullptr && impl_->handle_views;
 }
 
 const std::vector<std::string>& OrlProgram::errors() const {
@@ -422,6 +529,7 @@ struct OrlExecution::Impl {
     std::unordered_map<std::string, PackedBinding> packed_bindings;
     std::unordered_map<std::string, std::int64_t> integers;
     std::unordered_map<std::string, double> floats;
+    std::unordered_map<std::string, HandleValue> handles;
     std::unordered_map<OrlBuffer*, DeviceBuffer> device_buffers;
     std::optional<PackedStorage> packed_storage;
     DeviceBuffer packed_device;
@@ -429,6 +537,12 @@ struct OrlExecution::Impl {
     std::optional<OrlBuffer> hierarchy_context;
     std::unique_ptr<orlcomp::OrlJitEngine> jit;
     std::unique_ptr<orlcomp::OrlGpuEngine> gpu;
+    orlrig::HandleViewContext* handle_view_context = nullptr;
+    orlcomp::OrlGpuBuffer handle_context_device = 0;
+    orlcomp::OrlGpuBuffer handle_joint_device = 0;
+    orlcomp::OrlGpuBuffer handle_locator_device = 0;
+    std::size_t handle_joint_bytes = 0;
+    std::size_t handle_locator_bytes = 0;
     std::vector<std::string> errors;
     std::string ir;
     bool initialized = false;
@@ -437,6 +551,15 @@ struct OrlExecution::Impl {
     ~Impl() {
         release_device_bindings();
         if (gpu != nullptr) {
+            if (handle_context_device != 0) {
+                gpu->FreeBuffer(handle_context_device);
+            }
+            if (handle_joint_device != 0) {
+                gpu->FreeBuffer(handle_joint_device);
+            }
+            if (handle_locator_device != 0) {
+                gpu->FreeBuffer(handle_locator_device);
+            }
             for (const auto& [_, buffer] : device_buffers) {
                 if (buffer.handle != 0) {
                     gpu->FreeBuffer(buffer.handle);
@@ -492,7 +615,8 @@ struct OrlExecution::Impl {
 
     bool validate_bindings(std::vector<void*>& ordered_buffers,
         std::vector<std::int64_t>& ordered_integers,
-        std::vector<double>& ordered_floats)
+        std::vector<double>& ordered_floats,
+        std::vector<std::uint64_t>& ordered_handles)
     {
         errors.clear();
         for (const auto& parameter : program->parameters) {
@@ -589,6 +713,30 @@ struct OrlExecution::Impl {
                     continue;
                 }
                 ordered_integers.push_back(bound->second);
+            } else if (parameter.kind == ParameterKind::Handle) {
+                const auto bound = handles.find(parameter.name);
+                if (bound == handles.end()) {
+                    errors.emplace_back(
+                        "Missing handle binding for parameter '"
+                        + parameter.name + "'");
+                    continue;
+                }
+                if (!orlcomp::IsValidHandleValue(bound->second)) {
+                    errors.emplace_back(
+                        "Invalid handle binding for parameter '"
+                        + parameter.name + "'");
+                    continue;
+                }
+                if (bound->second.type_id != parameter.handle_type_id) {
+                    errors.emplace_back(
+                        "Handle type mismatch for parameter '"
+                        + parameter.name + "': expected "
+                        + parameter.canonical_type_name);
+                    continue;
+                }
+                ordered_handles.push_back(bound->second.type_id);
+                ordered_handles.push_back(
+                    static_cast<std::uint64_t>(bound->second.slot));
             } else {
                 const auto bound = floats.find(parameter.name);
                 if (bound == floats.end()) {
@@ -695,6 +843,116 @@ struct OrlExecution::Impl {
         return true;
     }
 
+    bool ensure_handle_context_device(
+        std::size_t* upload_calls, std::size_t* upload_bytes)
+    {
+        if (handle_view_context == nullptr) {
+            errors.emplace_back(
+                "CUDA view access requires a bound handle context");
+            return false;
+        }
+        const auto upload_arena = [&](const orlrig::HandleStorage& storage,
+            orlcomp::OrlGpuBuffer* device_handle,
+            std::size_t* device_bytes) {
+            if (storage.data == nullptr || storage.count == 0
+                || storage.stride == 0)
+            {
+                *device_handle = 0;
+                *device_bytes = 0;
+                return true;
+            }
+            if (storage.count > std::numeric_limits<std::size_t>::max()
+                    / storage.stride)
+            {
+                errors.emplace_back("Handle arena size overflows");
+                return false;
+            }
+            const std::size_t bytes = storage.count * storage.stride;
+            if (*device_handle == 0 || *device_bytes != bytes) {
+                if (*device_handle != 0) {
+                    gpu->FreeBuffer(*device_handle);
+                }
+                const auto allocated = gpu->AllocateBuffer(bytes);
+                if (!allocated.has_value()) {
+                    append_errors(errors, gpu->Errors());
+                    return false;
+                }
+                *device_handle = *allocated;
+                *device_bytes = bytes;
+            }
+            if (!gpu->UploadBuffer(
+                    *device_handle, storage.data, bytes))
+            {
+                append_errors(errors, gpu->Errors());
+                return false;
+            }
+            if (upload_calls != nullptr) {
+                ++*upload_calls;
+            }
+            if (upload_bytes != nullptr) {
+                *upload_bytes += bytes;
+            }
+            return true;
+        };
+        if (!upload_arena(handle_view_context->joints,
+                &handle_joint_device, &handle_joint_bytes)
+            || !upload_arena(handle_view_context->locators,
+                &handle_locator_device, &handle_locator_bytes))
+        {
+            return false;
+        }
+        orlcomp::HandleDeviceContext device_context;
+        const auto joint_pointer = handle_joint_device == 0
+            ? std::optional<std::uint64_t>{}
+            : gpu->DeviceBufferPointer(handle_joint_device);
+        const auto locator_pointer = handle_locator_device == 0
+            ? std::optional<std::uint64_t>{}
+            : gpu->DeviceBufferPointer(handle_locator_device);
+        if (handle_joint_device != 0 && !joint_pointer.has_value()) {
+            append_errors(errors, gpu->Errors());
+            return false;
+        }
+        if (handle_locator_device != 0 && !locator_pointer.has_value()) {
+            append_errors(errors, gpu->Errors());
+            return false;
+        }
+        device_context.joint_arena =
+            joint_pointer.value_or(0);
+        device_context.locator_arena =
+            locator_pointer.value_or(0);
+        device_context.joint_count = handle_view_context->joints.count;
+        device_context.locator_count = handle_view_context->locators.count;
+        device_context.joint_stride = handle_view_context->joints.stride;
+        device_context.locator_stride = handle_view_context->locators.stride;
+        device_context.topology_revision =
+            handle_view_context->topology_revision;
+        device_context.flags =
+            (handle_view_context->joints.writable ? 1ull : 0ull)
+            | (handle_view_context->locators.writable ? 2ull : 0ull);
+        if (handle_context_device == 0) {
+            const auto allocated = gpu->AllocateBuffer(
+                sizeof(device_context));
+            if (!allocated.has_value()) {
+                append_errors(errors, gpu->Errors());
+                return false;
+            }
+            handle_context_device = *allocated;
+        }
+        if (!gpu->UploadBuffer(handle_context_device,
+                &device_context, sizeof(device_context)))
+        {
+            append_errors(errors, gpu->Errors());
+            return false;
+        }
+        if (upload_calls != nullptr) {
+            ++*upload_calls;
+        }
+        if (upload_bytes != nullptr) {
+            *upload_bytes += sizeof(device_context);
+        }
+        return true;
+    }
+
     void configure_cached_gpu_parameters() {
         if (gpu == nullptr) {
             return;
@@ -702,8 +960,20 @@ struct OrlExecution::Impl {
         std::vector<orlcomp::OrlGpuKernelParameter> parameters;
         parameters.reserve(program->parameters.size());
         for (const auto& parameter : program->parameters) {
+            orlcomp::OrlGpuKernelParameter reflected{
+                parameter.name, gpu_parameter_type(parameter.kind)};
+            if (parameter.kind == ParameterKind::Handle) {
+                reflected.byte_size = sizeof(HandleValue);
+                reflected.alignment = alignof(HandleValue);
+                reflected.lane_count = 2;
+                reflected.lane_order = "type_id,slot";
+            }
+            parameters.push_back(std::move(reflected));
+        }
+        if (program->handle_views) {
             parameters.push_back({
-                parameter.name, gpu_parameter_type(parameter.kind)});
+                std::string{orlcomp::kHandleContextParameterName},
+                orlcomp::OrlGpuKernelParameterType::Buffer});
         }
         gpu->SetCudaEntryParameters(std::move(parameters));
     }
@@ -725,6 +995,7 @@ struct OrlExecution::Impl {
 
         jit = std::make_unique<orlcomp::OrlJitEngine>(
             orlcomp::OrlJitTarget::Native, cache_options);
+        register_handle_view_symbols(*jit);
         if (!jit->LoadObject(object)) {
             jit.reset();
             return false;
@@ -792,7 +1063,8 @@ struct OrlExecution::Impl {
         if (try_load_cached_cpu() || try_load_cached_gpu()) {
             return true;
         }
-        orlcomp::Parser parser(program->source);
+        orlcomp::Parser parser(
+            program->source, program->options.source_name);
         for (const auto& include_path : program->options.include_paths) {
             parser.AddIncludePath(include_path);
         }
@@ -807,6 +1079,8 @@ struct OrlExecution::Impl {
             ? orlcomp::OrlCodegenTarget::Host
             : orlcomp::OrlCodegenTarget::Cuda;
         orlcomp::LlvmIrCodegen codegen(program->options.source_name, target);
+        codegen.SetHandleTypeIdentities(
+            program->options.handle_type_identities);
         if (!codegen.Generate(*parser.Ast())) {
             append_errors(errors, codegen.Errors());
             print_jit(program->options.entry_function, backend, program->options.source_name,
@@ -819,6 +1093,7 @@ struct OrlExecution::Impl {
         if (backend == Backend::Cpu) {
             jit = std::make_unique<orlcomp::OrlJitEngine>(
                 orlcomp::OrlJitTarget::Native, cache_options);
+            register_handle_view_symbols(*jit);
             if (!jit->LoadModuleWithOptimization(
                     codegen.ReleaseModule(), codegen.ReleaseContext(),
                     orlcomp::OrlOptimizationLevel::O2, cache_key))
@@ -889,11 +1164,25 @@ OrlExecution OrlExecution::Create(
     auto impl = std::make_unique<Impl>();
     impl->backend = backend;
     impl->cache_options = std::move(cache);
-    if (!program.valid()) {
-        append_errors(impl->errors, program.errors());
+    std::string view_error;
+    if (!orlrig::register_rig_handle_views(
+            orlcomp::global_handle_view_registry(), &view_error))
+    {
+        impl->errors.push_back(
+            "ORL handle view registration failed: " + view_error);
         return OrlExecution(std::move(impl));
     }
-    impl->program = program.impl_;
+    OrlProgram active_program = program;
+    if (!active_program.valid() && active_program.impl_ != nullptr) {
+        active_program = OrlProgram::Compile(
+            active_program.impl_->source,
+            active_program.impl_->options);
+    }
+    if (!active_program.valid()) {
+        append_errors(impl->errors, active_program.errors());
+        return OrlExecution(std::move(impl));
+    }
+    impl->program = active_program.impl_;
     impl->cache_key = orlcomp::make_binary_cache_key(
         execution_cache_material(
             backend,
@@ -1115,6 +1404,54 @@ bool OrlExecution::bind_float(std::string_view parameter, double value) {
     return true;
 }
 
+bool OrlExecution::bind_handle(
+    std::string_view parameter, HandleValue value)
+{
+    impl_->errors.clear();
+    if (!impl_->initialized) {
+        impl_->errors.emplace_back("ORL execution was not initialized");
+        return false;
+    }
+    const auto* desc = impl_->parameter(parameter);
+    if (desc == nullptr || desc->kind != ParameterKind::Handle) {
+        impl_->errors.emplace_back(
+            "Parameter '" + std::string(parameter)
+            + "' is not a handle");
+        return false;
+    }
+    if (!orlcomp::IsValidHandleValue(value)) {
+        impl_->errors.emplace_back(
+            "Handle parameter '" + std::string(parameter)
+            + "' received an invalid token");
+        return false;
+    }
+    if (value.type_id != desc->handle_type_id) {
+        impl_->errors.emplace_back(
+            "Handle parameter '" + std::string(parameter)
+            + "' expects nominal type '" + desc->canonical_type_name + "'");
+        return false;
+    }
+    impl_->handles[std::string(parameter)] = value;
+    return true;
+}
+
+bool OrlExecution::bind_handle_view_context(
+    orlrig::HandleViewContext& context)
+{
+    impl_->errors.clear();
+    if (!impl_->initialized) {
+        impl_->errors.emplace_back("ORL execution was not initialized");
+        return false;
+    }
+    if (!context.topology_revision) {
+        impl_->errors.emplace_back(
+            "Handle view context requires a topology revision");
+        return false;
+    }
+    impl_->handle_view_context = &context;
+    return true;
+}
+
 bool OrlExecution::set_solver_context(
     std::int64_t joint_count, std::int64_t controller_count)
 {
@@ -1223,6 +1560,7 @@ void OrlExecution::clear_bindings() {
     impl_->packed_storage.reset();
     impl_->integers.clear();
     impl_->floats.clear();
+    impl_->handles.clear();
 }
 
 bool OrlExecution::valid() const {
@@ -1237,10 +1575,16 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
         }
         return std::nullopt;
     }
+    std::optional<orlrig::ScopedHandleViewContext> active_view_context;
+    if (impl_->handle_view_context != nullptr) {
+        active_view_context.emplace(impl_->handle_view_context);
+    }
     std::vector<void*> host_buffers;
     std::vector<std::int64_t> integers;
     std::vector<double> floats;
-    if (!impl_->validate_bindings(host_buffers, integers, floats)) {
+    std::vector<std::uint64_t> handles;
+    if (!impl_->validate_bindings(
+            host_buffers, integers, floats, handles)) {
         return std::nullopt;
     }
 
@@ -1255,7 +1599,47 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
         void* solver_context_data = impl_->solver_context_data();
         const bool has_hierarchy_context =
             impl_->hierarchy_context.has_value();
-        if (has_solver_context && has_hierarchy_context) {
+        const bool has_handles = std::any_of(
+            impl_->program->parameters.begin(),
+            impl_->program->parameters.end(),
+            [](const ParameterDesc& parameter) {
+                return parameter.kind == ParameterKind::Handle;
+            });
+        const auto* handle_lanes = has_handles ? handles.data() : nullptr;
+        if (has_handles && has_solver_context && has_hierarchy_context) {
+            result = impl_->jit
+                ->InvokeInt64WithRuntimeArgsAndHandlesAndContexts(
+                    wrapper, host_buffers.data(), integers.data(),
+                    floats.data(), handle_lanes,
+                    solver_context_data,
+                    const_cast<void*>(static_cast<const OrlBuffer&>(
+                        *impl_->hierarchy_context).data()),
+                    const_cast<void*>(static_cast<const OrlBuffer&>(
+                        *impl_->buffers.at(
+                            std::string(orlcomp::kHierarchyDataParameterName)))
+                        .data()));
+        } else if (has_handles && has_solver_context) {
+            result = impl_->jit
+                ->InvokeInt64WithRuntimeArgsAndHandlesAndContext(
+                    wrapper, host_buffers.data(), integers.data(),
+                    floats.data(), handle_lanes, solver_context_data);
+        } else if (has_handles && has_hierarchy_context) {
+            result = impl_->jit
+                ->InvokeInt64WithRuntimeArgsAndHandlesAndHierarchyContext(
+                    wrapper, host_buffers.data(), integers.data(),
+                    floats.data(), handle_lanes,
+                    const_cast<void*>(static_cast<const OrlBuffer&>(
+                        *impl_->hierarchy_context).data()),
+                    const_cast<void*>(static_cast<const OrlBuffer&>(
+                        *impl_->buffers.at(
+                            std::string(orlcomp::kHierarchyDataParameterName)))
+                        .data()));
+        } else if (has_handles) {
+            result = impl_->jit
+                ->InvokeInt64WithRuntimeArgsAndHandles(
+                    wrapper, host_buffers.data(), integers.data(),
+                    floats.data(), handle_lanes);
+        } else if (has_solver_context && has_hierarchy_context) {
             result = impl_->jit->InvokeInt64WithRuntimeArgsAndContexts(
                 wrapper, host_buffers.data(), integers.data(), floats.data(),
                 solver_context_data,
@@ -1374,6 +1758,29 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
             argument.scalar_bytes.resize(sizeof(value));
             std::memcpy(argument.scalar_bytes.data(), &value, sizeof(value));
             arguments.push_back(std::move(argument));
+        } else if (parameter.kind == ParameterKind::Handle) {
+            orlcomp::OrlGpuKernelArgument argument;
+            argument.scalar_type = orlcomp::OrlGpuKernelParameterType::Handle;
+            argument.scalar_bytes.resize(
+                sizeof(std::uint64_t) * 2);
+            argument.scalar_alignment = alignof(HandleValue);
+            argument.lane_count = 2;
+            argument.lane_order = "type_id,slot";
+            const auto found = impl_->handles.find(parameter.name);
+            if (found == impl_->handles.end()) {
+                impl_->errors.emplace_back(
+                    "Missing handle binding for parameter '"
+                    + parameter.name + "'");
+                return std::nullopt;
+            }
+            std::memcpy(argument.scalar_bytes.data(),
+                &found->second.type_id, sizeof(std::uint64_t));
+            const auto slot = static_cast<std::uint64_t>(
+                found->second.slot);
+            std::memcpy(argument.scalar_bytes.data()
+                    + sizeof(std::uint64_t),
+                &slot, sizeof(std::uint64_t));
+            arguments.push_back(std::move(argument));
         } else {
             orlcomp::OrlGpuKernelArgument argument;
             argument.scalar_type = orlcomp::OrlGpuKernelParameterType::Float64;
@@ -1382,6 +1789,19 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
             std::memcpy(argument.scalar_bytes.data(), &value, sizeof(value));
             arguments.push_back(std::move(argument));
         }
+    }
+    if (impl_->program->handle_views) {
+        if (!impl_->ensure_handle_context_device(
+                &upload_calls, &upload_bytes))
+        {
+            return std::nullopt;
+        }
+        orlcomp::OrlGpuKernelArgument argument;
+        argument.is_buffer = true;
+        argument.buffer = impl_->handle_context_device;
+        argument.scalar_type =
+            orlcomp::OrlGpuKernelParameterType::Buffer;
+        arguments.push_back(std::move(argument));
     }
 
     if (!impl_->gpu->SetupCudaKernelArguments(orlcomp::OrlGpuEngine::CudaEntryKernelName,
@@ -1422,6 +1842,30 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
                 return std::nullopt;
             }
         }
+        if (impl_->handle_view_context != nullptr) {
+            const auto download_handle_arena =
+                [&](const orlrig::HandleStorage& storage,
+                    orlcomp::OrlGpuBuffer device,
+                    std::size_t bytes) -> bool {
+                if (!storage.writable || device == 0 || bytes == 0) {
+                    return true;
+                }
+                return impl_->gpu->DownloadBuffer(
+                    device, storage.data, bytes);
+            };
+            if (!download_handle_arena(
+                    impl_->handle_view_context->joints,
+                    impl_->handle_joint_device,
+                    impl_->handle_joint_bytes)
+                || !download_handle_arena(
+                    impl_->handle_view_context->locators,
+                    impl_->handle_locator_device,
+                    impl_->handle_locator_bytes))
+            {
+                append_errors(impl_->errors, impl_->gpu->Errors());
+                return std::nullopt;
+            }
+        }
 
         if (!impl_->gpu->ReadCudaGlobalInt32(
                 orlcomp::OrlGpuEngine::CudaResultSymbolName, &result))
@@ -1437,7 +1881,11 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
 }
 
 std::optional<std::int64_t> OrlExecution::evaluate(std::uint32_t element_count) {
-    return evaluate_impl(element_count, true);
+    const auto result = evaluate_impl(element_count, true);
+    if (impl_ != nullptr) {
+        impl_->handles.clear();
+    }
+    return result;
 }
 
 bool OrlExecution::evaluate_device(std::uint32_t element_count) {
@@ -1448,7 +1896,9 @@ bool OrlExecution::evaluate_device(std::uint32_t element_count) {
         }
         return false;
     }
-    return evaluate_impl(element_count, false).has_value();
+    const auto result = evaluate_impl(element_count, false).has_value();
+    impl_->handles.clear();
+    return result;
 }
 
 std::optional<DeviceBufferView> OrlExecution::device_buffer_view(

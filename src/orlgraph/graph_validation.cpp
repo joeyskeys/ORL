@@ -36,6 +36,16 @@ struct EndpointInfo {
     bool valid = false;
 };
 
+std::string type_mismatch_message(
+    std::string_view prefix,
+    const LogicalType& source,
+    const LogicalType& destination)
+{
+    return std::string{prefix} + ": cannot use '"
+        + source.canonical_name() + "' where '"
+        + destination.canonical_name() + "' is required";
+}
+
 EndpointInfo endpoint_info(const GraphModule& module,
     const NodeRegistry& registry, const Endpoint& endpoint, bool source)
 {
@@ -116,7 +126,7 @@ bool shape_compatible(const Shape& source, const Shape& destination) {
 }
 
 bool port_contract_matches(const Port& left, const Port& right) {
-    return left.type == right.type
+    return is_assignable(left.type, right.type)
         && left.cardinality == right.cardinality
         && left.domain == right.domain
         && left.shape == right.shape
@@ -125,7 +135,7 @@ bool port_contract_matches(const Port& left, const Port& right) {
 }
 
 bool endpoint_contract_matches(const EndpointInfo& endpoint, const Port& port) {
-    return endpoint.type == port.type
+    return is_assignable(endpoint.type, port.type)
         && endpoint.cardinality == port.cardinality
         && endpoint.domain == port.domain
         && endpoint.shape == port.shape
@@ -181,6 +191,56 @@ ValidationResult validate(const GraphModule& module,
                 "Node definition is not available in the selected graph stage: "
                     + definition->qualified_name,
                 node_id);
+        }
+        const auto validate_port = [&result, &node_id](
+            const Port& port, std::string_view direction) {
+            if (port.type.is_handle()
+                && port.cardinality != PortCardinality::Scalar)
+            {
+                result.error("ORLGRAPH_HANDLE_CARDINALITY",
+                    "Handle " + std::string{direction}
+                        + " port must be scalar: " + port.name,
+                    node_id, port.id);
+            }
+            if (port.type.is_handle()
+                && !(port.type.is_open_handle()
+                    ? port.type.name == "handle"
+                    : is_valid_handle_name(port.type.name)))
+            {
+                result.error("ORLGRAPH_INVALID_HANDLE_TYPE",
+                    "Handle port has an invalid canonical type name: "
+                        + port.type.name,
+                    node_id, port.id);
+            }
+            if (contains_handle(port.type) && !port.type.is_handle())
+            {
+                result.error("ORLGRAPH_HANDLE_CARDINALITY",
+                    "Handle collections are not supported: " + port.name,
+                    node_id, port.id);
+            }
+            if (port.default_value.has_value()
+                && contains_handle(port.default_value->type))
+            {
+                result.error("ORLGRAPH_HANDLE_CONSTANT",
+                    "Handle constants are not supported: " + port.name,
+                    node_id, port.id);
+            }
+        };
+        for (const auto& port : definition->inputs) {
+            validate_port(port, "input");
+        }
+        for (const auto& port : definition->outputs) {
+            validate_port(port, "output");
+        }
+        for (const auto& parameter : definition->parameters) {
+            if (parameter.default_value.has_value()
+                && contains_handle(parameter.default_value->type))
+            {
+                result.error("ORLGRAPH_HANDLE_CONSTANT",
+                    "Handle parameter defaults are not supported: "
+                        + parameter.name,
+                    node_id);
+            }
         }
 
         std::set<StableId> port_ids;
@@ -289,9 +349,15 @@ ValidationResult validate(const GraphModule& module,
             if (parameter == nullptr) {
                 result.error("ORLGRAPH_UNKNOWN_PARAMETER",
                     "Node parameter is not declared: " + name, node_id);
-            } else if (parameter->type != value.type) {
+            } else if (contains_handle(value.type)) {
+                result.error("ORLGRAPH_HANDLE_CONSTANT",
+                    "Handle constants are not supported: " + name, node_id);
+            } else if (!is_assignable(value.type, parameter->type)) {
                 result.error("ORLGRAPH_PARAMETER_TYPE",
-                    "Node parameter has incompatible type: " + name, node_id);
+                    type_mismatch_message(
+                        "Node parameter has incompatible type",
+                        value.type, parameter->type) + " (" + name + ")",
+                    node_id);
             }
         }
 
@@ -314,10 +380,18 @@ ValidationResult validate(const GraphModule& module,
                     result.error("ORLGRAPH_MISSING_CONSTANT",
                         "Constant parameter mapping has no value: "
                             + mapping.parameter, node_id);
-                } else if (mapping.constant->type != parameter->type) {
-                    result.error("ORLGRAPH_PARAMETER_TYPE",
-                        "Constant parameter mapping has an incompatible type: "
+                } else if (contains_handle(mapping.constant->type)) {
+                    result.error("ORLGRAPH_HANDLE_CONSTANT",
+                        "Handle constants are not supported: "
                             + mapping.parameter, node_id);
+                } else if (!is_assignable(
+                        mapping.constant->type, parameter->type)) {
+                    result.error("ORLGRAPH_PARAMETER_TYPE",
+                        type_mismatch_message(
+                            "Constant parameter mapping has an incompatible type",
+                            mapping.constant->type, parameter->type)
+                            + " (" + mapping.parameter + ")",
+                        node_id);
                 }
                 continue;
             }
@@ -329,12 +403,15 @@ ValidationResult validate(const GraphModule& module,
                     result.error("ORLGRAPH_INVALID_PARAMETER_SOURCE",
                         "Parameter mapping source does not resolve: "
                             + mapping.parameter, node_id);
-                } else if (source.type != parameter->type
+                } else if (!is_assignable(source.type, parameter->type)
                     && mapping.conversion.empty())
                 {
                     result.error("ORLGRAPH_PARAMETER_TYPE",
-                        "Parameter mapping requires an explicit conversion: "
-                            + mapping.parameter, node_id);
+                        type_mismatch_message(
+                            "Parameter mapping requires an explicit conversion",
+                            source.type, parameter->type)
+                            + " (" + mapping.parameter + ")",
+                        node_id);
                 }
                 continue;
             }
@@ -356,11 +433,51 @@ ValidationResult validate(const GraphModule& module,
             result.error("ORLGRAPH_INTERFACE_DIRECTION",
                 "Graph input has invalid direction", {}, id);
         }
+        if (contains_handle(input.type) && !input.type.is_handle())
+        {
+            result.error("ORLGRAPH_HANDLE_CARDINALITY",
+                "Handle graph input collections are not supported", {}, id);
+        }
+        if (input.type.is_handle()
+            && !(input.type.is_open_handle()
+                ? input.type.name == "handle"
+                : is_valid_handle_name(input.type.name)))
+        {
+            result.error("ORLGRAPH_INVALID_HANDLE_TYPE",
+                "Graph input has an invalid canonical handle type name",
+                {}, id);
+        }
+        if (input.default_value.has_value()
+            && contains_handle(input.default_value->type))
+        {
+            result.error("ORLGRAPH_HANDLE_CONSTANT",
+                "Handle constants are not supported", {}, id);
+        }
     }
     for (const auto& [id, output] : module.outputs()) {
         if (output.direction != PortDirection::Output) {
             result.error("ORLGRAPH_INTERFACE_DIRECTION",
                 "Graph output has invalid direction", {}, id);
+        }
+        if (contains_handle(output.type) && !output.type.is_handle())
+        {
+            result.error("ORLGRAPH_HANDLE_CARDINALITY",
+                "Handle graph output collections are not supported", {}, id);
+        }
+        if (output.type.is_handle()
+            && !(output.type.is_open_handle()
+                ? output.type.name == "handle"
+                : is_valid_handle_name(output.type.name)))
+        {
+            result.error("ORLGRAPH_INVALID_HANDLE_TYPE",
+                "Graph output has an invalid canonical handle type name",
+                {}, id);
+        }
+        if (output.default_value.has_value()
+            && contains_handle(output.default_value->type))
+        {
+            result.error("ORLGRAPH_HANDLE_CONSTANT",
+                "Handle constants are not supported", {}, id);
         }
     }
 
@@ -433,9 +550,12 @@ ValidationResult validate(const GraphModule& module,
                     "destination contracts");
             }
         }
-        if (source.type != destination.type && connection.conversion.empty()) {
+        if (!is_assignable(source.type, destination.type)
+            && connection.conversion.empty()) {
             result.error("ORLGRAPH_TYPE_MISMATCH",
-                "Connection requires an explicit conversion");
+                type_mismatch_message(
+                    "Connection requires an explicit conversion",
+                    source.type, destination.type));
         }
         if (!source.semantic.empty() && !destination.semantic.empty()
             && source.semantic != destination.semantic

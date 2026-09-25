@@ -417,10 +417,6 @@ void PropertyEditor::apply_component_name()
         find_node = "orlrig.input.find_joint";
     } else if (focus != nullptr && focus->kind == SelectionRef::Kind::Locator) {
         find_node = "orlrig.input.find_locator";
-    } else if (focus != nullptr
-        && focus->kind == SelectionRef::Kind::Controller)
-    {
-        find_node = "orlrig.input.find_controller";
     }
     if (find_node == nullptr) {
         return;

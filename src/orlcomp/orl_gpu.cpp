@@ -166,6 +166,18 @@ struct OrlGpuEngine::Impl {
                 parameter.type = OrlGpuKernelParameterType::Int64;
             } else if (argument.getType()->isDoubleTy()) {
                 parameter.type = OrlGpuKernelParameterType::Float64;
+            } else if (argument.getType()->isStructTy()
+                && argument.getType()->getStructNumElements() == 2
+                && argument.getType()->getStructElementType(0)
+                    ->isIntegerTy(64)
+                && argument.getType()->getStructElementType(1)
+                    ->isIntegerTy(64))
+            {
+                parameter.type = OrlGpuKernelParameterType::Handle;
+                parameter.byte_size = sizeof(HandleValue);
+                parameter.alignment = alignof(HandleValue);
+                parameter.lane_count = 2;
+                parameter.lane_order = "type_id,slot";
             } else {
                 parameter.type = OrlGpuKernelParameterType::Unsupported;
             }
@@ -616,6 +628,23 @@ struct OrlGpuEngine::Impl {
             if (!matches) {
                 const std::string name = parameter.name.empty() ? std::to_string(i) : parameter.name;
                 errors_.push_back("CUDA kernel argument type mismatch for parameter '" + name + "'");
+                return false;
+            }
+            if (parameter.type == OrlGpuKernelParameterType::Handle
+                && (argument.scalar_bytes.size() != sizeof(HandleValue)
+                    || argument.scalar_alignment != alignof(HandleValue)
+                    || argument.lane_count != 2
+                    || argument.lane_order != "type_id,slot"
+                    || parameter.byte_size != sizeof(HandleValue)
+                    || parameter.alignment != alignof(HandleValue)
+                    || parameter.lane_count != 2
+                    || parameter.lane_order != "type_id,slot"))
+            {
+                const std::string name = parameter.name.empty()
+                    ? std::to_string(i) : parameter.name;
+                errors_.push_back(
+                    "CUDA handle argument for parameter '" + name
+                    + "' has an invalid two-lane ABI layout");
                 return false;
             }
         }

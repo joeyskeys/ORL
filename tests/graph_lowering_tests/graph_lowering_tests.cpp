@@ -5,9 +5,12 @@
 #include <orlgraph/orlgraph.hpp>
 
 #include "orl_graph_exec.hpp"
+#include "orl_graph_lowering.h"
 #include "orlrig/abi.hpp"
 #include "orlrig/graph_resources.hpp"
+#include "orlrig/handle_registry.hpp"
 #include "orlrig/joint.hpp"
+#include "orlrig/locator.hpp"
 
 using namespace orlgraph;
 using namespace ORL::exec;
@@ -121,6 +124,41 @@ GraphModule make_buffer_graph() {
     return module;
 }
 
+TEST_CASE("graph lowering preserves exact handle lane inputs and outputs",
+    "[orl][graph][lowering][handle]")
+{
+    GraphModule module;
+    module.module_id = "lowering.handle";
+    const auto handle = LogicalType::handle("orlrig::joint_handle");
+    REQUIRE(module.add_input(InterfacePort{
+        StableId{"handle"}, "handle", PortDirection::Input,
+        handle, Domain::rig(), Shape::scalar(), true,
+        std::nullopt, false, "scene.rig.handle", {}, {}}));
+    REQUIRE(module.add_output(InterfacePort{
+        StableId{"result"}, "result", PortDirection::Output,
+        handle, Domain::rig(), Shape::scalar(), true,
+        std::nullopt, false, "result", {}, {}}));
+    REQUIRE(module.add_connection(Connection{
+        Endpoint::graph_input(StableId{"handle"}),
+        Endpoint::graph_output(StableId{"result"})}));
+
+    const auto lowered = orlcomp::OrlGraphLowerer{}.lower(module,
+        NodeRegistry{}, orlcomp::GraphLoweringOptions{
+            .entry_function = "handle_graph",
+            .emit_module_uses = false,
+        });
+    REQUIRE(lowered.ok);
+    REQUIRE(lowered.source.find(
+        "handle __orl_handle_orlrig__joint_handle;")
+        != std::string::npos);
+    REQUIRE(lowered.source.find(
+        "int handle_graph(__orl_handle_orlrig__joint_handle _handle)")
+        != std::string::npos);
+    REQUIRE(lowered.outputs.size() == 1);
+    REQUIRE(lowered.outputs.front().type == handle);
+    REQUIRE(lowered.outputs.front().source_parameter == "_handle");
+}
+
 NodeDefinition make_scene_probe_definition() {
     NodeDefinition definition;
     definition.id = StableId{"test.scene_probe"};
@@ -199,131 +237,6 @@ GraphModule make_scene_binding_graph() {
         Endpoint::node_port(StableId{"probe"}, StableId{"vertex_count"})});
     module.add_connection(Connection{
         Endpoint::node_port(StableId{"probe"}, StableId{"result"}),
-        Endpoint::graph_output(StableId{"result"})});
-    return module;
-}
-
-NodeDefinition make_matrix_probe_definition() {
-    NodeDefinition definition;
-    definition.id = StableId{"test.matrix_probe"};
-    definition.qualified_name = "test.matrix_probe";
-    definition.implementation.kind = ImplementationKind::OrlFunction;
-    definition.implementation.function = "matrix_probe";
-    definition.inputs = {
-        Port{StableId{"values"}, "values", PortDirection::Input,
-            PortCardinality::Buffer,
-            LogicalType::buffer(LogicalType::matrix()), Domain::buffer(),
-            Shape::one("one"), true, std::nullopt, {}, {}},
-        Port{StableId{"count"}, "count", PortDirection::Input,
-            PortCardinality::Scalar, LogicalType::int64(), Domain::constant(),
-            Shape::scalar(), true, std::nullopt, {}, {}},
-    };
-    definition.outputs = {
-        Port{StableId{"result"}, "result", PortDirection::Output,
-            PortCardinality::Scalar, LogicalType::int64(), Domain::constant(),
-            Shape::scalar(), false, std::nullopt, {}, {}},
-    };
-    return definition;
-}
-
-GraphModule make_implicit_joint_matrix_graph() {
-    GraphModule module;
-    module.module_id = "lowering.implicit_joint_matrix";
-    module.add_input(InterfacePort{
-        StableId{"scene.rig.joints"}, "joints", PortDirection::Input,
-        LogicalType::buffer(LogicalType::struct_type("Joint")),
-        Domain::joint(), Shape::one("joint_count"), true, std::nullopt,
-        false, "scene.rig.joints", "joints", "world"});
-    module.add_input(InterfacePort{
-        StableId{"count"}, "count", PortDirection::Input,
-        LogicalType::int64(), Domain::constant(), Shape::scalar(), true,
-        std::nullopt, false, "count", {}, {}});
-    module.add_output(InterfacePort{
-        StableId{"result"}, "result", PortDirection::Output,
-        LogicalType::int64(), Domain::constant(), Shape::scalar(), true,
-        std::nullopt, false, "result", {}, {}});
-    module.add_node(NodeInstance{
-        StableId{"find_joint"}, StableId{"orlrig.input.find_joint"},
-        "find_joint",
-        {{"name", ConstantValue{LogicalType::string(), std::string{"root"}}}},
-        {}, InlinePolicy::Default});
-    module.add_node(NodeInstance{
-        StableId{"probe"}, StableId{"test.matrix_probe"}, "probe",
-        {}, {}, InlinePolicy::Default});
-    module.add_connection(Connection{
-        Endpoint::node_port(StableId{"find_joint"}, StableId{"xform"}),
-        Endpoint::node_port(StableId{"probe"}, StableId{"values"})});
-    module.add_connection(Connection{
-        Endpoint::graph_input(StableId{"count"}),
-        Endpoint::node_port(StableId{"probe"}, StableId{"count"})});
-    module.add_connection(Connection{
-        Endpoint::node_port(StableId{"probe"}, StableId{"result"}),
-        Endpoint::graph_output(StableId{"result"})});
-    return module;
-}
-
-GraphModule make_controller_to_joint_copy_graph() {
-    GraphModule module;
-    module.module_id = "lowering.controller_to_joint_copy";
-    module.add_input(InterfacePort{
-        StableId{"scene.rig.joints"}, "joints", PortDirection::Input,
-        LogicalType::buffer(LogicalType::struct_type("Joint")),
-        Domain::joint(), Shape::one("joint_count"), true, std::nullopt,
-        false, "scene.rig.joints", "joints", "world"});
-    module.add_input(InterfacePort{
-        StableId{"controller_xform"}, "controller_xform",
-        PortDirection::Input, LogicalType::buffer(LogicalType::matrix()),
-        Domain::buffer(), Shape::one("one"), true, std::nullopt, false,
-        "scene.rig.controller.ctrl.xform", "controller.xform", "world"});
-    module.add_input(InterfacePort{
-        StableId{"controller_count"}, "controller_count",
-        PortDirection::Input, LogicalType::int64(), Domain::constant(),
-        Shape::scalar(), true, std::nullopt, false,
-        "controller_count", {}, {}});
-    module.add_input(InterfacePort{
-        StableId{"joint_count"}, "joint_count", PortDirection::Input,
-        LogicalType::int64(), Domain::constant(), Shape::scalar(), true,
-        std::nullopt, false, "joint_count", {}, {}});
-    module.add_output(InterfacePort{
-        StableId{"result"}, "result", PortDirection::Output,
-        LogicalType::int64(), Domain::constant(), Shape::scalar(), true,
-        std::nullopt, false, "result", {}, {}});
-
-    module.add_node(NodeInstance{
-        StableId{"find_controller"},
-        StableId{"orlrig.input.find_controller"},
-        "find_controller",
-        {{"name", ConstantValue{
-            LogicalType::string(), std::string{"ctrl"}}}},
-        {}, InlinePolicy::Default});
-    module.add_node(NodeInstance{
-        StableId{"find_joint"}, StableId{"orlrig.input.find_joint"},
-        "find_joint",
-        {{"name", ConstantValue{
-            LogicalType::string(), std::string{"joint"}}}},
-        {}, InlinePolicy::Default});
-    module.add_node(NodeInstance{
-        StableId{"copy"}, StableId{"orlrig.constraint.copy_xform"},
-        "copy", {}, {}, InlinePolicy::Default});
-
-    module.add_connection(Connection{
-        Endpoint::node_port(StableId{"find_controller"},
-            StableId{"xform"}),
-        Endpoint::node_port(StableId{"copy"}, StableId{"source"})});
-    module.add_connection(Connection{
-        Endpoint::node_port(StableId{"find_joint"},
-            StableId{"xform"}),
-        Endpoint::node_port(StableId{"copy"}, StableId{"destination"})});
-    module.add_connection(Connection{
-        Endpoint::graph_input(StableId{"controller_count"}),
-        Endpoint::node_port(StableId{"copy"},
-            StableId{"source_count"})});
-    module.add_connection(Connection{
-        Endpoint::graph_input(StableId{"joint_count"}),
-        Endpoint::node_port(StableId{"copy"},
-            StableId{"destination_count"})});
-    module.add_connection(Connection{
-        Endpoint::node_port(StableId{"copy"}, StableId{"status"}),
         Endpoint::graph_output(StableId{"result"})});
     return module;
 }
@@ -648,162 +561,282 @@ TEST_CASE("graph input binding rejects missing and incompatible scene data",
     REQUIRE(execution.errors().front().find("ABI") != std::string::npos);
 }
 
-TEST_CASE("implicit output adapter materializes a joint world matrix buffer",
-    "[orlgraph][lowering][conversion]")
+TEST_CASE("typed scene input lowers as one nominal handle socket",
+    "[orlgraph][lowering][handle]")
 {
     auto rig = orlrig::make_lbs_graph();
     NodeRegistry registry = std::move(rig.registry);
-    REQUIRE(registry.register_definition(make_matrix_probe_definition()));
 
-    auto options = orlcomp::GraphLoweringOptions{};
-    options.entry_function = "implicit_joint_matrix";
-    options.scene_revision = 17;
-    options.source_preamble =
-        "int matrix_probe(matrix values[], int count) { return count; }";
+    GraphModule graph;
+    graph.module_id = "lowering.typed_scene_handle";
+    const auto joint_handle =
+        LogicalType::handle("orlrig::joint_handle");
+    REQUIRE(graph.add_input(InterfacePort{
+        StableId{"joint_input"}, "joint_input", PortDirection::Input,
+        joint_handle, Domain::rig(), Shape::scalar(), true,
+        std::nullopt, false, "scene.rig.joint.root.handle",
+        "scene.joint.handle", {}}));
+    REQUIRE(graph.add_output(InterfacePort{
+        StableId{"result"}, "result", PortDirection::Output,
+        joint_handle, Domain::rig(), Shape::scalar(), true,
+        std::nullopt, false, "result", "scene.joint.handle", {}}));
+    REQUIRE(graph.add_node(NodeInstance{
+        StableId{"find_joint"}, StableId{"orlrig.input.find_joint"},
+        "find_joint",
+        {{"name", ConstantValue{
+            LogicalType::string(), std::string{"root"}}}},
+        {}, InlinePolicy::Default}));
+    REQUIRE(graph.add_connection(Connection{
+        Endpoint::node_port(StableId{"find_joint"},
+            StableId{"handle"}),
+        Endpoint::graph_output(StableId{"result"})}));
+
+    orlcomp::GraphLoweringOptions options;
+    options.entry_function = "typed_scene_handle";
+    options.emit_module_uses = false;
     options.runtime_output_expression =
         [](const NodeInstance&, const NodeDefinition& definition,
             const Port& output) -> std::optional<std::string> {
         if (definition.qualified_name == "orlrig.input.find_joint"
             && output.name == "handle")
         {
-            return std::string{"2001"};
-        }
-        if (definition.qualified_name == "orlrig.input.find_joint"
-            && output.name == "index")
-        {
-            return std::string{"0"};
+            return std::string{"joint_input"};
         }
         return std::nullopt;
     };
 
-    const auto graph = make_implicit_joint_matrix_graph();
     const auto lowered = orlcomp::OrlGraphLowerer{}.lower(
         graph, registry, options);
     REQUIRE(lowered.ok);
-    REQUIRE(lowered.scene_revision == 17);
-    REQUIRE(lowered.source.find("matrix conversion_find_joint_xform[1];")
+    REQUIRE(lowered.source.find(
+        "handle __orl_handle_orlrig__joint_handle;")
         != std::string::npos);
     REQUIRE(lowered.source.find(
-        "conversion_find_joint_xform[0] = joint_world_matrix(joints, 0);")
-        != std::string::npos);
-    REQUIRE(lowered.source.find(
-        "matrix_probe(conversion_find_joint_xform, count)")
+        "int typed_scene_handle("
+        "__orl_handle_orlrig__joint_handle joint_input)")
         != std::string::npos);
 
     const auto program = OrlGraphProgram::Compile(graph, registry, options);
     REQUIRE(program.valid());
-    REQUIRE(program.scene_revision() == 17);
-    REQUIRE(program.scene_revision_matches(17));
-    REQUIRE_FALSE(program.scene_revision_matches(18));
+    REQUIRE(program.parameters().size() == 1);
+    REQUIRE(program.parameters().front().kind == ParameterKind::Handle);
 }
 
-TEST_CASE("writable joint adapter commits a controller copy as local TRS",
-    "[orlgraph][lowering][conversion][writeback]")
+TEST_CASE("typed solver graph writes through handle view context",
+    "[orlgraph][lowering][handle][solver]")
 {
-    auto rig = orlrig::make_lbs_graph();
-    NodeRegistry registry = std::move(rig.registry);
-
-    auto options = orlcomp::GraphLoweringOptions{};
-    options.entry_function = "controller_to_joint_copy";
-    options.runtime_output_expression =
-        [](const NodeInstance&, const NodeDefinition& definition,
-            const Port& output) -> std::optional<std::string> {
-        if (definition.qualified_name == "orlrig.input.find_joint"
-            && output.name == "handle")
-        {
-            return std::string{"2001"};
-        }
-        if (definition.qualified_name == "orlrig.input.find_joint"
-            && output.name == "index")
-        {
-            return std::string{"1"};
-        }
-        if (definition.qualified_name == "orlrig.input.find_controller") {
-            if (output.name == "handle") {
-                return std::string{"1001"};
-            }
-            if (output.name == "index") {
-                return std::string{"0"};
-            }
-            if (output.name == "xform") {
-                return std::string{"controller_xform"};
-            }
-        }
-        return std::nullopt;
+    NodeRegistry registry;
+    NodeDefinition solver;
+    solver.id = StableId{"test.typed_ik"};
+    solver.qualified_name = "test.typed_ik";
+    solver.allowed_stages = GraphStageMask::Solver;
+    solver.implementation.kind = ImplementationKind::OrlFunction;
+    solver.implementation.module = "solver/ik_two_bone";
+    solver.implementation.function = "solver_ik_two_bone";
+    const auto add_input = [&solver](
+        std::string name, LogicalType type) {
+        Port port;
+        port.id = StableId{name};
+        port.name = std::move(name);
+        port.direction = PortDirection::Input;
+        port.cardinality = PortCardinality::Scalar;
+        port.type = std::move(type);
+        port.domain = Domain::rig();
+        port.shape = Shape::scalar();
+        port.required = true;
+        solver.inputs.push_back(std::move(port));
     };
-    options.runtime_handle_index_expression =
-        [](const NodeInstance&, const NodeDefinition&,
-            const Port&, std::string_view handle_expression)
-            -> std::optional<std::string> {
-        if (handle_expression == "2001") {
-            return std::string{"1"};
-        }
-        return std::nullopt;
-    };
+    add_input("root", LogicalType::handle("orlrig::joint_handle"));
+    add_input("mid", LogicalType::handle("orlrig::joint_handle"));
+    add_input("end", LogicalType::handle("orlrig::joint_handle"));
+    add_input("target", LogicalType::handle("orlrig::locator_handle"));
+    add_input("pole", LogicalType::handle("orlrig::locator_handle"));
+    solver.outputs.push_back(Port{
+        StableId{"status"}, "status", PortDirection::Output,
+        PortCardinality::Scalar, LogicalType::int64(),
+        Domain::constant(), Shape::scalar(), false, std::nullopt,
+        "status", {}});
+    REQUIRE(registry.register_definition(std::move(solver)));
 
-    const auto graph = make_controller_to_joint_copy_graph();
-    const auto program = OrlGraphProgram::Compile(graph, registry, options);
+    GraphModule graph;
+    graph.module_id = "lowering.typed_ik_execution";
+    const auto add_graph_input = [&graph](
+        std::string name, LogicalType type) {
+        return graph.add_input(InterfacePort{
+            StableId{name}, name, PortDirection::Input, std::move(type),
+            Domain::rig(), Shape::scalar(), true, std::nullopt, false,
+            "scene.rig." + name + ".handle", "scene." + name + ".handle",
+            {}});
+    };
+    REQUIRE(add_graph_input(
+        "root", LogicalType::handle("orlrig::joint_handle")));
+    REQUIRE(add_graph_input(
+        "mid", LogicalType::handle("orlrig::joint_handle")));
+    REQUIRE(add_graph_input(
+        "end", LogicalType::handle("orlrig::joint_handle")));
+    REQUIRE(add_graph_input(
+        "target", LogicalType::handle("orlrig::locator_handle")));
+    REQUIRE(add_graph_input(
+        "pole", LogicalType::handle("orlrig::locator_handle")));
+    REQUIRE(graph.add_output(InterfacePort{
+        StableId{"result"}, "result", PortDirection::Output,
+        LogicalType::int64(), Domain::constant(), Shape::scalar(), true,
+        std::nullopt, false, "result", {}, {}}));
+    REQUIRE(graph.add_node(NodeInstance{
+        StableId{"solver"}, StableId{"test.typed_ik"}, "solver",
+        {}, {}, InlinePolicy::Default}));
+    for (const auto& name : {"root", "mid", "end", "target", "pole"}) {
+        REQUIRE(graph.add_connection(Connection{
+            Endpoint::graph_input(StableId{name}),
+            Endpoint::node_port(StableId{"solver"}, StableId{name})}));
+    }
+    REQUIRE(graph.add_connection(Connection{
+        Endpoint::node_port(StableId{"solver"}, StableId{"status"}),
+        Endpoint::graph_output(StableId{"result"})}));
+
+    const auto program = OrlGraphProgram::Compile(graph, registry);
     REQUIRE(program.valid());
-    REQUIRE(program.source().find(
-        "joint_write_world_matrix(joints, 1, "
-        "conversion_find_joint_xform);") != std::string::npos);
-
     auto execution = OrlGraphExecution::Create(program, Backend::Cpu);
     REQUIRE(execution.valid());
 
     OrlBuffer joints(orlrig::kJointOrlType, orlrig::kJointStride);
-    REQUIRE(joints.resize(2));
-    auto* joint = static_cast<orlrig::Joint*>(joints.data());
-    joint[0] = orlrig::make_identity_joint();
-    joint[0].translation[0] = 2.0;
-    joint[1] = orlrig::make_identity_joint();
-    joint[1].parent = 0;
+    REQUIRE(joints.resize(3));
+    auto root = orlrig::make_identity_joint();
+    auto mid = orlrig::make_identity_joint();
+    mid.parent = 0;
+    mid.translation[0] = 1.0;
+    auto end = orlrig::make_identity_joint();
+    end.parent = 1;
+    end.translation[0] = 1.0;
+    REQUIRE(joints.write(0, root));
+    REQUIRE(joints.write(1, mid));
+    REQUIRE(joints.write(2, end));
+    OrlBuffer locators(orlrig::kLocatorOrlType, orlrig::kLocatorStride);
+    REQUIRE(locators.resize(2));
+    const double target_xform[16] = {
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 1.5,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    };
+    const double pole_xform[16] = {
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 1.0,
+        0.0, 0.0, 0.0, 1.0,
+    };
+    REQUIRE(locators.write(0, target_xform, sizeof(target_xform)));
+    REQUIRE(locators.write(1, pole_xform, sizeof(pole_xform)));
 
-    OrlBuffer controller(orlrig::kMatrixOrlType, orlrig::kMatrixStride);
-    REQUIRE(controller.resize(1));
-    auto* controller_matrix = static_cast<double*>(controller.data());
-    controller_matrix[0] = 1.0;
-    controller_matrix[5] = 1.0;
-    controller_matrix[10] = 1.0;
-    controller_matrix[15] = 1.0;
-    controller_matrix[3] = 6.0;
-
+    const auto joint_type =
+        orlcomp::HandleTypeIdFor("orlrig::joint_handle");
+    const auto locator_type =
+        orlcomp::HandleTypeIdFor("orlrig::locator_handle");
     const GraphInputResolver resolver =
-        [&joints, &controller](const InterfacePort& input,
-            GraphInputBinding& binding, std::string& error) {
-        if (input.binding == "scene.rig.joints") {
-            binding.kind = ParameterKind::Buffer;
-            binding.buffer = &joints;
-            binding.element_count = joints.count();
-            return true;
+        [joint_type, locator_type](
+            const InterfacePort& input, GraphInputBinding& binding,
+            std::string&) {
+        binding.kind = ParameterKind::Handle;
+        if (input.name == "target" || input.name == "pole") {
+            binding.handle_value = {
+                locator_type, input.name == "target" ? 0 : 1};
+        } else {
+            const std::int64_t slot = input.name == "root"
+                ? 0 : input.name == "mid" ? 1 : 2;
+            binding.handle_value = {joint_type, slot};
         }
-        if (input.binding == "scene.rig.controller.ctrl.xform") {
-            binding.kind = ParameterKind::Buffer;
-            binding.buffer = &controller;
-            binding.element_count = controller.count();
-            return true;
+        return true;
+    };
+    REQUIRE(execution.bind_graph_inputs(graph, resolver));
+    orlrig::HandleViewContext context{
+        {joints.data(), joints.count(), orlrig::kJointStride, true},
+        {locators.data(), locators.count(), orlrig::kLocatorStride, false},
+        1};
+    REQUIRE(execution.bind_handle_view_context(context));
+    const auto result = execution.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 1);
+    REQUIRE(static_cast<orlrig::Joint*>(joints.data())->rotation[3]
+        != Catch::Approx(1.0));
+}
+
+TEST_CASE("graph specialization folds union handle is branch",
+    "[orlgraph][lowering][handle][union][is]")
+{
+    NodeRegistry registry;
+    NodeDefinition generic;
+    generic.id = StableId{"test.generic_handle"};
+    generic.qualified_name = "test.generic_handle";
+    generic.implementation.kind = ImplementationKind::OrlFunction;
+    generic.implementation.function = "generic_handle";
+    generic.inputs.push_back(Port{
+        StableId{"value"}, "value", PortDirection::Input,
+        PortCardinality::Scalar,
+        LogicalType::handle_union(
+            "orl_graph_program::component_handle",
+            {"orl_graph_program::joint_handle",
+                "orl_graph_program::locator_handle"}),
+        Domain::rig(), Shape::scalar(), true, std::nullopt, {}, {}});
+    generic.outputs.push_back(Port{
+        StableId{"result"}, "result", PortDirection::Output,
+        PortCardinality::Scalar, LogicalType::int64(),
+        Domain::constant(), Shape::scalar(), false, std::nullopt, {}, {}});
+    REQUIRE(registry.register_definition(std::move(generic)));
+
+    GraphModule graph;
+    graph.module_id = "lowering.union_specialization";
+    const auto joint_type =
+        LogicalType::handle("orl_graph_program::joint_handle");
+    REQUIRE(graph.add_input(InterfacePort{
+        StableId{"value"}, "value", PortDirection::Input, joint_type,
+        Domain::rig(), Shape::scalar(), true, std::nullopt, false,
+        "scene.rig.joint.root.handle", "scene.joint.handle", {}}));
+    REQUIRE(graph.add_output(InterfacePort{
+        StableId{"result"}, "result", PortDirection::Output,
+        LogicalType::int64(), Domain::constant(), Shape::scalar(), true,
+        std::nullopt, false, "result", {}, {}}));
+    REQUIRE(graph.add_node(NodeInstance{
+        StableId{"generic"}, StableId{"test.generic_handle"},
+        "generic", {}, {}, InlinePolicy::Default}));
+    REQUIRE(graph.add_connection(Connection{
+        Endpoint::graph_input(StableId{"value"}),
+        Endpoint::node_port(StableId{"generic"}, StableId{"value"})}));
+    REQUIRE(graph.add_connection(Connection{
+        Endpoint::node_port(StableId{"generic"}, StableId{"result"}),
+        Endpoint::graph_output(StableId{"result"})}));
+
+    orlcomp::GraphLoweringOptions options;
+    options.entry_function = "union_specialization";
+    options.source_preamble = R"(
+        handle joint_handle;
+        handle locator_handle;
+        handle component_handle = joint_handle | locator_handle;
+        int generic_handle(component_handle value) {
+            if (value is joint_handle) {
+                return 1;
+            }
+            return 2;
         }
-        if (input.binding == "controller_count"
-            || input.binding == "joint_count")
-        {
-            binding.kind = ParameterKind::Int64;
-            binding.int_value = 1;
-            return true;
-        }
-        error = "unexpected writable graph input";
-        return false;
+    )";
+    const auto program = OrlGraphProgram::Compile(
+        graph, registry, std::move(options));
+    REQUIRE(program.valid());
+    REQUIRE(program.parameters().size() == 1);
+
+    auto execution = OrlGraphExecution::Create(program, Backend::Cpu);
+    REQUIRE(execution.valid());
+    const GraphInputResolver resolver =
+        [](const InterfacePort&, GraphInputBinding& binding, std::string&) {
+        binding.kind = ParameterKind::Handle;
+        binding.handle_value = {
+            orlcomp::HandleTypeIdFor(
+                "orl_graph_program::joint_handle"), 0};
+        return true;
     };
     REQUIRE(execution.bind_graph_inputs(graph, resolver));
     const auto result = execution.evaluate();
     REQUIRE(result.has_value());
     REQUIRE(*result == 1);
-
-    REQUIRE(joint[1].translation[0] == Catch::Approx(4.0));
-    REQUIRE(joint[1].translation[1] == Catch::Approx(0.0));
-    REQUIRE(joint[1].translation[2] == Catch::Approx(0.0));
-    REQUIRE(joint[1].rotation[3] == Catch::Approx(1.0));
-    REQUIRE(joint[1].scale[0] == Catch::Approx(1.0));
-    REQUIRE(joint[1].parent == 0);
 }
 
 TEST_CASE("CUDA graph execution matches CPU when a device is available",

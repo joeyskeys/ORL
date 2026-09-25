@@ -92,6 +92,201 @@ TEST_CASE("graph module validates typed connections", "[orlgraph][validation]") 
     REQUIRE(result.schedule.order == std::vector<StableId>{StableId{"add"}});
 }
 
+TEST_CASE("graph types preserve exact nominal handle identity",
+    "[orlgraph][handle][types]")
+{
+    const auto joint = LogicalType::handle("orlrig::joint_handle");
+    const auto same_joint = LogicalType::handle("orlrig::joint_handle");
+    const auto locator = LogicalType::handle("orlrig::locator_handle");
+
+    REQUIRE(joint.is_handle());
+    REQUIRE(joint.is_scalar());
+    REQUIRE(joint.canonical_name() == "handle:orlrig::joint_handle");
+    REQUIRE(joint == same_joint);
+    REQUIRE(joint != locator);
+    REQUIRE(is_assignable(joint, same_joint));
+    REQUIRE_FALSE(is_assignable(joint, locator));
+    REQUIRE_FALSE(is_assignable(joint, LogicalType::int64()));
+    REQUIRE(is_valid_handle_name(joint.name));
+    REQUIRE_FALSE(is_valid_handle_name("joint_handle"));
+}
+
+TEST_CASE("graph types support normalized handle union assignability",
+    "[orlgraph][handle][union]")
+{
+    const auto joint = LogicalType::handle("orlrig::joint_handle");
+    const auto locator = LogicalType::handle("orlrig::locator_handle");
+    const auto union_type = LogicalType::handle_union(
+        "orlrig::component_handle",
+        {"orlrig::locator_handle", "orlrig::joint_handle"});
+    const auto universal = LogicalType::handle_union(
+        "handle", {}, true);
+    REQUIRE(is_assignable(joint, union_type));
+    REQUIRE(is_assignable(locator, union_type));
+    REQUIRE(is_assignable(joint, universal));
+    REQUIRE(is_assignable(locator, universal));
+    REQUIRE_FALSE(is_assignable(union_type, joint));
+    REQUIRE_FALSE(is_assignable(universal, joint));
+    REQUIRE(union_type.canonical_name()
+        == "handle_union:orlrig::component_handle"
+            "<orlrig::joint_handle|orlrig::locator_handle>");
+}
+
+TEST_CASE("graph validation rejects incompatible exact handle connections",
+    "[orlgraph][validation][handle]")
+{
+    const auto make_definition = [](
+        std::string id, LogicalType output_type, LogicalType input_type) {
+        NodeDefinition definition;
+        definition.id = StableId{std::move(id)};
+        definition.qualified_name = definition.id.value;
+        definition.outputs.push_back(Port{
+            StableId{"out"}, "out", PortDirection::Output,
+            PortCardinality::Scalar, std::move(output_type),
+            Domain::constant(), Shape::scalar(), false,
+            std::nullopt, {}, {}});
+        definition.inputs.push_back(Port{
+            StableId{"in"}, "in", PortDirection::Input,
+            PortCardinality::Scalar, std::move(input_type),
+            Domain::constant(), Shape::scalar(), false,
+            std::nullopt, {}, {}});
+        return definition;
+    };
+
+    NodeRegistry registry;
+    REQUIRE(registry.register_definition(make_definition(
+        "test.joint_source",
+        LogicalType::handle("orlrig::joint_handle"),
+        LogicalType::int64())));
+    REQUIRE(registry.register_definition(make_definition(
+        "test.locator_sink",
+        LogicalType::int64(),
+        LogicalType::handle("orlrig::locator_handle"))));
+    REQUIRE(registry.register_definition(make_definition(
+        "test.joint_sink",
+        LogicalType::int64(),
+        LogicalType::handle("orlrig::joint_handle"))));
+
+    const auto validate_connection = [&registry](
+        StableId sink_definition) {
+        GraphModule module;
+        REQUIRE(module.add_node(NodeInstance{
+            StableId{"source"}, StableId{"test.joint_source"}, "source",
+            {}, {}, InlinePolicy::Default}));
+        REQUIRE(module.add_node(NodeInstance{
+            StableId{"sink"}, std::move(sink_definition), "sink",
+            {}, {}, InlinePolicy::Default}));
+        REQUIRE(module.add_connection(Connection{
+            Endpoint::node_port(StableId{"source"}, StableId{"out"}),
+            Endpoint::node_port(StableId{"sink"}, StableId{"in"})}));
+        return validate(module, registry);
+    };
+
+    const auto exact = validate_connection(
+        StableId{"test.joint_sink"});
+    REQUIRE(exact.ok());
+
+    const auto locator = validate_connection(
+        StableId{"test.locator_sink"});
+    REQUIRE_FALSE(locator.ok());
+    REQUIRE(std::any_of(locator.diagnostics.begin(),
+        locator.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "ORLGRAPH_TYPE_MISMATCH"
+                && diagnostic.message.find(
+                    "handle:orlrig::joint_handle") != std::string::npos
+                && diagnostic.message.find(
+                    "handle:orlrig::locator_handle") != std::string::npos;
+        }));
+}
+
+TEST_CASE("graph reflection retains handle port types",
+    "[orlgraph][reflection][handle]")
+{
+    NodeRegistry registry;
+    NodeDefinition definition;
+    definition.id = StableId{"test.handle_node"};
+    definition.qualified_name = "test.handle_node";
+    definition.outputs.push_back(Port{
+        StableId{"handle"}, "handle", PortDirection::Output,
+        PortCardinality::Scalar,
+        LogicalType::handle("orlrig::joint_handle"),
+        Domain::rig(), Shape::scalar(), false,
+        std::nullopt, {}, {}});
+    REQUIRE(registry.register_definition(definition));
+
+    GraphModule module;
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"node"}, StableId{"test.handle_node"}, "node",
+        {}, {}, InlinePolicy::Default}));
+
+    const auto reflected = reflect(module, registry);
+    REQUIRE(reflected.nodes.size() == 1);
+    REQUIRE(reflected.nodes.front().ports.size() == 1);
+    REQUIRE(reflected.nodes.front().ports.front().type
+        == LogicalType::handle("orlrig::joint_handle"));
+}
+
+TEST_CASE("graph validation rejects handle constants",
+    "[orlgraph][validation][handle][constant]")
+{
+    NodeRegistry registry;
+    NodeDefinition definition;
+    definition.id = StableId{"test.handle_parameter"};
+    definition.qualified_name = "test.handle_parameter";
+    definition.parameters.push_back(ParameterSpec{
+        StableId{"value"}, "value",
+        LogicalType::handle("orlrig::joint_handle"), true,
+        std::nullopt, {}});
+    REQUIRE(registry.register_definition(std::move(definition)));
+
+    GraphModule module;
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"node"}, StableId{"test.handle_parameter"}, "node",
+        {{"value", ConstantValue{
+            LogicalType::handle("orlrig::joint_handle"),
+            std::int64_t{1}}}},
+        {}, InlinePolicy::Default}));
+
+    const auto result = validate(module, registry);
+    REQUIRE_FALSE(result.ok());
+    REQUIRE(std::any_of(result.diagnostics.begin(),
+        result.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "ORLGRAPH_HANDLE_CONSTANT";
+        }));
+}
+
+TEST_CASE("graph validation rejects nested handle collections",
+    "[orlgraph][validation][handle][collection]")
+{
+    NodeRegistry registry;
+    NodeDefinition definition;
+    definition.id = StableId{"test.handle_collection"};
+    definition.qualified_name = "test.handle_collection";
+    definition.outputs.push_back(Port{
+        StableId{"handles"}, "handles", PortDirection::Output,
+        PortCardinality::Buffer,
+        LogicalType::buffer(LogicalType::array(
+            LogicalType::handle("orlrig::joint_handle"), 2)),
+        Domain::buffer(), Shape::one("count"), false,
+        std::nullopt, {}, {}});
+    REQUIRE(registry.register_definition(std::move(definition)));
+
+    GraphModule module;
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"node"}, StableId{"test.handle_collection"}, "node",
+        {}, {}, InlinePolicy::Default}));
+
+    const auto result = validate(module, registry);
+    REQUIRE_FALSE(result.ok());
+    REQUIRE(std::any_of(result.diagnostics.begin(),
+        result.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "ORLGRAPH_HANDLE_CARDINALITY";
+        }));
+}
+
 TEST_CASE("graph validation enforces definition stage masks",
     "[orlgraph][validation][stage]")
 {
@@ -448,10 +643,13 @@ TEST_CASE("oro serialization preserves partial evaluation footprints",
     footprint.declared = true;
     footprint.supports_sparse_dispatch = true;
     footprint.propagation = PartialPropagation::AncestorsAndDescendants;
-    footprint.read_joint_ports = {"parent"};
-    footprint.write_joints = {StableId{"joint.output"}};
-    footprint.write_locator_ports = {"subject_index"};
-    footprint.write_locators = {StableId{"locator.target"}};
+    footprint.handle_effects.push_back({
+        StableId{"joint"},
+        "orlrig::joint_handle",
+        "Joint",
+        "rotation",
+        AccessMode::ReadWrite,
+    });
     footprint.read_resources = {StableId{"scene.joints"}};
     definition.partial_footprint = footprint;
     REQUIRE(registry.register_definition(std::move(definition)));
@@ -534,6 +732,90 @@ TEST_CASE("editable graph JSON is deterministic and round trips",
     REQUIRE(input->binding == "scene.mesh.body.positions");
     REQUIRE(input->semantic == "mesh.positions");
     REQUIRE(input->coordinate_space == "world");
+}
+
+TEST_CASE("exact handle graph JSON preserves identity and rejects malformed types",
+    "[orlgraph][graph-json][handle]")
+{
+    GraphModule module;
+    module.module_id = "character.handles";
+    const auto handle = LogicalType::handle("orlrig::joint_handle");
+    REQUIRE(module.add_input(InterfacePort{
+        StableId{"joint"}, "Joint", PortDirection::Input,
+        handle, Domain::rig(), Shape::scalar(), true,
+        std::nullopt, false, "scene.rig.joint", "joint", {}}));
+
+    const auto first = serialize_graph_json(module);
+    const auto second = serialize_graph_json(module);
+    REQUIRE(first.ok);
+    REQUIRE(first.text == second.text);
+    REQUIRE(first.content_hash == second.content_hash);
+    REQUIRE(first.text.find("orlrig::joint_handle") != std::string::npos);
+
+    const auto loaded = deserialize_graph_json(first.text);
+    REQUIRE(loaded.ok);
+    REQUIRE(loaded.module.input(StableId{"joint"})->type == handle);
+
+    auto malformed_name = first.text;
+    const auto name_position = malformed_name.find(
+        "orlrig::joint_handle");
+    REQUIRE(name_position != std::string::npos);
+    malformed_name.replace(name_position,
+        std::string{"orlrig::joint_handle"}.size(), "");
+    const auto malformed = deserialize_graph_json(malformed_name);
+    REQUIRE_FALSE(malformed.ok);
+    REQUIRE(std::any_of(malformed.diagnostics.begin(),
+        malformed.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "ORLGRAPH_INVALID_HANDLE_TYPE";
+        }));
+
+    auto unknown_kind = first.text;
+    const auto kind_position = unknown_kind.find("\"kind\":15");
+    REQUIRE(kind_position != std::string::npos);
+    unknown_kind.replace(kind_position, std::string{"\"kind\":15"}.size(),
+        "\"kind\":99");
+    const auto unknown = deserialize_graph_json(unknown_kind);
+    REQUIRE_FALSE(unknown.ok);
+    REQUIRE(std::any_of(unknown.diagnostics.begin(),
+        unknown.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "ORLGRAPH_INVALID_TYPE";
+        }));
+
+    auto nested_handle = first.text;
+    const auto nested_kind_position = nested_handle.find("\"kind\":15");
+    REQUIRE(nested_kind_position != std::string::npos);
+    nested_handle.replace(nested_kind_position,
+        std::string{"\"kind\":15"}.size(), "\"kind\":13");
+    const auto element_position = nested_handle.find("\"element\":null");
+    REQUIRE(element_position != std::string::npos);
+    nested_handle.replace(element_position,
+        std::string{"\"element\":null"}.size(),
+        "\"element\":{\"kind\":12,\"name\":\"\",\"lanes\":0,"
+        "\"extent\":2,\"element\":{\"kind\":15,\"name\":"
+        "\"orlrig::joint_handle\",\"lanes\":0,\"extent\":0,"
+        "\"element\":null}}");
+    const auto nested = deserialize_graph_json(nested_handle);
+    REQUIRE_FALSE(nested.ok);
+    REQUIRE(std::any_of(nested.diagnostics.begin(),
+        nested.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "ORLGRAPH_INVALID_HANDLE_TYPE";
+        }));
+
+    auto old_schema = first.text;
+    const auto abi_position = old_schema.find("orlgraph-1");
+    REQUIRE(abi_position != std::string::npos);
+    old_schema.replace(abi_position, std::string{"orlgraph-1"}.size(),
+        "orlgraph-0");
+    const auto old_document = deserialize_graph_json(old_schema);
+    REQUIRE_FALSE(old_document.ok);
+    REQUIRE(std::any_of(old_document.diagnostics.begin(),
+        old_document.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "ORLGRAPH_ABI_MISMATCH";
+        }));
 }
 
 TEST_CASE("staged graph JSON preserves solver and deformer graphs",
