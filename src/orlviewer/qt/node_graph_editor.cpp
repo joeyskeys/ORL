@@ -650,6 +650,25 @@ void NodeGraphEditor::import_node_graph_layout(const NodeGraphLayout& layout)
 
 void NodeGraphEditor::rebuild_view()
 {
+    QVector<QString> selected_node_ids;
+    selected_node_ids.reserve(selectedNodes.size());
+    for (const int index : selectedNodes) {
+        if (index >= 0 && index < nodes_.size()) {
+            selected_node_ids.push_back(nodes_[index].id);
+        }
+    }
+    const QString active_node_id =
+        selected_node_ >= 0 && selected_node_ < nodes_.size()
+        ? nodes_[selected_node_].id : QString{};
+    QVector<QString> selected_frame_ids;
+    const auto& existing_frames = current_frames();
+    selected_frame_ids.reserve(selectedFrames.size());
+    for (const int index : selectedFrames) {
+        if (index >= 0 && index < existing_frames.size()) {
+            selected_frame_ids.push_back(existing_frames[index].id);
+        }
+    }
+
     clear_find_controls();
     clear_frame_controls();
     auto& stored_nodes = stage_layout(stage_).nodes;
@@ -841,7 +860,42 @@ void NodeGraphEditor::rebuild_view()
                 source_node, source_port, destination_node, destination_port});
         }
     }
+    for (const auto& id : selected_node_ids) {
+        for (int node_index = 0; node_index < nodes_.size(); ++node_index) {
+            if (nodes_[node_index].id == id) {
+                selectedNodes.push_back(node_index);
+                break;
+            }
+        }
+    }
+    selected_node_ = -1;
+    if (!active_node_id.isEmpty()) {
+        for (int node_index = 0; node_index < nodes_.size(); ++node_index) {
+            if (nodes_[node_index].id == active_node_id) {
+                selected_node_ = node_index;
+                if (!selectedNodes.contains(node_index)) {
+                    selectedNodes.push_back(node_index);
+                }
+                break;
+            }
+        }
+    }
+    if (selected_node_ < 0 && !selectedNodes.isEmpty()) {
+        selected_node_ = selectedNodes.back();
+    }
+
     prune_frames();
+    for (const auto& id : selected_frame_ids) {
+        const auto frame_iterator = std::find_if(
+            current_frames().cbegin(), current_frames().cend(),
+            [&id](const Frame& frame) {
+                return frame.id == id;
+            });
+        if (frame_iterator != current_frames().cend()) {
+            selectedFrames.push_back(
+                static_cast<int>(frame_iterator - current_frames().cbegin()));
+        }
+    }
     rebuild_find_controls();
     rebuild_frame_controls();
     update();
