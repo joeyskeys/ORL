@@ -407,6 +407,12 @@ OrlProgram OrlProgram::Compile(std::string source, CompileOptions options) {
         }
         return OrlProgram(std::move(impl));
     }
+    impl->handle_views = impl->handle_views
+        || std::any_of(analysis.functions.begin(),
+            analysis.functions.end(),
+            [](const orlcomp::FunctionSummary& function) {
+                return !function.handle_view_effects.empty();
+            });
     orlcomp::HandleTypeRegistry handle_registry;
     for (const auto& handle : analysis.handle_types) {
         std::string collision_error;
