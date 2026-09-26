@@ -262,7 +262,8 @@ int main(int argc, char** argv) {
     }
     auto* property_editor = new ORL::PropertyEditor(
         selection, components, &scene_graph);
-    if (window_backend.set_hud_panel(property_editor, "Properties") < 0) {
+    property_editor->set_node_graph_editor(node_graph_editor);
+    if (window_backend.set_hud_panel(property_editor, "Inspector") < 0) {
         delete property_editor;
         property_editor = nullptr;
     }
@@ -661,6 +662,13 @@ int main(int argc, char** argv) {
             node_graph_editor->refresh_scene_inputs();
         }
         if (property_editor != nullptr) {
+            if (panel_has_focus(node_graph_editor)) {
+                property_editor->set_context(
+                    ORL::PropertyEditor::Context::NodeGraph);
+            } else if (panel_has_focus(window_backend.viewport_panel())) {
+                property_editor->set_context(
+                    ORL::PropertyEditor::Context::Scene);
+            }
             property_editor->refresh();
         }
 #endif

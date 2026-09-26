@@ -12,6 +12,7 @@
 #include <QRectF>
 #include <QSizeF>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QWidget>
 
@@ -36,6 +37,15 @@ class SceneInputCatalog;
 class SceneGraphContext;
 class Selection;
 
+struct NodeSelectionInfo {
+    QString id;
+    QString title;
+    QString kind;
+    QString definition;
+    QStringList inputs;
+    QStringList outputs;
+};
+
 // Draft Blender-style node canvas. When attached to a SceneGraphContext it
 // edits that context's active graph directly.
 class NodeGraphEditor final : public QWidget {
@@ -54,6 +64,7 @@ public:
     bool save_project_file(bool save_as);
     void set_stage(orlgraph::GraphStage stage);
     orlgraph::GraphStage stage() const { return stage_; }
+    std::optional<NodeSelectionInfo> selected_node_info() const;
     void set_node_color_theme(NodeColorTheme theme);
     void set_scene_input_catalog(const SceneInputCatalog* catalog);
     void refresh_scene_inputs();

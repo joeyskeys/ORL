@@ -231,6 +231,42 @@ void NodeGraphEditor::set_stage(orlgraph::GraphStage stage)
     rebuild_view();
 }
 
+std::optional<NodeSelectionInfo> NodeGraphEditor::selected_node_info() const
+{
+    if (selected_node_ < 0 || selected_node_ >= nodes_.size()) {
+        return std::nullopt;
+    }
+
+    const Node& node = nodes_[selected_node_];
+    NodeSelectionInfo result;
+    result.id = node.id;
+    result.title = node.title;
+    switch (node.kind) {
+    case Node::Kind::Definition:
+        result.kind = QStringLiteral("Node");
+        if (const auto* instance = active_graph().node(
+                orlgraph::StableId{node.id.toStdString()}))
+        {
+            result.definition =
+                QString::fromStdString(instance->definition.value);
+        }
+        break;
+    case Node::Kind::GraphInput:
+        result.kind = QStringLiteral("Graph Input");
+        break;
+    case Node::Kind::GraphOutput:
+        result.kind = QStringLiteral("Graph Output");
+        break;
+    }
+    for (const auto& port : node.inputs) {
+        result.inputs.push_back(port.name);
+    }
+    for (const auto& port : node.outputs) {
+        result.outputs.push_back(port.name);
+    }
+    return result;
+}
+
 void NodeGraphEditor::set_node_color_theme(NodeColorTheme theme)
 {
     node_color_theme_ = std::move(theme);
