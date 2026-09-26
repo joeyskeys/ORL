@@ -23,6 +23,8 @@
 #if ORL_USE_QT6
 #include "gui/qt_backend.hpp"
 #include <QApplication>
+#include <QFile>
+#include <QStyleFactory>
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
 #else
@@ -142,6 +144,27 @@ StartupOptions parse_startup_options(int argc, char** argv) {
     return options;
 }
 
+#if ORL_USE_QT6
+void setup_qt_theme(QApplication& application) {
+    if (auto* fusion_style = QStyleFactory::create(
+            QStringLiteral("Fusion")); fusion_style != nullptr)
+    {
+        application.setStyle(fusion_style);
+    }
+
+    const auto theme_path =
+        std::filesystem::path{ORL_RESOURCE_DIR} / "theme.qss";
+    QFile theme_file(QString::fromStdString(theme_path.string()));
+    if (!theme_file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        std::cerr << "Failed to load Qt theme: "
+                  << theme_path << ": "
+                  << theme_file.errorString().toStdString() << '\n';
+        return;
+    }
+    application.setStyleSheet(QString::fromUtf8(theme_file.readAll()));
+}
+#endif
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -152,6 +175,8 @@ int main(int argc, char** argv) {
     const auto pipeline_cache_path =
         working_directory / "orlviewer.pipeline.cache";
 #if ORL_USE_QT6
+    QApplication application(argc, argv);
+    setup_qt_theme(application);
     vkkk::QtBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport");
 #else
     vkkk::GlfwBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport", true);
