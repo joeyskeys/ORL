@@ -47,6 +47,8 @@ namespace
 {
 
 constexpr double kInlineFindControlZoom = 0.8;
+constexpr double kMinimumGraphZoom = 0.2;
+constexpr double kMaximumGraphZoom = 2.5;
 constexpr int kFindControlPopupMinimumWidth = 220;
 constexpr int kFindControlPopupMaximumWidth = 360;
 
@@ -2291,7 +2293,8 @@ void NodeGraphEditor::wheelEvent(QWheelEvent* event)
     const QPointF cursor = event->position();
     const QPointF before = scene_position(cursor);
     const double factor = event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15;
-    zoom_ = std::clamp(zoom_ * factor, 0.35, 2.5);
+    zoom_ = std::clamp(
+        zoom_ * factor, kMinimumGraphZoom, kMaximumGraphZoom);
     pan_ = cursor - before * zoom_;
     capture_stage_layout();
     position_find_controls();
