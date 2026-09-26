@@ -41,8 +41,13 @@ typed graph IR                  source/graph execution API
        project files, CPU/GPU handoff
 ```
 
-The first module-level document produced with this summary is
-[`orlcomp`](orlcomp.md).
+Module-level implementation documents:
+
+- [`orlcomp`](orlcomp.md) — compiler/frontend/backend
+- [`orlexec`](orlexec.md) — execution and rig runtime
+- [`orlgraph`](orlgraph.md) — target-independent graph IR
+- [`orlviewer`](orlviewer.md) — viewer/editor and scene integration
+- [`orltest`](orltest.md) — legacy/orphaned test harness
 
 ## What the project is now
 
