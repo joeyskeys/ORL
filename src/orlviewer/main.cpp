@@ -24,8 +24,11 @@
 #if ORL_USE_QT6
 #include "gui/qt_backend.hpp"
 #include <QApplication>
+#include <QDockWidget>
+#include <QEvent>
 #include <QFile>
 #include <QStyleFactory>
+#include <QTimer>
 #include "qt/node_color_theme.hpp"
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
@@ -170,6 +173,82 @@ void setup_qt_theme(QApplication& application) {
     }
     application.setStyleSheet(QString::fromUtf8(theme_file.readAll()));
 }
+
+class RightDockRatioController final : public QObject {
+public:
+    RightDockRatioController(QMainWindow* main_window,
+        QList<QDockWidget*> docks, double width_ratio)
+        : main_window_(main_window)
+        , width_ratio_(width_ratio)
+    {
+        for (auto* dock : docks) {
+            if (dock != nullptr) {
+                docks_.push_back(dock);
+            }
+        }
+        if (main_window_ != nullptr) {
+            main_window_->installEventFilter(this);
+            schedule_resize();
+        }
+    }
+
+    ~RightDockRatioController() override {
+        if (main_window_ != nullptr) {
+            main_window_->removeEventFilter(this);
+        }
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == main_window_
+            && event->type() == QEvent::Resize)
+        {
+            schedule_resize();
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    void schedule_resize() {
+        if (resize_pending_ || main_window_ == nullptr) {
+            return;
+        }
+        resize_pending_ = true;
+        QTimer::singleShot(0, this, [this] {
+            resize_pending_ = false;
+            resize_docks();
+        });
+    }
+
+    void resize_docks() {
+        if (main_window_ == nullptr || docks_.isEmpty()
+            || main_window_->width() <= 0)
+        {
+            return;
+        }
+        QList<QDockWidget*> visible_docks;
+        for (auto* dock : docks_) {
+            if (dock->isVisible()) {
+                visible_docks.push_back(dock);
+            }
+        }
+        if (visible_docks.isEmpty()) {
+            return;
+        }
+
+        const int width = std::max(
+            1, static_cast<int>(main_window_->width() * width_ratio_));
+        QList<int> sizes;
+        sizes.fill(width, visible_docks.size());
+        main_window_->resizeDocks(
+            visible_docks, sizes, Qt::Horizontal);
+    }
+
+    QMainWindow* main_window_ = nullptr;
+    QList<QDockWidget*> docks_;
+    double width_ratio_ = 0.30;
+    bool resize_pending_ = false;
+};
 #endif
 
 } // namespace
@@ -267,6 +346,18 @@ int main(int argc, char** argv) {
         delete property_editor;
         property_editor = nullptr;
     }
+#endif
+#if ORL_USE_QT6
+    auto* main_window = window_backend.main_window();
+    QList<QDockWidget*> right_docks;
+    right_docks.push_back(
+        main_window->findChild<QDockWidget*>(
+            QStringLiteral("vkkk.hud")));
+    right_docks.push_back(
+        main_window->findChild<QDockWidget*>(
+            QStringLiteral("vkkk.dock.Node Graph")));
+    RightDockRatioController right_dock_ratio(
+        main_window, right_docks, 0.30);
 #endif
 
     using Viewport = vkkk::vp::Viewport<
