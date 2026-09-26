@@ -27,6 +27,7 @@
 
 #include "../component_manager.hpp"
 #include "../scene_graph_context.hpp"
+#include "node_graph_editor.hpp"
 
 namespace ORL
 {
@@ -82,15 +83,35 @@ PropertyEditor::PropertyEditor(const Selection& selection,
     auto* content_layout = new QVBoxLayout(content);
     content_layout->setContentsMargins(8, 8, 8, 8);
 
-    auto* selection_group = new QGroupBox(QStringLiteral("Selection"), content);
-    auto* selection_layout = new QFormLayout(selection_group);
-    selection_summary_ = new QLabel(selection_group);
-    selected_items_ = new QLabel(selection_group);
+    selection_group_ = new QGroupBox(
+        QStringLiteral("Selection"), content);
+    auto* selection_layout = new QFormLayout(selection_group_);
+    selection_summary_ = new QLabel(selection_group_);
+    selected_items_ = new QLabel(selection_group_);
     selected_items_->setWordWrap(true);
     selected_items_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     selection_layout->addRow(QStringLiteral("Count"), selection_summary_);
     selection_layout->addRow(QStringLiteral("Items"), selected_items_);
-    content_layout->addWidget(selection_group);
+    content_layout->addWidget(selection_group_);
+
+    node_group_ = new QGroupBox(
+        QStringLiteral("Node Graph"), content);
+    auto* node_layout = new QFormLayout(node_group_);
+    node_stage_ = new QLabel(node_group_);
+    node_kind_ = new QLabel(node_group_);
+    node_id_ = new QLabel(node_group_);
+    node_definition_ = new QLabel(node_group_);
+    node_ports_ = new QLabel(node_group_);
+    node_id_->setWordWrap(true);
+    node_definition_->setWordWrap(true);
+    node_ports_->setWordWrap(true);
+    node_layout->addRow(QStringLiteral("Stage"), node_stage_);
+    node_layout->addRow(QStringLiteral("Kind"), node_kind_);
+    node_layout->addRow(QStringLiteral("ID"), node_id_);
+    node_layout->addRow(QStringLiteral("Type"), node_definition_);
+    node_layout->addRow(QStringLiteral("Ports"), node_ports_);
+    content_layout->addWidget(node_group_);
+    node_group_->setVisible(false);
 
     nameGroup = new QGroupBox(QStringLiteral("Name"), content);
     auto* name_layout = new QFormLayout(nameGroup);
@@ -191,13 +212,13 @@ PropertyEditor::PropertyEditor(const Selection& selection,
     }
     content_layout->addWidget(transform_group_);
 
-    auto* draft_note = new QLabel(
+    draft_note_ = new QLabel(
         QStringLiteral("Edit a component and press Enter or leave the field "
                        "to write it back to the selected element."),
         content);
-    draft_note->setWordWrap(true);
-    draft_note->setStyleSheet(QStringLiteral("color: palette(mid);"));
-    content_layout->addWidget(draft_note);
+    draft_note_->setWordWrap(true);
+    draft_note_->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    content_layout->addWidget(draft_note_);
     content_layout->addStretch(1);
 
     scroll_area_->setWidget(content);
@@ -205,6 +226,18 @@ PropertyEditor::PropertyEditor(const Selection& selection,
 }
 
 void PropertyEditor::refresh() {
+    if (context_ == Context::NodeGraph) {
+        refresh_node_graph_context();
+        return;
+    }
+    refresh_scene_context();
+}
+
+void PropertyEditor::refresh_scene_context() {
+    selection_group_->setVisible(true);
+    node_group_->setVisible(false);
+    draft_note_->setVisible(true);
+
     const auto& refs = selection_.refs();
     if (refs.empty()) {
         selection_summary_->setText(QStringLiteral("Nothing selected"));
@@ -253,6 +286,48 @@ void PropertyEditor::refresh() {
         rotation_editor_, values.rotation_degrees, has_trs);
     set_vector_editor(scale_editor_, values.scale, has_trs);
     transform_group_->setVisible(true);
+}
+
+void PropertyEditor::refresh_node_graph_context() {
+    selection_group_->setVisible(false);
+    node_group_->setVisible(true);
+    nameGroup->setVisible(false);
+    transform_group_->setVisible(false);
+    draft_note_->setVisible(false);
+
+    if (node_graph_editor_ == nullptr) {
+        node_stage_->setText(QStringLiteral("Unavailable"));
+        node_kind_->setText(QStringLiteral("No graph"));
+        node_id_->setText(QStringLiteral("None"));
+        node_definition_->setText(QStringLiteral("Node graph is unavailable."));
+        node_ports_->setText(QStringLiteral("None"));
+        return;
+    }
+
+    node_stage_->setText(
+        node_graph_editor_->stage() == orlgraph::GraphStage::Solver
+            ? QStringLiteral("Solver")
+            : QStringLiteral("Deformer"));
+    const auto node = node_graph_editor_->selected_node_info();
+    if (!node.has_value()) {
+        node_kind_->setText(QStringLiteral("No node selected"));
+        node_id_->setText(QStringLiteral("None"));
+        node_definition_->setText(
+            QStringLiteral("Click a node in the graph to inspect it."));
+        node_ports_->setText(QStringLiteral("None"));
+        return;
+    }
+
+    node_kind_->setText(node->kind);
+    node_id_->setText(node->id);
+    node_definition_->setText(node->definition.isEmpty()
+        ? node->title : node->definition);
+    const QString inputs = node->inputs.isEmpty()
+        ? QStringLiteral("None") : node->inputs.join(QStringLiteral(", "));
+    const QString outputs = node->outputs.isEmpty()
+        ? QStringLiteral("None") : node->outputs.join(QStringLiteral(", "));
+    node_ports_->setText(
+        QStringLiteral("Inputs: %1\nOutputs: %2").arg(inputs, outputs));
 }
 
 bool PropertyEditor::read_vector_component(

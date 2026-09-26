@@ -12,12 +12,14 @@
 #include <QRectF>
 #include <QSizeF>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QWidget>
 
 #include "../component_manager.hpp"
 #include "../node_graph/node_ops.hpp"
 #include "../project_serialization.hpp"
+#include "node_color_theme.hpp"
 #include "orlgraph/orlgraph.hpp"
 
 class QMouseEvent;
@@ -34,6 +36,15 @@ namespace ORL
 class SceneInputCatalog;
 class SceneGraphContext;
 class Selection;
+
+struct NodeSelectionInfo {
+    QString id;
+    QString title;
+    QString kind;
+    QString definition;
+    QStringList inputs;
+    QStringList outputs;
+};
 
 // Draft Blender-style node canvas. When attached to a SceneGraphContext it
 // edits that context's active graph directly.
@@ -53,6 +64,8 @@ public:
     bool save_project_file(bool save_as);
     void set_stage(orlgraph::GraphStage stage);
     orlgraph::GraphStage stage() const { return stage_; }
+    std::optional<NodeSelectionInfo> selected_node_info() const;
+    void set_node_color_theme(NodeColorTheme theme);
     void set_scene_input_catalog(const SceneInputCatalog* catalog);
     void refresh_scene_inputs();
     void create_frame_from_selection();
@@ -160,6 +173,9 @@ private:
     void clear_find_controls();
     void rebuild_find_controls();
     void refresh_find_controls();
+    QRectF find_control_rect(const Node& node) const;
+    int find_control_at(const QPointF& scene) const;
+    void show_find_control_popup(int control_index, const QPoint& anchor);
     void position_find_controls();
     void clear_frame_controls();
     void rebuild_frame_controls();
@@ -227,6 +243,7 @@ private:
     ComponentId project_deformer_id;
     orlgraph::GraphStage stage_ = orlgraph::GraphStage::Solver;
     std::size_t attached_graph_revision_ = 0;
+    NodeColorTheme node_color_theme_ = NodeColorTheme::default_theme();
     std::optional<QString> graph_file_path_;
     const SceneInputCatalog* scene_input_catalog_ = nullptr;
     QVector<FindControl> find_controls_;
