@@ -162,6 +162,9 @@ private:
     void clear_find_controls();
     void rebuild_find_controls();
     void refresh_find_controls();
+    QRectF find_control_rect(const Node& node) const;
+    int find_control_at(const QPointF& scene) const;
+    void show_find_control_popup(int control_index, const QPoint& anchor);
     void position_find_controls();
     void clear_frame_controls();
     void rebuild_frame_controls();
@@ -233,6 +236,7 @@ private:
     std::optional<QString> graph_file_path_;
     const SceneInputCatalog* scene_input_catalog_ = nullptr;
     QVector<FindControl> find_controls_;
+    QComboBox* active_find_popup_ = nullptr;
     QVector<FrameControl> frameControls;
 
     struct StageLayout {

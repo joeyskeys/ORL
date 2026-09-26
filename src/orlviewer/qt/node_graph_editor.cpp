@@ -18,8 +18,10 @@
 #include <QPainterPath>
 #include <QPaintEvent>
 #include <QSet>
+#include <QSizePolicy>
 #include <QSignalBlocker>
 #include <QStringList>
+#include <QTimer>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -43,6 +45,10 @@ namespace ORL
 
 namespace
 {
+
+constexpr double kInlineFindControlZoom = 0.8;
+constexpr int kFindControlPopupMinimumWidth = 220;
+constexpr int kFindControlPopupMaximumWidth = 360;
 
 std::optional<SceneElementKind> find_element_kind(
     std::string_view qualified_name)
@@ -948,6 +954,10 @@ void NodeGraphEditor::create_graph_input(
 
 void NodeGraphEditor::clear_find_controls()
 {
+    if (active_find_popup_ != nullptr) {
+        active_find_popup_->hidePopup();
+        active_find_popup_ = nullptr;
+    }
     for (const auto& control : find_controls_) {
         delete control.combo;
     }
@@ -972,6 +982,8 @@ void NodeGraphEditor::rebuild_find_controls()
 
         auto* combo = new QComboBox(this);
         combo->setEditable(false);
+        combo->setMinimumWidth(0);
+        combo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
         combo->setPlaceholderText(QStringLiteral("Select scene element"));
         combo->setToolTip(QStringLiteral(
             "Select the scene element used by this find node"));
@@ -1002,6 +1014,14 @@ void NodeGraphEditor::rebuild_find_controls()
                 if (changed) {
                     notify_graph_changed();
                 }
+            });
+        QObject::connect(combo, qOverload<int>(&QComboBox::activated), this,
+            [this](int) {
+                QTimer::singleShot(0, this, [this] {
+                    active_find_popup_ = nullptr;
+                    position_find_controls();
+                    update();
+                });
             });
         find_controls_.push_back(FindControl{node.id, combo});
     }
@@ -1109,9 +1129,20 @@ void NodeGraphEditor::refresh_find_controls()
     }
 }
 
-void NodeGraphEditor::position_find_controls()
+QRectF NodeGraphEditor::find_control_rect(const Node& node) const
 {
-    for (const auto& control : find_controls_) {
+    const QRectF rect = node_rect(node);
+    return QRectF{
+        rect.left() + 12.0,
+        rect.bottom() - 29.0,
+        rect.width() - 24.0,
+        22.0};
+}
+
+int NodeGraphEditor::find_control_at(const QPointF& scene) const
+{
+    for (int index = 0; index < find_controls_.size(); ++index) {
+        const auto& control = find_controls_[index];
         if (control.combo == nullptr) {
             continue;
         }
@@ -1119,23 +1150,90 @@ void NodeGraphEditor::position_find_controls()
             [&control](const Node& node) {
                 return node.id == control.node_id;
             });
-        if (node_iterator == nodes_.cend() || node_is_hidden(*node_iterator)) {
-            control.combo->setVisible(false);
+        if (node_iterator == nodes_.cend()
+            || node_is_hidden(*node_iterator))
+        {
             continue;
         }
-        const QRectF& node = node_rect(*node_iterator);
-        const QRectF local{
-            node.left() + 12.0,
-            node.bottom() - 29.0,
-            node.width() - 24.0,
-            22.0};
+        if (find_control_rect(*node_iterator).contains(scene)) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+void NodeGraphEditor::show_find_control_popup(
+    int control_index, const QPoint& anchor)
+{
+    if (control_index < 0 || control_index >= find_controls_.size()) {
+        return;
+    }
+    auto* combo = find_controls_[control_index].combo;
+    if (combo == nullptr) {
+        return;
+    }
+
+    active_find_popup_ = combo;
+    const int width = std::clamp(
+        combo->sizeHint().width(),
+        kFindControlPopupMinimumWidth,
+        kFindControlPopupMaximumWidth);
+    const int height = std::max(24, combo->sizeHint().height());
+    combo->setGeometry(QRect{
+        anchor.x() - 4,
+        anchor.y() - height / 2,
+        width,
+        height});
+    combo->show();
+    combo->raise();
+    combo->setFocus(Qt::MouseFocusReason);
+    combo->showPopup();
+}
+
+void NodeGraphEditor::position_find_controls()
+{
+    for (const auto& control : find_controls_) {
+        if (control.combo == nullptr) {
+            continue;
+        }
+
+        const bool popup_visible = active_find_popup_ == control.combo
+            && control.combo->view() != nullptr
+            && control.combo->view()->isVisible();
+        if (popup_visible) {
+            control.combo->show();
+            control.combo->raise();
+            continue;
+        }
+        if (active_find_popup_ == control.combo) {
+            active_find_popup_ = nullptr;
+        }
+
+        const auto node_iterator = std::find_if(nodes_.cbegin(), nodes_.cend(),
+            [&control](const Node& node) {
+                return node.id == control.node_id;
+            });
+        if (node_iterator == nodes_.cend() || node_is_hidden(*node_iterator)) {
+            control.combo->hide();
+            continue;
+        }
+
+        const bool selected = selected_node_ >= 0
+            && selected_node_ < nodes_.size()
+            && nodes_[selected_node_].id == node_iterator->id;
+        if (!selected || zoom_ < kInlineFindControlZoom) {
+            control.combo->hide();
+            continue;
+        }
+
+        const QRectF local = find_control_rect(*node_iterator);
         const QRectF viewport{
             pan_.x() + local.left() * zoom_,
             pan_.y() + local.top() * zoom_,
             local.width() * zoom_,
             std::max(18.0, local.height() * zoom_)};
         control.combo->setGeometry(viewport.toRect());
-        control.combo->setVisible(true);
+        control.combo->show();
         control.combo->raise();
     }
 }
@@ -1754,6 +1852,7 @@ void NodeGraphEditor::select_only(int index)
     if (index >= 0) {
         selectedNodes.push_back(index);
     }
+    position_find_controls();
 }
 
 void NodeGraphEditor::select_only_frame(int index)
@@ -1764,6 +1863,7 @@ void NodeGraphEditor::select_only_frame(int index)
     if (index >= 0) {
         selectedFrames.push_back(index);
     }
+    position_find_controls();
 }
 
 void NodeGraphEditor::move_frame(int index, const QPointF& delta)
@@ -1930,6 +2030,34 @@ void NodeGraphEditor::draw_node(QPainter& painter, int index) const
         painter.drawText(text_rect,
             Qt::AlignRight | Qt::AlignVCenter, port_label(node.outputs[port]));
     }
+
+    const auto find_control = std::find_if(
+        find_controls_.cbegin(), find_controls_.cend(),
+        [&node](const FindControl& control) {
+            return control.node_id == node.id;
+        });
+    if (find_control != find_controls_.cend()
+        && find_control->combo != nullptr
+        && !find_control->combo->isVisible())
+    {
+        const QRectF value_rect = find_control_rect(node);
+        QString value = find_control->combo->currentText().trimmed();
+        if (value.isEmpty()) {
+            value = QStringLiteral("Select scene element");
+        }
+        const int text_width = static_cast<int>(
+            std::max(0.0, value_rect.width() - 16.0));
+        const QString display = metrics.elidedText(
+            value, Qt::ElideRight, text_width);
+        painter.setPen(QPen(
+            QColor{QStringLiteral("#3c4a5c")}, 1.0 / zoom_));
+        painter.setBrush(QColor{QStringLiteral("#171d25")});
+        painter.drawRoundedRect(value_rect, 4.0, 4.0);
+        painter.setPen(QColor{QStringLiteral("#aebaca")});
+        painter.drawText(
+            value_rect.adjusted(8.0, 0.0, -8.0, 0.0),
+            Qt::AlignLeft | Qt::AlignVCenter, display);
+    }
 }
 
 void NodeGraphEditor::paintEvent(QPaintEvent*)
@@ -2008,6 +2136,21 @@ void NodeGraphEditor::mousePressEvent(QMouseEvent* event)
         const int collapse = collapse_button_at(scene);
         if (collapse >= 0) {
             toggle_frame_collapsed(collapse);
+            event->accept();
+            return;
+        }
+        const int find_control = find_control_at(scene);
+        if (find_control >= 0) {
+            const QString node_id = find_controls_[find_control].node_id;
+            for (int index = 0; index < nodes_.size(); ++index) {
+                if (nodes_[index].id == node_id) {
+                    select_only(index);
+                    break;
+                }
+            }
+            show_find_control_popup(
+                find_control, event->position().toPoint());
+            update();
             event->accept();
             return;
         }
@@ -2123,6 +2266,7 @@ void NodeGraphEditor::mouseReleaseEvent(QMouseEvent* event)
         if (boxSelecting) {
             boxSelectCurrent = scene_position(event->position());
             apply_box_selection();
+            position_find_controls();
             boxSelecting = false;
             dragging_node_ = -1;
             draggingFrame = -1;
