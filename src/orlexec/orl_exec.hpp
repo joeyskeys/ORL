@@ -193,6 +193,7 @@ public:
     bool evaluate_device(std::uint32_t element_count = 1);
     std::optional<DeviceBufferView> device_buffer_view(std::string_view parameter);
     std::optional<std::uint64_t> device_buffer_pointer(std::string_view parameter);
+    std::optional<DeviceBufferView> handle_joint_device_view();
     bool synchronize();
 
     Backend backend() const;

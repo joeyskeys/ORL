@@ -1598,14 +1598,13 @@ bool GraphSceneRuntime::execute_orl_segment(
         }
     }
 
-    // Solver joints now live in the implicit packed SolverContext arena.
-    // Keep its device subrange available to the deformer without forcing a
+    // Typed solver views write the internal Joint arena directly. Keep that
+    // device allocation available to the deformer without forcing a
     // graph-level joints socket or a host readback.
     if (solver_device_evaluation) {
-        const auto device = graph_context_.scene_inputs()
-            .solver_joints_device_view(execution);
+        auto device = execution.handle_joint_device_view();
         if (!device.has_value()) {
-            std::cerr << "Deformer: implicit solver joints device buffer is "
+            std::cerr << "Deformer: typed solver Joint device buffer is "
                          "unavailable\n";
             return false;
         }

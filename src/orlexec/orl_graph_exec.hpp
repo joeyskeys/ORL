@@ -121,6 +121,7 @@ public:
         const GraphInputResolver& resolver);
     bool bind_handle_view_context(
         orlrig::HandleViewContext& context);
+    std::optional<DeviceBufferView> handle_joint_device_view();
     void clear_bindings();
 
     std::optional<std::int64_t> evaluate(std::uint32_t element_count = 1);

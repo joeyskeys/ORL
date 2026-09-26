@@ -515,6 +515,13 @@ bool OrlGraphExecution::bind_handle_view_context(
     return true;
 }
 
+std::optional<DeviceBufferView> OrlGraphExecution::handle_joint_device_view()
+{
+    return execution_.has_value()
+        ? execution_->handle_joint_device_view()
+        : std::nullopt;
+}
+
 void OrlGraphExecution::clear_bindings() {
     if (execution_.has_value()) {
         execution_->clear_bindings();

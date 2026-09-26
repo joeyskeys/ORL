@@ -2005,6 +2005,25 @@ std::optional<DeviceBufferView> OrlExecution::device_buffer_view(
     return DeviceBufferView{view->device_ptr, view->bytes};
 }
 
+std::optional<DeviceBufferView> OrlExecution::handle_joint_device_view()
+{
+    if (impl_ == nullptr || !impl_->initialized
+        || impl_->backend != Backend::Cuda || impl_->gpu == nullptr
+        || impl_->handle_joint_device == 0
+        || impl_->handle_joint_bytes == 0)
+    {
+        return std::nullopt;
+    }
+    const auto view = impl_->gpu->DeviceBufferView(
+        impl_->handle_joint_device);
+    if (!view.has_value()) {
+        impl_->errors.clear();
+        append_errors(impl_->errors, impl_->gpu->Errors());
+        return std::nullopt;
+    }
+    return DeviceBufferView{view->device_ptr, impl_->handle_joint_bytes};
+}
+
 std::optional<std::uint64_t> OrlExecution::device_buffer_pointer(
     std::string_view parameter)
 {
