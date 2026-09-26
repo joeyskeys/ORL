@@ -351,8 +351,9 @@ name with zero line/column because expression nodes do not carry positions.
 
 Structs and handles are declaration-before-use. A name cannot be both a
 struct and a handle. `SolverContext` and `HierarchyContext` are reserved
-struct names. Handle unions can contain only previously declared exact handle
-types; nested unions are flattened and sorted.
+struct names. Handle unions can contain previously declared handle names;
+exact leaves are collected, nested unions are flattened, and the leaf list is
+sorted and deduplicated.
 
 Exact handle canonical identity is derived from the source/module origin:
 
