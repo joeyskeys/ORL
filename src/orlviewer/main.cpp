@@ -67,6 +67,7 @@ namespace {
 
 constexpr std::uint32_t kViewportWidth = 1200;
 constexpr std::uint32_t kViewportHeight = 800;
+constexpr const char* kQtThemeFileName = "dark.qss";
 
 // Semantic directions encoded by ORL::Frame, expressed in a shared world:
 // +X right, +Y up, +Z in (toward the viewer), matching frame_gl / OpenGL / Maya.
@@ -153,7 +154,8 @@ void setup_qt_theme(QApplication& application) {
     }
 
     const auto theme_path =
-        std::filesystem::path{ORL_RESOURCE_DIR} / "theme.qss";
+        std::filesystem::path{ORL_RESOURCE_DIR}
+        / "theme" / kQtThemeFileName;
     QFile theme_file(QString::fromStdString(theme_path.string()));
     if (!theme_file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         std::cerr << "Failed to load Qt theme: "
