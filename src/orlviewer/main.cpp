@@ -28,6 +28,7 @@
 #include <QEvent>
 #include <QFile>
 #include <QStyleFactory>
+#include <QTimer>
 #include "qt/node_color_theme.hpp"
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
@@ -195,6 +196,9 @@ public:
     }
 
     ~RightDockRatioController() override {
+        if (main_window_ != nullptr && updates_suspended_) {
+            main_window_->setUpdatesEnabled(true);
+        }
         if (main_window_ != nullptr) {
             main_window_->removeEventFilter(this);
         }
@@ -209,7 +213,11 @@ protected:
             && event->type() == QEvent::Resize)
         {
             if (!applying_resize_) {
-                resize_docks();
+                if (!updates_suspended_) {
+                    main_window_->setUpdatesEnabled(false);
+                    updates_suspended_ = true;
+                }
+                schedule_resize();
             }
         }
         else if (event->type() == QEvent::Resize
@@ -227,6 +235,22 @@ protected:
 private:
     static constexpr double kMinimumRatio = 0.10;
     static constexpr double kMaximumRatio = 0.80;
+
+    void schedule_resize() {
+        if (resize_pending_ || main_window_ == nullptr) {
+            return;
+        }
+        resize_pending_ = true;
+        QTimer::singleShot(0, this, [this] {
+            resize_pending_ = false;
+            resize_docks();
+            if (main_window_ != nullptr && updates_suspended_) {
+                updates_suspended_ = false;
+                main_window_->setUpdatesEnabled(true);
+                main_window_->update();
+            }
+        });
+    }
 
     void resize_docks() {
         if (main_window_ == nullptr || docks_.isEmpty()
@@ -294,6 +318,8 @@ private:
     double width_ratio_ = 0.30;
     bool applying_resize_ = false;
     int last_main_width_ = 0;
+    bool resize_pending_ = false;
+    bool updates_suspended_ = false;
 };
 #endif
 
