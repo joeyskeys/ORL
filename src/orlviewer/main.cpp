@@ -24,11 +24,8 @@
 #if ORL_USE_QT6
 #include "gui/qt_backend.hpp"
 #include <QApplication>
-#include <QDockWidget>
-#include <QEvent>
 #include <QFile>
 #include <QStyleFactory>
-#include <QTimer>
 #include "qt/node_color_theme.hpp"
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
@@ -174,153 +171,6 @@ void setup_qt_theme(QApplication& application) {
     application.setStyleSheet(QString::fromUtf8(theme_file.readAll()));
 }
 
-class RightDockRatioController final : public QObject {
-public:
-    RightDockRatioController(QMainWindow* main_window,
-        QList<QDockWidget*> docks, double width_ratio)
-        : main_window_(main_window)
-        , width_ratio_(width_ratio)
-    {
-        for (auto* dock : docks) {
-            if (dock != nullptr) {
-                docks_.push_back(dock);
-                dock->installEventFilter(this);
-            }
-        }
-        if (main_window_ != nullptr) {
-            last_main_width_ = main_window_->width();
-            main_window_->installEventFilter(this);
-            capture_ratio_from_docks();
-            resize_docks();
-        }
-    }
-
-    ~RightDockRatioController() override {
-        if (main_window_ != nullptr && updates_suspended_) {
-            main_window_->setUpdatesEnabled(true);
-        }
-        if (main_window_ != nullptr) {
-            main_window_->removeEventFilter(this);
-        }
-        for (auto* dock : docks_) {
-            dock->removeEventFilter(this);
-        }
-    }
-
-protected:
-    bool eventFilter(QObject* watched, QEvent* event) override {
-        if (watched == main_window_
-            && event->type() == QEvent::Resize)
-        {
-            if (!applying_resize_) {
-                if (!updates_suspended_) {
-                    main_window_->setUpdatesEnabled(false);
-                    updates_suspended_ = true;
-                }
-                schedule_resize();
-            }
-        }
-        else if (event->type() == QEvent::Resize
-            && !applying_resize_)
-        {
-            if (auto* dock = qobject_cast<QDockWidget*>(watched);
-                dock != nullptr)
-            {
-                capture_ratio_from_dock(dock);
-            }
-        }
-        return QObject::eventFilter(watched, event);
-    }
-
-private:
-    static constexpr double kMinimumRatio = 0.10;
-    static constexpr double kMaximumRatio = 0.80;
-
-    void schedule_resize() {
-        if (resize_pending_ || main_window_ == nullptr) {
-            return;
-        }
-        resize_pending_ = true;
-        QTimer::singleShot(0, this, [this] {
-            resize_pending_ = false;
-            resize_docks();
-            if (main_window_ != nullptr && updates_suspended_) {
-                updates_suspended_ = false;
-                main_window_->setUpdatesEnabled(true);
-                main_window_->update();
-            }
-        });
-    }
-
-    void resize_docks() {
-        if (main_window_ == nullptr || docks_.isEmpty()
-            || main_window_->width() <= 0)
-        {
-            return;
-        }
-        QList<QDockWidget*> visible_docks;
-        for (auto* dock : docks_) {
-            if (dock->isVisible()) {
-                visible_docks.push_back(dock);
-            }
-        }
-        if (visible_docks.isEmpty()) {
-            return;
-        }
-
-        const int width = std::max(
-            1, static_cast<int>(main_window_->width() * width_ratio_));
-        QList<QDockWidget*> width_docks;
-        width_docks.push_back(visible_docks.front());
-        QList<int> sizes;
-        sizes.push_back(width);
-        applying_resize_ = true;
-        main_window_->resizeDocks(
-            width_docks, sizes, Qt::Horizontal);
-        applying_resize_ = false;
-        last_main_width_ = main_window_->width();
-        capture_ratio_from_dock(visible_docks.front());
-    }
-
-    void capture_ratio_from_docks() {
-        for (auto* dock : docks_) {
-            if (capture_ratio_from_dock(dock)) {
-                return;
-            }
-        }
-    }
-
-    bool capture_ratio_from_dock(QDockWidget* dock) {
-        if (dock == nullptr || !dock->isVisible()
-            || main_window_ == nullptr
-            || main_window_->dockWidgetArea(dock)
-                != Qt::RightDockWidgetArea
-            || main_window_->width() <= 0
-            || dock->width() <= 0)
-        {
-            return false;
-        }
-        if (last_main_width_ > 0
-            && main_window_->width() != last_main_width_
-            && !applying_resize_)
-        {
-            return false;
-        }
-        width_ratio_ = std::clamp(
-            static_cast<double>(dock->width())
-                / static_cast<double>(main_window_->width()),
-            kMinimumRatio, kMaximumRatio);
-        return true;
-    }
-
-    QMainWindow* main_window_ = nullptr;
-    QList<QDockWidget*> docks_;
-    double width_ratio_ = 0.30;
-    bool applying_resize_ = false;
-    int last_main_width_ = 0;
-    bool resize_pending_ = false;
-    bool updates_suspended_ = false;
-};
 #endif
 
 } // namespace
@@ -420,16 +270,7 @@ int main(int argc, char** argv) {
     }
 #endif
 #if ORL_USE_QT6
-    auto* main_window = window_backend.main_window();
-    QList<QDockWidget*> right_docks;
-    right_docks.push_back(
-        main_window->findChild<QDockWidget*>(
-            QStringLiteral("vkkk.hud")));
-    right_docks.push_back(
-        main_window->findChild<QDockWidget*>(
-            QStringLiteral("vkkk.dock.Node Graph")));
-    RightDockRatioController right_dock_ratio(
-        main_window, right_docks, 0.30);
+    window_backend.set_right_dock_ratio(0.30);
 #endif
 
     using Viewport = vkkk::vp::Viewport<
