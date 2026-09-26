@@ -18,6 +18,7 @@
 #include "../component_manager.hpp"
 #include "../node_graph/node_ops.hpp"
 #include "../project_serialization.hpp"
+#include "node_color_theme.hpp"
 #include "orlgraph/orlgraph.hpp"
 
 class QMouseEvent;
@@ -53,6 +54,7 @@ public:
     bool save_project_file(bool save_as);
     void set_stage(orlgraph::GraphStage stage);
     orlgraph::GraphStage stage() const { return stage_; }
+    void set_node_color_theme(NodeColorTheme theme);
     void set_scene_input_catalog(const SceneInputCatalog* catalog);
     void refresh_scene_inputs();
     void create_frame_from_selection();
@@ -227,6 +229,7 @@ private:
     ComponentId project_deformer_id;
     orlgraph::GraphStage stage_ = orlgraph::GraphStage::Solver;
     std::size_t attached_graph_revision_ = 0;
+    NodeColorTheme node_color_theme_ = NodeColorTheme::default_theme();
     std::optional<QString> graph_file_path_;
     const SceneInputCatalog* scene_input_catalog_ = nullptr;
     QVector<FindControl> find_controls_;

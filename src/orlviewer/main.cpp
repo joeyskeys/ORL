@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -25,6 +26,7 @@
 #include <QApplication>
 #include <QFile>
 #include <QStyleFactory>
+#include "qt/node_color_theme.hpp"
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
 #else
@@ -67,7 +69,7 @@ namespace {
 
 constexpr std::uint32_t kViewportWidth = 1200;
 constexpr std::uint32_t kViewportHeight = 800;
-constexpr const char* kQtThemeFileName = "dark.qss";
+constexpr const char* kQtThemeName = "dark";
 
 // Semantic directions encoded by ORL::Frame, expressed in a shared world:
 // +X right, +Y up, +Z in (toward the viewer), matching frame_gl / OpenGL / Maya.
@@ -146,6 +148,11 @@ StartupOptions parse_startup_options(int argc, char** argv) {
 }
 
 #if ORL_USE_QT6
+std::filesystem::path qt_theme_file_path(std::string_view suffix) {
+    return std::filesystem::path{ORL_RESOURCE_DIR} / "theme"
+        / (std::string{kQtThemeName} + std::string{suffix});
+}
+
 void setup_qt_theme(QApplication& application) {
     if (auto* fusion_style = QStyleFactory::create(
             QStringLiteral("Fusion")); fusion_style != nullptr)
@@ -153,9 +160,7 @@ void setup_qt_theme(QApplication& application) {
         application.setStyle(fusion_style);
     }
 
-    const auto theme_path =
-        std::filesystem::path{ORL_RESOURCE_DIR}
-        / "theme" / kQtThemeFileName;
+    const auto theme_path = qt_theme_file_path(".qss");
     QFile theme_file(QString::fromStdString(theme_path.string()));
     if (!theme_file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         std::cerr << "Failed to load Qt theme: "
@@ -232,7 +237,16 @@ int main(int argc, char** argv) {
     scene_graph.set_graph(
         std::move(empty_graph), std::move(node_registry));
 #if ORL_USE_QT6
+    std::string node_color_theme_error;
+    auto node_color_theme = ORL::NodeColorTheme::from_file(
+        qt_theme_file_path("_node_colors.json"), &node_color_theme_error);
+    if (!node_color_theme_error.empty()) {
+        std::cerr << "Qt node color theme warning: "
+                  << node_color_theme_error
+                  << "; using built-in fallback colors\n";
+    }
     auto* node_graph_editor = new ORL::NodeGraphEditor();
+    node_graph_editor->set_node_color_theme(std::move(node_color_theme));
     node_graph_editor->set_scene_graph_context(&scene_graph);
     node_graph_editor->set_project_context(
         &components, weight_id, deformer_id);

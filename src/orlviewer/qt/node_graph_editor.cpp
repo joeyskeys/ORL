@@ -44,13 +44,6 @@ namespace ORL
 namespace
 {
 
-const QVector<QColor> kNodeColors = {
-    QColor{QStringLiteral("#4c78a8")},
-    QColor{QStringLiteral("#5b8e7d")},
-    QColor{QStringLiteral("#b7791f")},
-    QColor{QStringLiteral("#805ad5")},
-};
-
 std::optional<SceneElementKind> find_element_kind(
     std::string_view qualified_name)
 {
@@ -227,6 +220,12 @@ void NodeGraphEditor::set_stage(orlgraph::GraphStage stage)
             ? &solver_graph_storage_ : &deformer_graph_storage_;
     }
     apply_stage_view();
+    rebuild_view();
+}
+
+void NodeGraphEditor::set_node_color_theme(NodeColorTheme theme)
+{
+    node_color_theme_ = std::move(theme);
     rebuild_view();
 }
 
@@ -641,11 +640,13 @@ void NodeGraphEditor::rebuild_view()
         node.position = QPointF(
             64.0 + static_cast<double>(index % 3) * 300.0,
             80.0 + static_cast<double>(index / 3) * 210.0);
-        node.color = kNodeColors[index % kNodeColors.size()];
+        node.color = node_color_theme_.default_color();
         bool has_find_control = false;
 
         if (const auto* definition = active_registry().find(instance.definition)) {
             node.title = QString::fromStdString(definition->qualified_name);
+            node.color = node_color_theme_.color_for_definition(
+                definition->qualified_name);
             has_find_control = find_element_kind(
                 definition->qualified_name).has_value();
             for (const auto& port : definition->inputs) {
@@ -706,9 +707,8 @@ void NodeGraphEditor::rebuild_view()
             ? QPointF{-280.0, 80.0 + boundary_index * 150.0}
             : QPointF{980.0, 80.0 + boundary_index * 150.0};
         node.size = QSizeF{240.0, 86.0};
-        node.color = kind == Node::Kind::GraphInput
-            ? QColor{QStringLiteral("#4c78a8")}
-            : QColor{QStringLiteral("#5b8e7d")};
+        node.color = node_color_theme_.color_for_interface(
+            kind == Node::Kind::GraphInput);
 
         Port port;
         port.id = QString::fromStdString(id.value);
