@@ -2148,8 +2148,11 @@ void NodeGraphEditor::mousePressEvent(QMouseEvent* event)
                     break;
                 }
             }
-            show_find_control_popup(
-                find_control, event->position().toPoint());
+            auto* combo = find_controls_[find_control].combo;
+            if (combo != nullptr && combo->isEnabled() && combo->count() > 0) {
+                show_find_control_popup(
+                    find_control, event->position().toPoint());
+            }
             update();
             event->accept();
             return;
