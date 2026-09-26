@@ -28,7 +28,6 @@
 #include <QEvent>
 #include <QFile>
 #include <QStyleFactory>
-#include <QTimer>
 #include "qt/node_color_theme.hpp"
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
@@ -191,7 +190,7 @@ public:
             last_main_width_ = main_window_->width();
             main_window_->installEventFilter(this);
             capture_ratio_from_docks();
-            schedule_resize();
+            resize_docks();
         }
     }
 
@@ -209,10 +208,12 @@ protected:
         if (watched == main_window_
             && event->type() == QEvent::Resize)
         {
-            schedule_resize();
+            if (!applying_resize_) {
+                resize_docks();
+            }
         }
         else if (event->type() == QEvent::Resize
-            && !resize_pending_ && !applying_resize_)
+            && !applying_resize_)
         {
             if (auto* dock = qobject_cast<QDockWidget*>(watched);
                 dock != nullptr)
@@ -226,17 +227,6 @@ protected:
 private:
     static constexpr double kMinimumRatio = 0.10;
     static constexpr double kMaximumRatio = 0.80;
-
-    void schedule_resize() {
-        if (resize_pending_ || main_window_ == nullptr) {
-            return;
-        }
-        resize_pending_ = true;
-        QTimer::singleShot(0, this, [this] {
-            resize_pending_ = false;
-            resize_docks();
-        });
-    }
 
     void resize_docks() {
         if (main_window_ == nullptr || docks_.isEmpty()
@@ -302,7 +292,6 @@ private:
     QMainWindow* main_window_ = nullptr;
     QList<QDockWidget*> docks_;
     double width_ratio_ = 0.30;
-    bool resize_pending_ = false;
     bool applying_resize_ = false;
     int last_main_width_ = 0;
 };
