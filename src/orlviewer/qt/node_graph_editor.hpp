@@ -247,7 +247,6 @@ private:
     std::optional<QString> graph_file_path_;
     const SceneInputCatalog* scene_input_catalog_ = nullptr;
     QVector<FindControl> find_controls_;
-    QComboBox* active_find_popup_ = nullptr;
     QVector<FrameControl> frameControls;
 
     struct StageLayout {

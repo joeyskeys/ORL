@@ -10,18 +10,18 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QHash>
+#include <QAction>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QMessageBox>
+#include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
 #include <QSet>
-#include <QSizePolicy>
 #include <QSignalBlocker>
 #include <QStringList>
-#include <QTimer>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -46,11 +46,8 @@ namespace ORL
 namespace
 {
 
-constexpr double kInlineFindControlZoom = 0.8;
 constexpr double kMinimumGraphZoom = 0.2;
 constexpr double kMaximumGraphZoom = 2.5;
-constexpr int kFindControlPopupMinimumWidth = 220;
-constexpr int kFindControlPopupMaximumWidth = 360;
 
 std::optional<SceneElementKind> find_element_kind(
     std::string_view qualified_name)
@@ -1046,10 +1043,6 @@ void NodeGraphEditor::create_graph_input(
 
 void NodeGraphEditor::clear_find_controls()
 {
-    if (active_find_popup_ != nullptr) {
-        active_find_popup_->hidePopup();
-        active_find_popup_ = nullptr;
-    }
     for (const auto& control : find_controls_) {
         delete control.combo;
     }
@@ -1074,8 +1067,6 @@ void NodeGraphEditor::rebuild_find_controls()
 
         auto* combo = new QComboBox(this);
         combo->setEditable(false);
-        combo->setMinimumWidth(0);
-        combo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
         combo->setPlaceholderText(QStringLiteral("Select scene element"));
         combo->setToolTip(QStringLiteral(
             "Select the scene element used by this find node"));
@@ -1106,14 +1097,6 @@ void NodeGraphEditor::rebuild_find_controls()
                 if (changed) {
                     notify_graph_changed();
                 }
-            });
-        QObject::connect(combo, qOverload<int>(&QComboBox::activated), this,
-            [this](int) {
-                QTimer::singleShot(0, this, [this] {
-                    active_find_popup_ = nullptr;
-                    position_find_controls();
-                    update();
-                });
             });
         find_controls_.push_back(FindControl{node.id, combo});
     }
@@ -1184,18 +1167,14 @@ void NodeGraphEditor::refresh_find_controls()
                 items_match = control.combo->itemText(index)
                     == desired_items.at(index);
             }
-            const bool popup_visible = control.combo->view() != nullptr
-                && control.combo->view()->isVisible();
-            if (!popup_visible || items_match) {
-                if (!items_match) {
-                    control.combo->clear();
-                    control.combo->addItems(desired_items);
-                }
-                const int selected_index = selected.empty()
-                    ? -1 : control.combo->findText(selected_text);
-                if (control.combo->currentIndex() != selected_index) {
-                    control.combo->setCurrentIndex(selected_index);
-                }
+            if (!items_match) {
+                control.combo->clear();
+                control.combo->addItems(desired_items);
+            }
+            const int selected_index = selected.empty()
+                ? -1 : control.combo->findText(selected_text);
+            if (control.combo->currentIndex() != selected_index) {
+                control.combo->setCurrentIndex(selected_index);
             }
             control.combo->setEnabled(!names.empty());
         }
@@ -1265,68 +1244,37 @@ void NodeGraphEditor::show_find_control_popup(
         return;
     }
 
-    active_find_popup_ = combo;
-    const int width = std::clamp(
-        combo->sizeHint().width(),
-        kFindControlPopupMinimumWidth,
-        kFindControlPopupMaximumWidth);
-    const int height = std::max(24, combo->sizeHint().height());
-    combo->setGeometry(QRect{
-        anchor.x() - 4,
-        anchor.y() - height / 2,
-        width,
-        height});
-    combo->show();
-    combo->raise();
-    combo->setFocus(Qt::MouseFocusReason);
-    combo->showPopup();
+    QMenu menu(this);
+    QVector<QAction*> actions;
+    actions.reserve(combo->count());
+    QAction* current_action = nullptr;
+    for (int index = 0; index < combo->count(); ++index) {
+        auto* action = menu.addAction(combo->itemText(index));
+        actions.push_back(action);
+        if (index == combo->currentIndex()) {
+            current_action = action;
+        }
+    }
+    if (actions.isEmpty()) {
+        return;
+    }
+
+    QAction* chosen = menu.exec(mapToGlobal(anchor), current_action);
+    if (chosen != nullptr) {
+        const int index = actions.indexOf(chosen);
+        if (index >= 0) {
+            combo->setCurrentIndex(index);
+        }
+    }
+    update();
 }
 
 void NodeGraphEditor::position_find_controls()
 {
     for (const auto& control : find_controls_) {
-        if (control.combo == nullptr) {
-            continue;
-        }
-
-        const bool popup_visible = active_find_popup_ == control.combo
-            && control.combo->view() != nullptr
-            && control.combo->view()->isVisible();
-        if (popup_visible) {
-            control.combo->show();
-            control.combo->raise();
-            continue;
-        }
-        if (active_find_popup_ == control.combo) {
-            active_find_popup_ = nullptr;
-        }
-
-        const auto node_iterator = std::find_if(nodes_.cbegin(), nodes_.cend(),
-            [&control](const Node& node) {
-                return node.id == control.node_id;
-            });
-        if (node_iterator == nodes_.cend() || node_is_hidden(*node_iterator)) {
+        if (control.combo != nullptr) {
             control.combo->hide();
-            continue;
         }
-
-        const bool selected = selected_node_ >= 0
-            && selected_node_ < nodes_.size()
-            && nodes_[selected_node_].id == node_iterator->id;
-        if (!selected || zoom_ < kInlineFindControlZoom) {
-            control.combo->hide();
-            continue;
-        }
-
-        const QRectF local = find_control_rect(*node_iterator);
-        const QRectF viewport{
-            pan_.x() + local.left() * zoom_,
-            pan_.y() + local.top() * zoom_,
-            local.width() * zoom_,
-            std::max(18.0, local.height() * zoom_)};
-        control.combo->setGeometry(viewport.toRect());
-        control.combo->show();
-        control.combo->raise();
     }
 }
 
@@ -2129,8 +2077,7 @@ void NodeGraphEditor::draw_node(QPainter& painter, int index) const
             return control.node_id == node.id;
         });
     if (find_control != find_controls_.cend()
-        && find_control->combo != nullptr
-        && !find_control->combo->isVisible())
+        && find_control->combo != nullptr)
     {
         const QRectF value_rect = find_control_rect(node);
         QString value = find_control->combo->currentText().trimmed();
@@ -2147,8 +2094,18 @@ void NodeGraphEditor::draw_node(QPainter& painter, int index) const
         painter.drawRoundedRect(value_rect, 4.0, 4.0);
         painter.setPen(QColor{QStringLiteral("#aebaca")});
         painter.drawText(
-            value_rect.adjusted(8.0, 0.0, -8.0, 0.0),
+            value_rect.adjusted(8.0, 0.0, -28.0, 0.0),
             Qt::AlignLeft | Qt::AlignVCenter, display);
+        const QPointF arrow_center{
+            value_rect.right() - 13.0, value_rect.center().y() - 1.0};
+        painter.setPen(QPen(
+            QColor{QStringLiteral("#aebaca")}, 1.5 / zoom_));
+        painter.drawLine(
+            arrow_center + QPointF{-4.0, -2.0},
+            arrow_center + QPointF{0.0, 2.0});
+        painter.drawLine(
+            arrow_center + QPointF{0.0, 2.0},
+            arrow_center + QPointF{4.0, -2.0});
     }
 }
 
