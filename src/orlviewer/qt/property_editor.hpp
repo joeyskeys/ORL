@@ -20,14 +20,24 @@ namespace ORL
 {
 
 class ComponentManager;
+class NodeGraphEditor;
 class SceneGraphContext;
 
 class PropertyEditor final : public QWidget {
 public:
+    enum class Context {
+        Scene,
+        NodeGraph,
+    };
+
     PropertyEditor(const Selection& selection,
         ComponentManager& components, SceneGraphContext* graph_context,
         QWidget* parent = nullptr);
 
+    void set_context(Context context) { context_ = context; }
+    void set_node_graph_editor(const NodeGraphEditor* editor) {
+        node_graph_editor_ = editor;
+    }
     void refresh();
 
 private:
@@ -48,6 +58,8 @@ private:
         std::array<QLineEdit*, 3> fields{};
     };
 
+    void refresh_scene_context();
+    void refresh_node_graph_context();
     bool make_transform(const SelectionRef& ref,
         TransformValues& values, QString& source) const;
     bool read_vector_component(const VectorEditor& editor,
@@ -66,8 +78,17 @@ private:
     const Selection& selection_;
     ComponentManager& components_;
     SceneGraphContext* graphContext = nullptr;
+    const NodeGraphEditor* node_graph_editor_ = nullptr;
+    Context context_ = Context::Scene;
+    QGroupBox* selection_group_ = nullptr;
     QLabel* selection_summary_ = nullptr;
     QLabel* selected_items_ = nullptr;
+    QGroupBox* node_group_ = nullptr;
+    QLabel* node_stage_ = nullptr;
+    QLabel* node_kind_ = nullptr;
+    QLabel* node_id_ = nullptr;
+    QLabel* node_definition_ = nullptr;
+    QLabel* node_ports_ = nullptr;
     QGroupBox* nameGroup = nullptr;
     QLineEdit* nameField = nullptr;
     QGroupBox* transform_group_ = nullptr;
@@ -75,6 +96,7 @@ private:
     VectorEditor translation_editor_;
     VectorEditor rotation_editor_;
     VectorEditor scale_editor_;
+    QLabel* draft_note_ = nullptr;
     QScrollArea* scroll_area_ = nullptr;
 };
 

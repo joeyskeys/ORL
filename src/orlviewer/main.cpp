@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -23,6 +24,9 @@
 #if ORL_USE_QT6
 #include "gui/qt_backend.hpp"
 #include <QApplication>
+#include <QFile>
+#include <QStyleFactory>
+#include "qt/node_color_theme.hpp"
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
 #else
@@ -65,6 +69,7 @@ namespace {
 
 constexpr std::uint32_t kViewportWidth = 1200;
 constexpr std::uint32_t kViewportHeight = 800;
+constexpr const char* kQtThemeName = "dark";
 
 // Semantic directions encoded by ORL::Frame, expressed in a shared world:
 // +X right, +Y up, +Z in (toward the viewer), matching frame_gl / OpenGL / Maya.
@@ -142,6 +147,32 @@ StartupOptions parse_startup_options(int argc, char** argv) {
     return options;
 }
 
+#if ORL_USE_QT6
+std::filesystem::path qt_theme_file_path(std::string_view suffix) {
+    return std::filesystem::path{ORL_RESOURCE_DIR} / "theme"
+        / (std::string{kQtThemeName} + std::string{suffix});
+}
+
+void setup_qt_theme(QApplication& application) {
+    if (auto* fusion_style = QStyleFactory::create(
+            QStringLiteral("Fusion")); fusion_style != nullptr)
+    {
+        application.setStyle(fusion_style);
+    }
+
+    const auto theme_path = qt_theme_file_path(".qss");
+    QFile theme_file(QString::fromStdString(theme_path.string()));
+    if (!theme_file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        std::cerr << "Failed to load Qt theme: "
+                  << theme_path << ": "
+                  << theme_file.errorString().toStdString() << '\n';
+        return;
+    }
+    application.setStyleSheet(QString::fromUtf8(theme_file.readAll()));
+}
+
+#endif
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -152,6 +183,8 @@ int main(int argc, char** argv) {
     const auto pipeline_cache_path =
         working_directory / "orlviewer.pipeline.cache";
 #if ORL_USE_QT6
+    QApplication application(argc, argv);
+    setup_qt_theme(application);
     vkkk::QtBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport");
 #else
     vkkk::GlfwBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport", true);
@@ -205,7 +238,16 @@ int main(int argc, char** argv) {
     scene_graph.set_graph(
         std::move(empty_graph), std::move(node_registry));
 #if ORL_USE_QT6
+    std::string node_color_theme_error;
+    auto node_color_theme = ORL::NodeColorTheme::from_file(
+        qt_theme_file_path("_node_colors.json"), &node_color_theme_error);
+    if (!node_color_theme_error.empty()) {
+        std::cerr << "Qt node color theme warning: "
+                  << node_color_theme_error
+                  << "; using built-in fallback colors\n";
+    }
     auto* node_graph_editor = new ORL::NodeGraphEditor();
+    node_graph_editor->set_node_color_theme(std::move(node_color_theme));
     node_graph_editor->set_scene_graph_context(&scene_graph);
     node_graph_editor->set_project_context(
         &components, weight_id, deformer_id);
@@ -221,10 +263,14 @@ int main(int argc, char** argv) {
     }
     auto* property_editor = new ORL::PropertyEditor(
         selection, components, &scene_graph);
-    if (window_backend.set_hud_panel(property_editor, "Properties") < 0) {
+    property_editor->set_node_graph_editor(node_graph_editor);
+    if (window_backend.set_hud_panel(property_editor, "Inspector") < 0) {
         delete property_editor;
         property_editor = nullptr;
     }
+#endif
+#if ORL_USE_QT6
+    window_backend.set_right_dock_ratio(0.30);
 #endif
 
     using Viewport = vkkk::vp::Viewport<
@@ -620,6 +666,13 @@ int main(int argc, char** argv) {
             node_graph_editor->refresh_scene_inputs();
         }
         if (property_editor != nullptr) {
+            if (panel_has_focus(node_graph_editor)) {
+                property_editor->set_context(
+                    ORL::PropertyEditor::Context::NodeGraph);
+            } else if (panel_has_focus(window_backend.viewport_panel())) {
+                property_editor->set_context(
+                    ORL::PropertyEditor::Context::Scene);
+            }
             property_editor->refresh();
         }
 #endif
