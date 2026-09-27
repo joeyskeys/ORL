@@ -1,0 +1,21 @@
+{
+  "default": "#61758e",
+  "graph_input": "#4c78a8",
+  "graph_output": "#5b8e7d",
+  "categories": {
+    "input": "#4c78a8",
+    "stage": "#5b8e7d",
+    "deformer": "#805ad5",
+    "auto_weight": "#b7791f",
+    "solver": "#5b8e7d",
+    "constraint": "#c05621",
+    "output": "#2f855a",
+    "utilities": "#61758e"
+  },
+  "definitions": {
+    "orlrig.input.find_joint": "#4c78a8",
+    "orlrig.input.find_locator": "#805ad5",
+    "orlrig.input.find_mesh": "#b7791f",
+    "orlrig.stage.computed_joints": "#5b8e7d"
+  }
+}

@@ -80,6 +80,8 @@ if(ORL_USE_QT6)
     target_sources(orl_viewer PRIVATE
         qt/node_graph_editor.cpp
         qt/node_graph_editor.hpp
+        qt/node_color_theme.cpp
+        qt/node_color_theme.hpp
         qt/property_editor.cpp
         qt/property_editor.hpp
         node_graph/node_ops.cpp

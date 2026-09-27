@@ -10,10 +10,12 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QHash>
+#include <QAction>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QMessageBox>
+#include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
@@ -44,12 +46,8 @@ namespace ORL
 namespace
 {
 
-const QVector<QColor> kNodeColors = {
-    QColor{QStringLiteral("#4c78a8")},
-    QColor{QStringLiteral("#5b8e7d")},
-    QColor{QStringLiteral("#b7791f")},
-    QColor{QStringLiteral("#805ad5")},
-};
+constexpr double kMinimumGraphZoom = 0.2;
+constexpr double kMaximumGraphZoom = 2.5;
 
 std::optional<SceneElementKind> find_element_kind(
     std::string_view qualified_name)
@@ -227,6 +225,48 @@ void NodeGraphEditor::set_stage(orlgraph::GraphStage stage)
             ? &solver_graph_storage_ : &deformer_graph_storage_;
     }
     apply_stage_view();
+    rebuild_view();
+}
+
+std::optional<NodeSelectionInfo> NodeGraphEditor::selected_node_info() const
+{
+    if (selected_node_ < 0 || selected_node_ >= nodes_.size()) {
+        return std::nullopt;
+    }
+
+    const Node& node = nodes_[selected_node_];
+    NodeSelectionInfo result;
+    result.id = node.id;
+    result.title = node.title;
+    switch (node.kind) {
+    case Node::Kind::Definition:
+        result.kind = QStringLiteral("Node");
+        if (const auto* instance = active_graph().node(
+                orlgraph::StableId{node.id.toStdString()}))
+        {
+            result.definition =
+                QString::fromStdString(instance->definition.value);
+        }
+        break;
+    case Node::Kind::GraphInput:
+        result.kind = QStringLiteral("Graph Input");
+        break;
+    case Node::Kind::GraphOutput:
+        result.kind = QStringLiteral("Graph Output");
+        break;
+    }
+    for (const auto& port : node.inputs) {
+        result.inputs.push_back(port.name);
+    }
+    for (const auto& port : node.outputs) {
+        result.outputs.push_back(port.name);
+    }
+    return result;
+}
+
+void NodeGraphEditor::set_node_color_theme(NodeColorTheme theme)
+{
+    node_color_theme_ = std::move(theme);
     rebuild_view();
 }
 
@@ -607,6 +647,25 @@ void NodeGraphEditor::import_node_graph_layout(const NodeGraphLayout& layout)
 
 void NodeGraphEditor::rebuild_view()
 {
+    QVector<QString> selected_node_ids;
+    selected_node_ids.reserve(selectedNodes.size());
+    for (const int index : selectedNodes) {
+        if (index >= 0 && index < nodes_.size()) {
+            selected_node_ids.push_back(nodes_[index].id);
+        }
+    }
+    const QString active_node_id =
+        selected_node_ >= 0 && selected_node_ < nodes_.size()
+        ? nodes_[selected_node_].id : QString{};
+    QVector<QString> selected_frame_ids;
+    const auto& existing_frames = current_frames();
+    selected_frame_ids.reserve(selectedFrames.size());
+    for (const int index : selectedFrames) {
+        if (index >= 0 && index < existing_frames.size()) {
+            selected_frame_ids.push_back(existing_frames[index].id);
+        }
+    }
+
     clear_find_controls();
     clear_frame_controls();
     auto& stored_nodes = stage_layout(stage_).nodes;
@@ -641,11 +700,13 @@ void NodeGraphEditor::rebuild_view()
         node.position = QPointF(
             64.0 + static_cast<double>(index % 3) * 300.0,
             80.0 + static_cast<double>(index / 3) * 210.0);
-        node.color = kNodeColors[index % kNodeColors.size()];
+        node.color = node_color_theme_.default_color();
         bool has_find_control = false;
 
         if (const auto* definition = active_registry().find(instance.definition)) {
             node.title = QString::fromStdString(definition->qualified_name);
+            node.color = node_color_theme_.color_for_definition(
+                definition->qualified_name);
             has_find_control = find_element_kind(
                 definition->qualified_name).has_value();
             for (const auto& port : definition->inputs) {
@@ -706,9 +767,8 @@ void NodeGraphEditor::rebuild_view()
             ? QPointF{-280.0, 80.0 + boundary_index * 150.0}
             : QPointF{980.0, 80.0 + boundary_index * 150.0};
         node.size = QSizeF{240.0, 86.0};
-        node.color = kind == Node::Kind::GraphInput
-            ? QColor{QStringLiteral("#4c78a8")}
-            : QColor{QStringLiteral("#5b8e7d")};
+        node.color = node_color_theme_.color_for_interface(
+            kind == Node::Kind::GraphInput);
 
         Port port;
         port.id = QString::fromStdString(id.value);
@@ -797,7 +857,42 @@ void NodeGraphEditor::rebuild_view()
                 source_node, source_port, destination_node, destination_port});
         }
     }
+    for (const auto& id : selected_node_ids) {
+        for (int node_index = 0; node_index < nodes_.size(); ++node_index) {
+            if (nodes_[node_index].id == id) {
+                selectedNodes.push_back(node_index);
+                break;
+            }
+        }
+    }
+    selected_node_ = -1;
+    if (!active_node_id.isEmpty()) {
+        for (int node_index = 0; node_index < nodes_.size(); ++node_index) {
+            if (nodes_[node_index].id == active_node_id) {
+                selected_node_ = node_index;
+                if (!selectedNodes.contains(node_index)) {
+                    selectedNodes.push_back(node_index);
+                }
+                break;
+            }
+        }
+    }
+    if (selected_node_ < 0 && !selectedNodes.isEmpty()) {
+        selected_node_ = selectedNodes.back();
+    }
+
     prune_frames();
+    for (const auto& id : selected_frame_ids) {
+        const auto frame_iterator = std::find_if(
+            current_frames().cbegin(), current_frames().cend(),
+            [&id](const Frame& frame) {
+                return frame.id == id;
+            });
+        if (frame_iterator != current_frames().cend()) {
+            selectedFrames.push_back(
+                static_cast<int>(frame_iterator - current_frames().cbegin()));
+        }
+    }
     rebuild_find_controls();
     rebuild_frame_controls();
     update();
@@ -1072,18 +1167,14 @@ void NodeGraphEditor::refresh_find_controls()
                 items_match = control.combo->itemText(index)
                     == desired_items.at(index);
             }
-            const bool popup_visible = control.combo->view() != nullptr
-                && control.combo->view()->isVisible();
-            if (!popup_visible || items_match) {
-                if (!items_match) {
-                    control.combo->clear();
-                    control.combo->addItems(desired_items);
-                }
-                const int selected_index = selected.empty()
-                    ? -1 : control.combo->findText(selected_text);
-                if (control.combo->currentIndex() != selected_index) {
-                    control.combo->setCurrentIndex(selected_index);
-                }
+            if (!items_match) {
+                control.combo->clear();
+                control.combo->addItems(desired_items);
+            }
+            const int selected_index = selected.empty()
+                ? -1 : control.combo->findText(selected_text);
+            if (control.combo->currentIndex() != selected_index) {
+                control.combo->setCurrentIndex(selected_index);
             }
             control.combo->setEnabled(!names.empty());
         }
@@ -1109,9 +1200,20 @@ void NodeGraphEditor::refresh_find_controls()
     }
 }
 
-void NodeGraphEditor::position_find_controls()
+QRectF NodeGraphEditor::find_control_rect(const Node& node) const
 {
-    for (const auto& control : find_controls_) {
+    const QRectF rect = node_rect(node);
+    return QRectF{
+        rect.left() + 12.0,
+        rect.bottom() - 29.0,
+        rect.width() - 24.0,
+        22.0};
+}
+
+int NodeGraphEditor::find_control_at(const QPointF& scene) const
+{
+    for (int index = 0; index < find_controls_.size(); ++index) {
+        const auto& control = find_controls_[index];
         if (control.combo == nullptr) {
             continue;
         }
@@ -1119,24 +1221,60 @@ void NodeGraphEditor::position_find_controls()
             [&control](const Node& node) {
                 return node.id == control.node_id;
             });
-        if (node_iterator == nodes_.cend() || node_is_hidden(*node_iterator)) {
-            control.combo->setVisible(false);
+        if (node_iterator == nodes_.cend()
+            || node_is_hidden(*node_iterator))
+        {
             continue;
         }
-        const QRectF& node = node_rect(*node_iterator);
-        const QRectF local{
-            node.left() + 12.0,
-            node.bottom() - 29.0,
-            node.width() - 24.0,
-            22.0};
-        const QRectF viewport{
-            pan_.x() + local.left() * zoom_,
-            pan_.y() + local.top() * zoom_,
-            local.width() * zoom_,
-            std::max(18.0, local.height() * zoom_)};
-        control.combo->setGeometry(viewport.toRect());
-        control.combo->setVisible(true);
-        control.combo->raise();
+        if (find_control_rect(*node_iterator).contains(scene)) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+void NodeGraphEditor::show_find_control_popup(
+    int control_index, const QPoint& anchor)
+{
+    if (control_index < 0 || control_index >= find_controls_.size()) {
+        return;
+    }
+    auto* combo = find_controls_[control_index].combo;
+    if (combo == nullptr) {
+        return;
+    }
+
+    QMenu menu(this);
+    QVector<QAction*> actions;
+    actions.reserve(combo->count());
+    QAction* current_action = nullptr;
+    for (int index = 0; index < combo->count(); ++index) {
+        auto* action = menu.addAction(combo->itemText(index));
+        actions.push_back(action);
+        if (index == combo->currentIndex()) {
+            current_action = action;
+        }
+    }
+    if (actions.isEmpty()) {
+        return;
+    }
+
+    QAction* chosen = menu.exec(mapToGlobal(anchor), current_action);
+    if (chosen != nullptr) {
+        const int index = actions.indexOf(chosen);
+        if (index >= 0) {
+            combo->setCurrentIndex(index);
+        }
+    }
+    update();
+}
+
+void NodeGraphEditor::position_find_controls()
+{
+    for (const auto& control : find_controls_) {
+        if (control.combo != nullptr) {
+            control.combo->hide();
+        }
     }
 }
 
@@ -1754,6 +1892,7 @@ void NodeGraphEditor::select_only(int index)
     if (index >= 0) {
         selectedNodes.push_back(index);
     }
+    position_find_controls();
 }
 
 void NodeGraphEditor::select_only_frame(int index)
@@ -1764,6 +1903,7 @@ void NodeGraphEditor::select_only_frame(int index)
     if (index >= 0) {
         selectedFrames.push_back(index);
     }
+    position_find_controls();
 }
 
 void NodeGraphEditor::move_frame(int index, const QPointF& delta)
@@ -1930,6 +2070,43 @@ void NodeGraphEditor::draw_node(QPainter& painter, int index) const
         painter.drawText(text_rect,
             Qt::AlignRight | Qt::AlignVCenter, port_label(node.outputs[port]));
     }
+
+    const auto find_control = std::find_if(
+        find_controls_.cbegin(), find_controls_.cend(),
+        [&node](const FindControl& control) {
+            return control.node_id == node.id;
+        });
+    if (find_control != find_controls_.cend()
+        && find_control->combo != nullptr)
+    {
+        const QRectF value_rect = find_control_rect(node);
+        QString value = find_control->combo->currentText().trimmed();
+        if (value.isEmpty()) {
+            value = QStringLiteral("Select scene element");
+        }
+        const int text_width = static_cast<int>(
+            std::max(0.0, value_rect.width() - 16.0));
+        const QString display = metrics.elidedText(
+            value, Qt::ElideRight, text_width);
+        painter.setPen(QPen(
+            QColor{QStringLiteral("#3c4a5c")}, 1.0 / zoom_));
+        painter.setBrush(QColor{QStringLiteral("#171d25")});
+        painter.drawRoundedRect(value_rect, 4.0, 4.0);
+        painter.setPen(QColor{QStringLiteral("#aebaca")});
+        painter.drawText(
+            value_rect.adjusted(8.0, 0.0, -28.0, 0.0),
+            Qt::AlignLeft | Qt::AlignVCenter, display);
+        const QPointF arrow_center{
+            value_rect.right() - 13.0, value_rect.center().y() - 1.0};
+        painter.setPen(QPen(
+            QColor{QStringLiteral("#aebaca")}, 1.5 / zoom_));
+        painter.drawLine(
+            arrow_center + QPointF{-4.0, -2.0},
+            arrow_center + QPointF{0.0, 2.0});
+        painter.drawLine(
+            arrow_center + QPointF{0.0, 2.0},
+            arrow_center + QPointF{4.0, -2.0});
+    }
 }
 
 void NodeGraphEditor::paintEvent(QPaintEvent*)
@@ -2008,6 +2185,24 @@ void NodeGraphEditor::mousePressEvent(QMouseEvent* event)
         const int collapse = collapse_button_at(scene);
         if (collapse >= 0) {
             toggle_frame_collapsed(collapse);
+            event->accept();
+            return;
+        }
+        const int find_control = find_control_at(scene);
+        if (find_control >= 0) {
+            const QString node_id = find_controls_[find_control].node_id;
+            for (int index = 0; index < nodes_.size(); ++index) {
+                if (nodes_[index].id == node_id) {
+                    select_only(index);
+                    break;
+                }
+            }
+            auto* combo = find_controls_[find_control].combo;
+            if (combo != nullptr && combo->isEnabled() && combo->count() > 0) {
+                show_find_control_popup(
+                    find_control, event->position().toPoint());
+            }
+            update();
             event->accept();
             return;
         }
@@ -2123,6 +2318,7 @@ void NodeGraphEditor::mouseReleaseEvent(QMouseEvent* event)
         if (boxSelecting) {
             boxSelectCurrent = scene_position(event->position());
             apply_box_selection();
+            position_find_controls();
             boxSelecting = false;
             dragging_node_ = -1;
             draggingFrame = -1;
@@ -2144,7 +2340,8 @@ void NodeGraphEditor::wheelEvent(QWheelEvent* event)
     const QPointF cursor = event->position();
     const QPointF before = scene_position(cursor);
     const double factor = event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15;
-    zoom_ = std::clamp(zoom_ * factor, 0.35, 2.5);
+    zoom_ = std::clamp(
+        zoom_ * factor, kMinimumGraphZoom, kMaximumGraphZoom);
     pan_ = cursor - before * zoom_;
     capture_stage_layout();
     position_find_controls();
