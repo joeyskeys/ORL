@@ -113,7 +113,9 @@ private:
         std::string_view semantic,
         std::string_view coordinate_space,
         std::string* expression,
-        std::string* error);
+        std::string* error,
+        bool buffer_type = false,
+        bool scalar_value = false);
     bool prepare_runtime_output_expressions(
         orlgraph::GraphModule& module,
         const std::set<orlgraph::StableId>& node_ids,

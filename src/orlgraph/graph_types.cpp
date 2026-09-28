@@ -277,6 +277,15 @@ bool contains_handle(const LogicalType& type) {
         || (type.element != nullptr && contains_handle(*type.element));
 }
 
+bool is_exact_handle_buffer(const LogicalType& type) {
+    return type.kind == LogicalTypeKind::Buffer
+        && type.element != nullptr
+        && type.element->kind == LogicalTypeKind::Handle
+        && !type.element->open_handle
+        && type.element->accepted_handles.empty()
+        && is_valid_handle_name(type.element->name);
+}
+
 Domain Domain::constant() {
     return Domain{DomainKind::Constant, {}};
 }

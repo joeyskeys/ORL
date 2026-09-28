@@ -52,6 +52,30 @@ TEST_CASE("llvm codegen lowers exact handles as two opaque lanes",
     REQUIRE(pointer_count == 4);
 }
 
+TEST_CASE("llvm codegen lowers handle topology helpers",
+    "[orl][codegen][handle][topology]")
+{
+    Parser parser(R"(
+        handle joint_handle;
+        int topology(joint_handle root, joint_handle end) {
+            joint_handle parent = joint_parent(end);
+            if (handle_valid(parent)) {
+                return joint_is_ancestor(root, end);
+            }
+            return 0;
+        }
+    )", "orlrig");
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_handle_topology");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+    const auto ir = codegen.DumpIR();
+    REQUIRE(ir.find("__orlrig_joint_parent") != std::string::npos);
+    REQUIRE(ir.find("__orlrig_handle_valid") != std::string::npos);
+    REQUIRE(ir.find("__orlrig_joint_is_ancestor") != std::string::npos);
+}
+
 TEST_CASE("llvm codegen emits IR for arithmetic and control flow", "[orl][codegen]") {
     const std::string src =
         "int addloop(int n) {\n"
@@ -445,17 +469,19 @@ TEST_CASE("llvm codegen lowers stdlib FK solver", "[orl][codegen][stdlib][solver
 
 TEST_CASE("llvm codegen lowers advanced IK solvers", "[orl][codegen][stdlib][solver]") {
     const std::string src =
+        "use rig/handles;\n"
+        "use locator;\n"
         "use solver/hd_id;\n"
         "use solver/spline_ik;\n"
         "use solver/full_body_ik;\n"
-        "int solve_hd(Joint history[], int root, int end, int target_index, int iterations) {\n"
-        "    return solver_hd_id(history, root, end, target_index, iterations);\n"
+        "int solve_hd(Joint history[], joint_handle root, joint_handle end, locator_handle target, int iterations) {\n"
+        "    return solver_hd_id(history, root, end, target, iterations);\n"
         "}\n"
-        "int solve_spline(int chain[], point spline[], int chain_count, int point_count) {\n"
-        "    return solver_spline_ik(chain, spline, chain_count, point_count);\n"
+        "int solve_spline(joint_handle root, joint_handle end, point spline[], int point_count) {\n"
+        "    return solver_spline_ik(root, end, spline, point_count);\n"
         "}\n"
-        "int solve_body(int effectors[], int target_indices[], int effector_count, int iterations) {\n"
-        "    return solver_full_body_ik(effectors, target_indices, effector_count, iterations);\n"
+        "int solve_body(joint_handle effectors[], locator_handle targets[], int effector_count, int iterations) {\n"
+        "    return solver_full_body_ik(effectors, targets, effector_count, iterations);\n"
         "}\n";
 
     Parser parser(src);

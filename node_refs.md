@@ -792,11 +792,10 @@ hierarchy before dispatch.
 Current runner status: this is the only solver exposed by the current
 `SolverRunner`, through `evaluate_two_bone`.
 
-The former index-based `solver_hd_id`, `solver_spline_ik`, and
-`solver_full_body_ik` definitions are no longer registered as graph nodes.
-Their authored integer component selectors were intentionally removed in the
-plan-8 cutover; old projects must report an unsupported-definition diagnostic
-instead of silently treating those integers as handles.
+`solver_hd_id`, `solver_spline_ik`, and `solver_full_body_ik` now use typed
+handles. Their old integer component selectors are no longer valid graph
+ports; old projects must report an unsupported-definition diagnostic instead
+of silently treating integers as handles.
 
 ### 6.3 `solver_hd_id`
 
@@ -807,9 +806,9 @@ Signature:
 ```orl
 int solver_hd_id(
     Joint history[],
-    int root,
-    int end,
-    int target_index,
+    joint_handle root,
+    joint_handle end,
+    locator_handle target,
     int iterations
 )
 ```
@@ -817,20 +816,19 @@ int solver_hd_id(
 Behavior:
 
 - validates that `root` is an ancestor of `end`;
-- copies valid previous rotations from `history[]` into the current pose;
+- accepts `history[]` as the explicit state buffer; topology selection is
+  carried by `root`, `end`, and `target` handles;
 - runs CCD passes from the end parent toward the root;
-- writes the solved pose back to `solver_context.joints[]`;
-- copies the resulting pose to `history[]`.
+- writes solved rotations through typed `Joint(handle)` views.
 
-`history[]` is both input and output. The caller must preserve it between
-evaluations to obtain the intended history-dependent continuity. Passing a
-fresh history buffer every frame removes the warm-start behavior.
+The typed-handle rewrite keeps the history socket for ABI continuity;
+stateful warm-start copying is a follow-up once a handle-based full-arena
+iteration API exists.
 
-The target is selected from `solver_context.locators[]`.
+The target is selected by `locator_handle`.
 `iterations < 1` is promoted to one iteration.
 
-Current runner status: source implementation exists, but no runner method or
-graph definition currently exposes it.
+Current runner status: registered as an ORL solver graph definition.
 
 ### 6.4 `solver_spline_ik`
 
@@ -840,23 +838,23 @@ Signature:
 
 ```orl
 int solver_spline_ik(
-    int chain[],
+    joint_handle root,
+    joint_handle end,
     point spline[],
-    int chain_count,
     int point_count
 )
 ```
 
 Inputs:
 
-- `chain[]`: joint indices in root-to-end order;
+- `root` / `end`: exact joint handles defining a contiguous hierarchy path;
 - `spline[]`: world-space Catmull-Rom control points;
-- `chain_count` and `point_count`: explicit buffer extents;
-  `solver_context.joint_count` is the implicit joint extent.
+- `point_count`: spline control-point extent.
 
 Behavior:
 
-- validates every chain index and adjacent parent relationship;
+- validates that `root` is an ancestor of `end`;
+- walks the chain using `joint_parent`;
 - samples the spline at evenly spaced chain parameters;
 - computes a tangent for each chain segment;
 - rotates the corresponding pivot toward the tangent;
@@ -865,8 +863,7 @@ Behavior:
 The spline sampler clamps the parameter to `[0, 1]` and uses endpoint
 duplication for the first and last Catmull-Rom segments.
 
-Current runner status: source implementation exists, but no runner method or
-graph definition currently exposes it.
+Current runner status: registered as an ORL solver graph definition.
 
 ### 6.5 `solver_full_body_ik`
 
@@ -876,8 +873,8 @@ Signature:
 
 ```orl
 int solver_full_body_ik(
-    int effectors[],
-    int target_indices[],
+    joint_handle effectors[],
+    locator_handle targets[],
     int effector_count,
     int iterations
 )
@@ -885,13 +882,13 @@ int solver_full_body_ik(
 
 Inputs:
 
-- `effectors[]`: end-joint indices;
-- `target_indices[]`: locator indices into `solver_context.locators[]`;
+- `effectors[]`: exact end-joint handles;
+- `targets[]`: exact locator handles;
 - `iterations`: number of global CCD passes.
 
 Behavior:
 
-- validates all effector indices;
+- validates all effectors and targets;
 - processes effectors sequentially;
 - for each effector, walks every ancestor;
 - rotates each ancestor toward its target direction;
@@ -901,8 +898,14 @@ Behavior:
 This is a sequential CCD solver. When effectors share ancestors, the result
 depends on effector ordering and the requested iteration count.
 
-Current runner status: source implementation exists, but no runner method or
-graph definition currently exposes it.
+Separate solver/constraint nodes that write the same joint are not implicitly
+pass-major FBIK. Their overlap must be ordered by an explicit sequence edge;
+otherwise evaluation-plan compilation fails rather than applying
+last-writer-wins. A listed multi-target kernel remains the way to request
+pass-major multi-effector behavior.
+
+Current runner status: registered as an ORL solver graph definition. The
+collection inputs require the handle-buffer binding path.
 
 ### 6.6 Solver helpers
 
@@ -1234,7 +1237,7 @@ Currently exposed by `SolverRunner`:
 
 - `evaluate_two_bone`, backed by `solver/ik_two_bone`.
 
-Source-only solver candidates:
+Graph-registered solvers without dedicated `SolverRunner` methods:
 
 - `solver_fk`;
 - `solver_hd_id`;

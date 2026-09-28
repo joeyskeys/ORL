@@ -648,6 +648,12 @@ Feedback is not a complete iterative scheduler. It is a boolean edge flag
 that removes one dependency from the ordinary DAG and is allowed only when
 validation sees a stateful/feedback/solver-style node contract.
 
+Sequence connections are explicit solver-order edges. They connect two
+solver regions without carrying a value, participate in cycle detection and
+topological scheduling, and are omitted from generated ORL dataflow. They are
+the required way to order overlapping writers; graph insertion order and
+last-writer-wins are not scheduling rules.
+
 There are no graph-core objects for:
 
 - iteration count;

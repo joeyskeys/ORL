@@ -39,6 +39,10 @@ TEST_CASE("scene input bindings use stable semantic names",
         == "scene.mesh.body.positions");
     REQUIRE(scene_mesh_vertex_count_binding("body")
         == "scene.mesh.body.vertex_count");
+    REQUIRE(scene_joint_handles_by_name_binding("^arm_.*$")
+        == "scene.rig.joints.by_name.^arm_.*$");
+    REQUIRE(scene_joint_handle_collection_count_binding("^arm_.*$")
+        == "scene.rig.joints.by_name.count:^arm_.*$");
     REQUIRE(scene_weight_buffer_binding("weights")
         == "scene.rig.weights.weights.buffer");
     REQUIRE(scene_weight_count_binding("weights")
@@ -70,6 +74,9 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
         "orlrig.auto_weight.bounded_biharmonic",
         "orlrig.solver.fk",
         "orlrig.solver.ik_two_bone",
+        "orlrig.solver.hd_id",
+        "orlrig.solver.spline_ik",
+        "orlrig.solver.full_body_ik",
         "orlrig.constraint.aim",
         "orlrig.constraint.aim_locator",
         "orlrig.constraint.copy_xform",
@@ -79,6 +86,7 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
         "orlrig.constraint.parent",
         "orlrig.input.find_joint",
         "orlrig.input.find_locator",
+        "orlrig.input.find_joints_by_name",
         "orlrig.input.find_mesh",
         "orlrig.stage.computed_joints",
     };
@@ -108,6 +116,20 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
                 name.rfind("orlrig.input.find_", 0) == 0;
             if (!is_find_input) {
                 REQUIRE(definition->outputs.size() == 1);
+                continue;
+            }
+            if (name == "orlrig.input.find_joints_by_name") {
+                REQUIRE(definition->outputs.size() == 2);
+                REQUIRE(definition->output("joints") != nullptr);
+                REQUIRE(definition->output("joints")->cardinality
+                    == PortCardinality::Buffer);
+                REQUIRE(definition->output("joints")->type
+                    == LogicalType::buffer(
+                        LogicalType::handle("orlrig::joint_handle")));
+                REQUIRE(definition->output("count") != nullptr);
+                REQUIRE(definition->output("count")->type
+                    == LogicalType::int64());
+                REQUIRE(definition->parameter("name_regex") != nullptr);
                 continue;
             }
             REQUIRE(definition->outputs.size() == 1);
@@ -143,9 +165,6 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
         == nullptr);
     REQUIRE(graph.registry.find("orlrig.input.legacy_find_locator")
         == nullptr);
-    REQUIRE(graph.registry.find("orlrig.solver.hd_id") == nullptr);
-    REQUIRE(graph.registry.find("orlrig.solver.spline_ik") == nullptr);
-    REQUIRE(graph.registry.find("orlrig.solver.full_body_ik") == nullptr);
 }
 
 TEST_CASE("two-bone solver exposes typed handles and inferred effects",

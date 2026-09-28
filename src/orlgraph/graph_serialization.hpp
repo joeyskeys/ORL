@@ -135,7 +135,8 @@ GraphJsonDocument load_graph_json(const std::string& path);
 
 GraphStagesJsonSerializationResult serialize_graph_stages_json(
     const GraphModule& solver, const GraphModule& deformer);
-GraphStagesJsonDocument deserialize_graph_stages_json(std::string_view text);
+GraphStagesJsonDocument deserialize_graph_stages_json(
+    std::string_view text, bool allow_hash_mismatch = false);
 bool save_graph_stages_json(const std::string& path,
     const GraphModule& solver, const GraphModule& deformer,
     std::vector<Diagnostic>* diagnostics = nullptr);

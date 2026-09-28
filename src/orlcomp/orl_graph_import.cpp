@@ -84,7 +84,12 @@ orlgraph::Port make_input(const FunctionSummary& function,
     port.domain = parameter.is_buffer
         ? orlgraph::Domain::buffer()
         : orlgraph::Domain::constant();
-    if (parameter.is_buffer && parameter.name == "joints") {
+    if (parameter.is_buffer
+        && parameter.resolved_type.kind
+            == SemanticTypeKind::NominalHandle
+        && parameter.resolved_type.canonical_name
+            == "orlrig::joint_handle")
+    {
         port.domain = orlgraph::Domain::joint();
     }
     port.access = port_access(parameter.access);
@@ -210,6 +215,7 @@ bool add_partial_footprint(const FunctionSummary& function,
         }
     }
     const bool declared = !function.handle_view_effects.empty()
+        || !function.handle_walk_effects.empty()
         || function.metadata.contains("partial")
         || function.metadata.contains("partial_propagation")
         || function.metadata.contains("partial_global")
@@ -282,6 +288,49 @@ bool add_partial_footprint(const FunctionSummary& function,
             port_access(effect.access),
         });
     }
+    for (const auto& walk : function.handle_walk_effects) {
+        const auto parameter = std::find_if(
+            function.parameters.begin(), function.parameters.end(),
+            [&](const FunctionParameterSummary& candidate) {
+                return candidate.name == walk.parameter;
+            });
+        if (parameter == function.parameters.end()
+            || parameter->resolved_type.kind
+                != SemanticTypeKind::NominalHandle)
+        {
+            if (error != nullptr) {
+                *error = "Handle walk references a non-exact parameter: "
+                    + walk.parameter;
+            }
+            return false;
+        }
+        if (!walk.stop_parameter.empty()) {
+            const auto stop = std::find_if(
+                function.parameters.begin(), function.parameters.end(),
+                [&](const FunctionParameterSummary& candidate) {
+                    return candidate.name == walk.stop_parameter;
+                });
+            if (stop == function.parameters.end()
+                || stop->resolved_type.kind
+                    != SemanticTypeKind::NominalHandle)
+            {
+                if (error != nullptr) {
+                    *error = "Handle walk references a non-exact stop "
+                        "parameter: " + walk.stop_parameter;
+                }
+                return false;
+            }
+        }
+        footprint.handle_walks.push_back({
+            orlgraph::StableId{walk.parameter},
+            orlgraph::StableId{walk.stop_parameter},
+            parameter->resolved_type.canonical_name,
+            walk.view_type,
+            walk.field,
+            walk.kind,
+            port_access(walk.access),
+        });
+    }
     for (const auto& value :
         metadata_list(function, "partial_read_resources"))
     {
@@ -293,6 +342,7 @@ bool add_partial_footprint(const FunctionSummary& function,
         footprint.write_resources.push_back(orlgraph::StableId{value});
     }
     if (footprint.handle_effects.empty()
+        && footprint.handle_walks.empty()
         && footprint.read_resources.empty()
         && footprint.write_resources.empty())
     {

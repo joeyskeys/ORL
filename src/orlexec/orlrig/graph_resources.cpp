@@ -194,6 +194,42 @@ orlgraph::NodeDefinition make_typed_find_definition(
     return definition;
 }
 
+orlgraph::NodeDefinition make_joint_name_collection_definition()
+{
+    const std::string qualified_name =
+        "orlrig.input.find_joints_by_name";
+    orlgraph::NodeDefinition definition;
+    definition.id = orlgraph::StableId{qualified_name};
+    definition.qualified_name = qualified_name;
+    definition.allowed_stages = orlgraph::GraphStageMask::All;
+    definition.implementation.kind = orlgraph::ImplementationKind::Runtime;
+    definition.implementation.runtime_name = qualified_name;
+    definition.parameters.push_back({
+        orlgraph::StableId{"name_regex"}, "name_regex",
+        orlgraph::LogicalType::string(), true, std::nullopt,
+        "scene.joint.name_regex"});
+
+    auto joints = buffer_port(
+        "joints", "joints",
+        orlgraph::LogicalType::handle("orlrig::joint_handle"),
+        orlgraph::PortDirection::Output,
+        orlgraph::Domain::joint(), false);
+    joints.shape = orlgraph::Shape::one("joint_handle_count");
+    joints.semantic = "scene.joint.handles";
+    definition.outputs.push_back(std::move(joints));
+    auto count = stdlib_scalar_port(
+        "count", orlgraph::LogicalType::int64());
+    count.direction = orlgraph::PortDirection::Output;
+    count.required = false;
+    count.semantic = "scene.joint.handle_count";
+    definition.outputs.push_back(std::move(count));
+    definition.capabilities = {"runtime", "scene", "handle", "buffer"};
+    definition.operation = "input";
+    definition.pure = false;
+    definition.inline_policy = orlgraph::InlinePolicy::Never;
+    return definition;
+}
+
 orlgraph::NodeDefinition make_mesh_find_definition() {
     const std::string qualified_name = "orlrig.input.find_mesh";
     orlgraph::NodeDefinition definition;
@@ -226,6 +262,7 @@ std::vector<orlgraph::NodeDefinition> make_input_definitions() {
         make_typed_find_definition("locator",
             "orlrig::locator_handle",
             std::string{kSceneLocatorHandleSemantic}),
+        make_joint_name_collection_definition(),
         make_mesh_find_definition(),
     };
 }
@@ -236,9 +273,6 @@ bool register_compiled_stdlib_nodes(orlgraph::NodeRegistry& registry,
     const std::filesystem::path root{ORL_STDLIB_DIR};
     const std::string_view categories[] = {
         "solver", "constraint", "auto_weight",
-    };
-    const std::string_view unsupported_solver_stems[] = {
-        "hd_id", "spline_ik", "full_body_ik",
     };
     for (const auto category : categories) {
         const auto directory = root / std::string{category};
@@ -259,14 +293,6 @@ bool register_compiled_stdlib_nodes(orlgraph::NodeRegistry& registry,
                 continue;
             }
             const auto stem = entry.path().stem().string();
-            if (category == "solver"
-                && std::find(
-                    std::begin(unsupported_solver_stems),
-                    std::end(unsupported_solver_stems), stem)
-                    != std::end(unsupported_solver_stems))
-            {
-                continue;
-            }
             orlcomp::NodeImportOptions options;
             options.use_path = std::string{category} + "/" + stem;
             options.exported_functions.push_back(
@@ -328,6 +354,18 @@ std::string scene_mesh_positions_binding(std::string_view object_name) {
 
 std::string scene_mesh_vertex_count_binding(std::string_view object_name) {
     return scene_binding("scene.mesh", object_name, "vertex_count");
+}
+
+std::string scene_joint_handles_by_name_binding(
+    std::string_view name_regex)
+{
+    return "scene.rig.joints.by_name." + std::string{name_regex};
+}
+
+std::string scene_joint_handle_collection_count_binding(
+    std::string_view name_regex)
+{
+    return "scene.rig.joints.by_name.count:" + std::string{name_regex};
 }
 
 std::string scene_weight_buffer_binding(std::string_view component_name) {

@@ -68,6 +68,76 @@ std::size_t element_stride_for(std::string_view type_name) {
     return 0;
 }
 
+bool validate_handle_buffer(
+    const void* data, std::size_t bytes, std::size_t element_count,
+    const ParameterDesc& parameter, std::string* error)
+{
+    if (parameter.kind != ParameterKind::HandleBuffer) {
+        return true;
+    }
+    if (parameter.element_stride != sizeof(HandleValue)) {
+        if (error != nullptr) {
+            *error = "Handle buffer '" + parameter.name
+                + "' has an invalid element stride";
+        }
+        return false;
+    }
+    if (parameter.element_stride == 0
+        || element_count > bytes / parameter.element_stride)
+    {
+        if (error != nullptr) {
+            *error = "Handle buffer '" + parameter.name
+                + "' is shorter than its declared element count";
+        }
+        return false;
+    }
+    if (element_count == 0) {
+        return true;
+    }
+    if (data == nullptr) {
+        if (error != nullptr) {
+            *error = "Handle buffer '" + parameter.name
+                + "' has no data";
+        }
+        return false;
+    }
+    const auto* values = static_cast<const HandleValue*>(data);
+    for (std::size_t index = 0; index < element_count; ++index) {
+        if (!orlcomp::IsValidHandleValue(values[index])) {
+            if (error != nullptr) {
+                *error = "Handle buffer '" + parameter.name
+                    + "' contains an invalid token at index "
+                    + std::to_string(index);
+            }
+            return false;
+        }
+        if (values[index].type_id != parameter.handle_type_id) {
+            if (error != nullptr) {
+                *error = "Handle buffer '" + parameter.name
+                    + "' contains a token with the wrong nominal type at "
+                    "index " + std::to_string(index);
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_buffer_parameter(ParameterKind kind) {
+    return kind == ParameterKind::Buffer
+        || kind == ParameterKind::HandleBuffer;
+}
+
+bool buffer_type_matches(
+    const OrlBuffer& buffer, const ParameterDesc& parameter)
+{
+    if (parameter.kind == ParameterKind::HandleBuffer) {
+        return buffer.orl_type() == parameter.canonical_type_name
+            || buffer.orl_type() == parameter.orl_type;
+    }
+    return buffer.orl_type() == parameter.orl_type;
+}
+
 void append_errors(std::vector<std::string>& destination,
     const std::vector<std::string>& source)
 {
@@ -122,6 +192,15 @@ void register_handle_view_symbols(orlcomp::OrlJitEngine& jit) {
     jit.RegisterRuntimeSymbol(
         "__orlrig_world_write_matrix",
         reinterpret_cast<void*>(&orlrig::__orlrig_world_write_matrix));
+    jit.RegisterRuntimeSymbol(
+        "__orlrig_handle_valid",
+        reinterpret_cast<void*>(&orlrig::__orlrig_handle_valid));
+    jit.RegisterRuntimeSymbol(
+        "__orlrig_joint_parent",
+        reinterpret_cast<void*>(&orlrig::__orlrig_joint_parent));
+    jit.RegisterRuntimeSymbol(
+        "__orlrig_joint_is_ancestor",
+        reinterpret_cast<void*>(&orlrig::__orlrig_joint_is_ancestor));
 }
 
 std::string execution_cache_material(
@@ -170,6 +249,7 @@ std::string execution_cache_material(
 orlcomp::OrlGpuKernelParameterType gpu_parameter_type(ParameterKind kind) {
     switch (kind) {
     case ParameterKind::Buffer:
+    case ParameterKind::HandleBuffer:
         return orlcomp::OrlGpuKernelParameterType::Buffer;
     case ParameterKind::Int64:
         return orlcomp::OrlGpuKernelParameterType::Int64;
@@ -361,7 +441,8 @@ struct OrlProgram::Impl {
     bool has_handle_parameters() const {
         return std::any_of(parameters.begin(), parameters.end(),
             [](const ParameterDesc& parameter) {
-                return parameter.kind == ParameterKind::Handle;
+                return parameter.kind == ParameterKind::Handle
+                    || parameter.kind == ParameterKind::HandleBuffer;
             });
     }
 };
@@ -387,6 +468,14 @@ OrlProgram OrlProgram::Compile(std::string source, CompileOptions options) {
             != std::string::npos
         || impl->source.find("Locator(") != std::string::npos
         || impl->source.find("WorldTransform(")
+            != std::string::npos
+        || impl->source.find("handle_valid(")
+            != std::string::npos
+        || impl->source.find("joint_handle_invalid(")
+            != std::string::npos
+        || impl->source.find("joint_parent(")
+            != std::string::npos
+        || impl->source.find("joint_is_ancestor(")
             != std::string::npos;
 
     orlcomp::Parser parser(
@@ -443,12 +532,31 @@ OrlProgram OrlProgram::Compile(std::string source, CompileOptions options) {
         ParameterDesc desc;
         desc.name = parameter.name;
         desc.orl_type = parameter.type_name;
+        desc.hidden_scratch = parameter.hidden_scratch;
+        desc.scratch_size_symbol = parameter.scratch_size_symbol;
+        desc.scratch_size_multiplier =
+            parameter.scratch_size_multiplier;
         if (parameter.kind == orlcomp::OrlRuntimeParameterKind::Buffer) {
             desc.kind = ParameterKind::Buffer;
             desc.element_stride = element_stride_for(parameter.type_name);
+            if (desc.hidden_scratch
+                && !parameter.canonical_type_name.empty())
+            {
+                desc.element_stride = sizeof(HandleValue);
+                desc.canonical_type_name =
+                    parameter.canonical_type_name;
+                desc.handle_type_id = parameter.handle_type_id;
+            }
             if (desc.element_stride == 0) {
                 desc.kind = ParameterKind::Unsupported;
             }
+        } else if (parameter.kind
+            == orlcomp::OrlRuntimeParameterKind::HandleBuffer)
+        {
+            desc.kind = ParameterKind::HandleBuffer;
+            desc.element_stride = sizeof(HandleValue);
+            desc.canonical_type_name = parameter.canonical_type_name;
+            desc.handle_type_id = parameter.handle_type_id;
         } else if (parameter.kind
             == orlcomp::OrlRuntimeParameterKind::Handle) {
             desc.kind = ParameterKind::Handle;
@@ -489,7 +597,8 @@ bool OrlProgram::has_handle_parameters() const {
     return impl_ != nullptr && std::any_of(
         impl_->parameters.begin(), impl_->parameters.end(),
         [](const ParameterDesc& parameter) {
-            return parameter.kind == ParameterKind::Handle;
+            return parameter.kind == ParameterKind::Handle
+                || parameter.kind == ParameterKind::HandleBuffer;
         });
 }
 
@@ -536,6 +645,7 @@ struct OrlExecution::Impl {
     std::unordered_map<std::string, std::int64_t> integers;
     std::unordered_map<std::string, double> floats;
     std::unordered_map<std::string, HandleValue> handles;
+    std::unordered_map<std::string, OrlBuffer> scratch_buffers;
     std::unordered_map<OrlBuffer*, DeviceBuffer> device_buffers;
     std::optional<PackedStorage> packed_storage;
     DeviceBuffer packed_device;
@@ -619,19 +729,114 @@ struct OrlExecution::Impl {
         return found == program->parameters.end() ? nullptr : &*found;
     }
 
+    bool ensure_scratch_buffers() {
+        for (const auto& parameter : program->parameters) {
+            if (!parameter.hidden_scratch) {
+                continue;
+            }
+            std::int64_t base_count = 0;
+            if (parameter.scratch_size_symbol == "joint_count") {
+                if (packed_storage.has_value()) {
+                    if (packed_storage->data == nullptr
+                        || packed_storage->bytes < sizeof(
+                            orlrig::SolverContext))
+                    {
+                        errors.emplace_back(
+                            "Dispatch-sized array requires a valid "
+                            "SolverContext");
+                        return false;
+                    }
+                    base_count = static_cast<const orlrig::SolverContext*>(
+                        packed_storage->data)->joint_count;
+                } else if (solver_context.has_value()) {
+                    base_count = static_cast<const orlrig::SolverContext*>(
+                        solver_context->data())->joint_count;
+                } else {
+                    errors.emplace_back(
+                        "Dispatch-sized array requires SolverContext");
+                    return false;
+                }
+            } else {
+                const auto found = integers.find(
+                    parameter.scratch_size_symbol);
+                if (found == integers.end()) {
+                    errors.emplace_back(
+                        "Missing dispatch-sized array bound '"
+                        + parameter.scratch_size_symbol + "'");
+                    return false;
+                }
+                base_count = found->second;
+            }
+            if (base_count < 0
+                || parameter.scratch_size_multiplier == 0
+                || static_cast<std::uint64_t>(base_count)
+                    > std::numeric_limits<std::size_t>::max()
+                        / parameter.scratch_size_multiplier)
+            {
+                errors.emplace_back(
+                    "Dispatch-sized array bound is invalid for '"
+                    + parameter.name + "'");
+                return false;
+            }
+            const auto count = static_cast<std::size_t>(base_count)
+                * parameter.scratch_size_multiplier;
+            if (parameter.element_stride == 0) {
+                errors.emplace_back(
+                    "Dispatch-sized array has an unsupported element type '"
+                    + parameter.orl_type + "'");
+                return false;
+            }
+            auto found = scratch_buffers.find(parameter.name);
+            if (found == scratch_buffers.end()) {
+                found = scratch_buffers.emplace(
+                    parameter.name,
+                    OrlBuffer{
+                        parameter.orl_type,
+                        parameter.element_stride})
+                    .first;
+            }
+            if (!found->second.resize(count)
+                || (count == 0 && !found->second.reserve(1)))
+            {
+                errors.emplace_back(
+                    "Unable to allocate dispatch-sized array '"
+                    + parameter.name + "'");
+                return false;
+            }
+        }
+        return true;
+    }
+
     bool validate_bindings(std::vector<void*>& ordered_buffers,
         std::vector<std::int64_t>& ordered_integers,
         std::vector<double>& ordered_floats,
         std::vector<std::uint64_t>& ordered_handles)
     {
         errors.clear();
+        if (!ensure_scratch_buffers()) {
+            return false;
+        }
         for (const auto& parameter : program->parameters) {
             if (parameter.kind == ParameterKind::Unsupported) {
                 errors.emplace_back("Unsupported runtime parameter type '" + parameter.orl_type
                     + "' for '" + parameter.name + "'");
                 continue;
             }
-            if (parameter.kind == ParameterKind::Buffer) {
+            if (is_buffer_parameter(parameter.kind)) {
+                if (parameter.hidden_scratch) {
+                    const auto scratch =
+                        scratch_buffers.find(parameter.name);
+                    if (scratch == scratch_buffers.end()) {
+                        errors.emplace_back(
+                            "Missing dispatch-sized array storage for '"
+                            + parameter.name + "'");
+                        continue;
+                    }
+                    ordered_buffers.push_back(
+                        backend == Backend::Cpu
+                            ? scratch->second.data() : nullptr);
+                    continue;
+                }
                 if (parameter.name == orlcomp::kSolverContextParameterName) {
                     if (!solver_context.has_value()) {
                         errors.emplace_back(
@@ -678,6 +883,17 @@ struct OrlExecution::Impl {
                             + "' requires the CUDA backend");
                         continue;
                     }
+                    if (parameter.kind == ParameterKind::HandleBuffer
+                        && (parameter.element_stride == 0
+                            || device->second.bytes
+                                % parameter.element_stride != 0))
+                    {
+                        errors.emplace_back(
+                            "Device handle buffer binding for '"
+                            + parameter.name
+                            + "' is not aligned to its element stride");
+                        continue;
+                    }
                     ordered_buffers.push_back(nullptr);
                     continue;
                 }
@@ -695,6 +911,25 @@ struct OrlExecution::Impl {
                             + "' is invalid for this backend");
                         continue;
                     }
+                    if (parameter.kind == ParameterKind::HandleBuffer) {
+                        std::string validation_error;
+                        const auto* data =
+                            static_cast<const std::byte*>(
+                                packed_storage->data)
+                            + packed->second.offset;
+                        const auto element_count =
+                            parameter.element_stride == 0
+                            ? 0
+                            : packed->second.bytes
+                                / parameter.element_stride;
+                        if (!validate_handle_buffer(
+                                data, packed->second.bytes, element_count,
+                                parameter, &validation_error))
+                        {
+                            errors.push_back(std::move(validation_error));
+                            continue;
+                        }
+                    }
                     ordered_buffers.push_back(nullptr);
                     continue;
                 }
@@ -704,12 +939,23 @@ struct OrlExecution::Impl {
                     continue;
                 }
                 OrlBuffer& buffer = *bound->second;
-                if (buffer.orl_type() != parameter.orl_type
+                if (!buffer_type_matches(buffer, parameter)
                     || buffer.element_stride() != parameter.element_stride)
                 {
                     errors.emplace_back("Buffer binding for '" + parameter.name
                         + "' does not match ORL type '" + parameter.orl_type + "'");
                     continue;
+                }
+                if (parameter.kind == ParameterKind::HandleBuffer) {
+                    std::string validation_error;
+                    if (!validate_handle_buffer(
+                            static_cast<const OrlBuffer&>(buffer).data(),
+                            buffer.byte_size(), buffer.count(), parameter,
+                            &validation_error))
+                    {
+                        errors.push_back(std::move(validation_error));
+                        continue;
+                    }
                 }
                 ordered_buffers.push_back(backend == Backend::Cpu ? buffer.data() : nullptr);
             } else if (parameter.kind == ParameterKind::Int64) {
@@ -1246,8 +1492,17 @@ bool OrlExecution::bind_buffer(std::string_view parameter, OrlBuffer& buffer) {
         return false;
     }
     const auto* desc = impl_->parameter(parameter);
-    if (desc == nullptr || desc->kind != ParameterKind::Buffer) {
+    if (desc == nullptr || !is_buffer_parameter(desc->kind)) {
         impl_->errors.emplace_back("Parameter '" + std::string(parameter) + "' is not a buffer");
+        return false;
+    }
+    if (desc->kind == ParameterKind::HandleBuffer
+        && (!buffer_type_matches(buffer, *desc)
+            || buffer.element_stride() != sizeof(HandleValue)))
+    {
+        impl_->errors.emplace_back(
+            "Handle buffer binding for '" + std::string(parameter)
+            + "' has an incompatible element stride");
         return false;
     }
     const std::string name(parameter);
@@ -1274,7 +1529,7 @@ bool OrlExecution::bind_packed_buffer(
         return false;
     }
     const auto* desc = impl_->parameter(parameter);
-    if (desc == nullptr || desc->kind != ParameterKind::Buffer) {
+    if (desc == nullptr || !is_buffer_parameter(desc->kind)) {
         impl_->errors.emplace_back(
             "Parameter '" + std::string(parameter)
             + "' is not a buffer");
@@ -1289,6 +1544,24 @@ bool OrlExecution::bind_packed_buffer(
             "Packed buffer binding for '" + std::string(parameter)
             + "' has an invalid range");
         return false;
+    }
+    if (desc->kind == ParameterKind::HandleBuffer) {
+        if (view.bytes % desc->element_stride != 0) {
+            impl_->errors.emplace_back(
+                "Packed handle buffer binding for '" + std::string(parameter)
+                + "' is not aligned to its element stride");
+            return false;
+        }
+        std::string validation_error;
+        const auto* data =
+            static_cast<const std::byte*>(view.data) + view.offset;
+        if (!validate_handle_buffer(
+                data, view.bytes, view.bytes / desc->element_stride,
+                *desc, &validation_error))
+        {
+            impl_->errors.push_back(std::move(validation_error));
+            return false;
+        }
     }
 
     const std::string name(parameter);
@@ -1345,7 +1618,7 @@ bool OrlExecution::bind_device_buffer(std::string_view parameter, std::uint64_t 
         return false;
     }
     const auto* desc = impl_->parameter(parameter);
-    if (desc == nullptr || desc->kind != ParameterKind::Buffer) {
+    if (desc == nullptr || !is_buffer_parameter(desc->kind)) {
         impl_->errors.emplace_back("Parameter '" + std::string(parameter) + "' is not a buffer");
         return false;
     }
@@ -1689,10 +1962,20 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
     std::vector<orlcomp::OrlGpuKernelArgument> arguments;
     arguments.reserve(impl_->program->parameters.size());
     for (const auto& parameter : impl_->program->parameters) {
-        if (parameter.kind == ParameterKind::Buffer) {
+        if (is_buffer_parameter(parameter.kind)) {
             orlcomp::OrlGpuBuffer handle = 0;
             std::size_t buffer_offset = 0;
-            if (parameter.name == orlcomp::kSolverContextParameterName) {
+            if (parameter.hidden_scratch) {
+                const auto scratch =
+                    impl_->scratch_buffers.find(parameter.name);
+                if (scratch == impl_->scratch_buffers.end()
+                    || !impl_->ensure_device_buffer(
+                        scratch->second, &handle,
+                        &upload_calls, &upload_bytes))
+                {
+                    return std::nullopt;
+                }
+            } else if (parameter.name == orlcomp::kSolverContextParameterName) {
                 const bool packed_context =
                     impl_->packed_storage.has_value();
                 const bool ready = packed_context

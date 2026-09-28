@@ -238,6 +238,42 @@ TEST_CASE("scene graph context owns the active LBS graph",
         orlrig::kSceneLocatorsBinding, locators, &error));
     REQUIRE(locators.kind == ORL::exec::ParameterKind::Buffer);
     REQUIRE(locators.element_count == 1);
+    orlgraph::InterfacePort joint_collection;
+    joint_collection.id = orlgraph::StableId{"joint_collection"};
+    joint_collection.name = "joint_collection";
+    joint_collection.type = orlgraph::LogicalType::buffer(
+        orlgraph::LogicalType::handle("orlrig::joint_handle"));
+    joint_collection.domain = orlgraph::Domain::joint();
+    joint_collection.shape = orlgraph::Shape::one("joint_handle_count");
+    joint_collection.binding =
+        orlrig::scene_joint_handles_by_name_binding("^root$");
+    joint_collection.semantic = "scene.joint.handles";
+    ORL::exec::GraphInputBinding collection;
+    REQUIRE(context.scene_inputs().resolve(
+        joint_collection, collection, &error));
+    REQUIRE(collection.kind == ORL::exec::ParameterKind::HandleBuffer);
+    REQUIRE(collection.element_count == 1);
+    const auto* handle_values =
+        static_cast<const ORL::exec::HandleValue*>(
+            collection.buffer->data());
+    REQUIRE(handle_values[0].type_id
+        == orlcomp::HandleTypeIdFor("orlrig::joint_handle"));
+    REQUIRE(handle_values[0].slot == 0);
+    orlgraph::InterfacePort joint_collection_count;
+    joint_collection_count.id =
+        orlgraph::StableId{"joint_collection_count"};
+    joint_collection_count.name = "joint_collection_count";
+    joint_collection_count.type = orlgraph::LogicalType::int64();
+    joint_collection_count.domain = orlgraph::Domain::constant();
+    joint_collection_count.shape = orlgraph::Shape::scalar();
+    joint_collection_count.binding =
+        orlrig::scene_joint_handle_collection_count_binding("^root$");
+    joint_collection_count.semantic = "scene.joint.handle_count";
+    ORL::exec::GraphInputBinding collection_count;
+    REQUIRE(context.scene_inputs().resolve(
+        joint_collection_count, collection_count, &error));
+    REQUIRE(collection_count.kind == ORL::exec::ParameterKind::Int64);
+    REQUIRE(collection_count.int_value == 1);
     ORL::exec::GraphInputBinding locator_xform;
     REQUIRE(context.scene_inputs().resolve_binding(
         orlrig::scene_locator_xform_binding("loc"),

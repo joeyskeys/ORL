@@ -17,7 +17,7 @@ ScheduleResult topological_schedule(const GraphModule& module) {
     }
 
     for (const auto& connection : module.connections()) {
-        if (connection.feedback
+        if ((connection.feedback && !connection.sequence)
             || connection.source.kind != EndpointKind::NodePort
             || connection.destination.kind != EndpointKind::NodePort)
         {

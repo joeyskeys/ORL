@@ -33,7 +33,22 @@ TEST_CASE("syntax accepts scalar handle declarations and signatures",
     )");
 }
 
-TEST_CASE("syntax rejects handle arrays and buffers",
+TEST_CASE("syntax accepts handle topology helpers",
+    "[orl][syntax][handle][topology]")
+{
+    RequireParses(R"(
+        handle joint_handle;
+        int walk(joint_handle end) {
+            joint_handle parent = joint_parent(end);
+            while (handle_valid(parent)) {
+                parent = joint_handle_invalid();
+            }
+            return joint_is_ancestor(end, end);
+        }
+    )");
+}
+
+TEST_CASE("syntax rejects handle arrays and non-nominal handle buffers",
     "[orl][syntax][handle][error]")
 {
     RequireRejects(R"(
@@ -42,7 +57,39 @@ TEST_CASE("syntax rejects handle arrays and buffers",
     )");
     RequireRejects(R"(
         handle joint_handle;
-        int invalid(joint_handle values[]) { return 0; }
+        int invalid(handle values[]) { return 0; }
+    )");
+    RequireRejects(R"(
+        handle joint_handle;
+        handle locator_handle;
+        handle any_handle = joint_handle | locator_handle;
+        int invalid(any_handle values[]) { return 0; }
+    )");
+}
+
+TEST_CASE("syntax accepts exact nominal handle buffers",
+    "[orl][syntax][handle][buffer]")
+{
+    RequireParses(R"(
+        handle joint_handle;
+        int inspect(joint_handle values[], int count) {
+            if (count > 0 && values[0] == values[0]) {
+                return 1;
+            }
+            return 0;
+        }
+    )");
+}
+
+TEST_CASE("syntax accepts dispatch-sized local arrays",
+    "[orl][syntax][array][dispatch]")
+{
+    RequireParses(R"(
+        export int working(int count) {
+            int values[count];
+            values[0] = 1;
+            return values[0];
+        }
     )");
 }
 
@@ -310,17 +357,19 @@ TEST_CASE("syntax includes stdlib FK solver", "[orl][syntax][stdlib][solver]") {
 
 TEST_CASE("syntax includes stdlib advanced IK solvers", "[orl][syntax][stdlib][solver]") {
     const std::string src =
+        "use rig/handles;\n"
+        "use locator;\n"
         "use solver/hd_id;\n"
         "use solver/spline_ik;\n"
         "use solver/full_body_ik;\n"
-        "int solve_hd(Joint history[], int root, int end, int target_index, int iterations) {\n"
-        "    return solver_hd_id(history, root, end, target_index, iterations);\n"
+        "int solve_hd(Joint history[], joint_handle root, joint_handle end, locator_handle target, int iterations) {\n"
+        "    return solver_hd_id(history, root, end, target, iterations);\n"
         "}\n"
-        "int solve_spline(int chain[], point spline[], int chain_count, int point_count) {\n"
-        "    return solver_spline_ik(chain, spline, chain_count, point_count);\n"
+        "int solve_spline(joint_handle root, joint_handle end, point spline[], int point_count) {\n"
+        "    return solver_spline_ik(root, end, spline, point_count);\n"
         "}\n"
-        "int solve_body(int effectors[], int target_indices[], int effector_count, int iterations) {\n"
-        "    return solver_full_body_ik(effectors, target_indices, effector_count, iterations);\n"
+        "int solve_body(joint_handle effectors[], locator_handle targets[], int effector_count, int iterations) {\n"
+        "    return solver_full_body_ik(effectors, targets, effector_count, iterations);\n"
         "}\n";
 
     RequireParses(src);

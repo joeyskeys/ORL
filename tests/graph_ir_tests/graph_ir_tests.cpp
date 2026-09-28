@@ -200,6 +200,40 @@ TEST_CASE("graph validation rejects incompatible exact handle connections",
         }));
 }
 
+TEST_CASE("graph validation and scheduling accept sequence edges",
+    "[orlgraph][validation][sequence]")
+{
+    NodeRegistry registry;
+    for (const char* name : {"test.solver_a", "test.solver_b"}) {
+        NodeDefinition definition;
+        definition.id = StableId{name};
+        definition.qualified_name = name;
+        definition.allowed_stages = GraphStageMask::Solver;
+        definition.implementation.kind = ImplementationKind::Builtin;
+        definition.operation = "solver";
+        REQUIRE(registry.register_definition(std::move(definition)));
+    }
+
+    GraphModule module;
+    REQUIRE(module.add_node({
+        StableId{"a"}, StableId{"test.solver_a"}, "a",
+        {}, {}, InlinePolicy::Default}));
+    REQUIRE(module.add_node({
+        StableId{"b"}, StableId{"test.solver_b"}, "b",
+        {}, {}, InlinePolicy::Default}));
+    Connection sequence;
+    sequence.source = Endpoint::node_port(StableId{"a"}, StableId{});
+    sequence.destination = Endpoint::node_port(
+        StableId{"b"}, StableId{});
+    sequence.sequence = true;
+    REQUIRE(module.add_connection(std::move(sequence)));
+
+    const auto result = validate(module, registry);
+    REQUIRE(result.ok());
+    REQUIRE(result.schedule.order
+        == std::vector<StableId>{StableId{"a"}, StableId{"b"}});
+}
+
 TEST_CASE("graph reflection retains handle port types",
     "[orlgraph][reflection][handle]")
 {
@@ -255,6 +289,29 @@ TEST_CASE("graph validation rejects handle constants",
         [](const Diagnostic& diagnostic) {
             return diagnostic.code == "ORLGRAPH_HANDLE_CONSTANT";
         }));
+}
+
+TEST_CASE("graph validation accepts exact handle buffers",
+    "[orlgraph][validation][handle][buffer]")
+{
+    NodeRegistry registry;
+    NodeDefinition definition;
+    definition.id = StableId{"test.exact_handle_buffer"};
+    definition.qualified_name = "test.exact_handle_buffer";
+    definition.outputs.push_back(Port{
+        StableId{"handles"}, "handles", PortDirection::Output,
+        PortCardinality::Buffer,
+        LogicalType::buffer(
+            LogicalType::handle("orlrig::joint_handle")),
+        Domain::joint(), Shape::one("count"), false,
+        std::nullopt, {}, {}});
+    REQUIRE(registry.register_definition(std::move(definition)));
+
+    GraphModule module;
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"node"}, StableId{"test.exact_handle_buffer"}, "node",
+        {}, {}, InlinePolicy::Default}));
+    REQUIRE(validate(module, registry).ok());
 }
 
 TEST_CASE("graph validation rejects nested handle collections",
@@ -650,6 +707,15 @@ TEST_CASE("oro serialization preserves partial evaluation footprints",
         "rotation",
         AccessMode::ReadWrite,
     });
+    footprint.handle_walks.push_back({
+        StableId{"end"},
+        StableId{"root"},
+        "orlrig::joint_handle",
+        "Joint",
+        "rotation",
+        HandleWalkKind::Ancestors,
+        AccessMode::ReadWrite,
+    });
     footprint.read_resources = {StableId{"scene.joints"}};
     definition.partial_footprint = footprint;
     REQUIRE(registry.register_definition(std::move(definition)));
@@ -818,6 +884,26 @@ TEST_CASE("exact handle graph JSON preserves identity and rejects malformed type
         }));
 }
 
+TEST_CASE("exact handle buffer graph JSON round trips",
+    "[orlgraph][graph-json][handle][buffer]")
+{
+    GraphModule module;
+    module.module_id = "character.handle_buffers";
+    const auto buffer = LogicalType::buffer(
+        LogicalType::handle("orlrig::joint_handle"));
+    REQUIRE(module.add_input(InterfacePort{
+        StableId{"joints"}, "Joints", PortDirection::Input,
+        buffer, Domain::joint(), Shape::one("joint_handle_count"), true,
+        std::nullopt, false, "scene.rig.joints.by_name",
+        "scene.joint.handles", {}}));
+
+    const auto serialized = serialize_graph_json(module);
+    REQUIRE(serialized.ok);
+    const auto loaded = deserialize_graph_json(serialized.text);
+    REQUIRE(loaded.ok);
+    REQUIRE(loaded.module.input(StableId{"joints"})->type == buffer);
+}
+
 TEST_CASE("staged graph JSON preserves solver and deformer graphs",
     "[orlgraph][graph-stages][graph-json]")
 {
@@ -843,6 +929,33 @@ TEST_CASE("staged graph JSON preserves solver and deformer graphs",
     REQUIRE(loaded.deformer.module_id == "character.deformer");
     REQUIRE(loaded.solver.node(StableId{"computed_joints"}) == nullptr);
     REQUIRE(loaded.deformer.node(StableId{"computed_joints"}) != nullptr);
+}
+
+TEST_CASE("staged project graphs tolerate stale content hashes",
+    "[orlgraph][graph-stages][hash]")
+{
+    GraphModule solver;
+    solver.module_id = "stale.solver";
+    GraphModule deformer;
+    deformer.module_id = "stale.deformer";
+    const auto serialized = serialize_graph_stages_json(
+        solver, deformer);
+    REQUIRE(serialized.ok);
+    auto stale = serialized.text;
+    const auto position = stale.find(serialized.content_hash);
+    REQUIRE(position != std::string::npos);
+    stale[position] = stale[position] == '0' ? '1' : '0';
+
+    const auto strict = deserialize_graph_stages_json(stale);
+    REQUIRE_FALSE(strict.ok);
+    const auto project = deserialize_graph_stages_json(stale, true);
+    REQUIRE(project.ok);
+    REQUIRE(std::any_of(
+        project.diagnostics.begin(), project.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "ORLGRAPH_HASH_MISMATCH"
+                && diagnostic.severity == DiagnosticSeverity::Warning;
+        }));
 }
 #endif
 

@@ -202,6 +202,14 @@ ValidationResult validate(const GraphModule& module,
                         + " port must be scalar: " + port.name,
                     node_id, port.id);
             }
+            if (is_exact_handle_buffer(port.type)
+                && port.cardinality != PortCardinality::Buffer)
+            {
+                result.error("ORLGRAPH_HANDLE_CARDINALITY",
+                    "Exact handle buffers must use buffer cardinality: "
+                        + port.name,
+                    node_id, port.id);
+            }
             if (port.type.is_handle()
                 && !(port.type.is_open_handle()
                     ? port.type.name == "handle"
@@ -212,10 +220,13 @@ ValidationResult validate(const GraphModule& module,
                         + port.type.name,
                     node_id, port.id);
             }
-            if (contains_handle(port.type) && !port.type.is_handle())
+            if (contains_handle(port.type)
+                && !port.type.is_handle()
+                && !is_exact_handle_buffer(port.type))
             {
                 result.error("ORLGRAPH_HANDLE_CARDINALITY",
-                    "Handle collections are not supported: " + port.name,
+                    "Only buffers of exact nominal handles are supported: "
+                        + port.name,
                     node_id, port.id);
             }
             if (port.default_value.has_value()
@@ -433,10 +444,12 @@ ValidationResult validate(const GraphModule& module,
             result.error("ORLGRAPH_INTERFACE_DIRECTION",
                 "Graph input has invalid direction", {}, id);
         }
-        if (contains_handle(input.type) && !input.type.is_handle())
+        if (contains_handle(input.type) && !input.type.is_handle()
+            && !is_exact_handle_buffer(input.type))
         {
             result.error("ORLGRAPH_HANDLE_CARDINALITY",
-                "Handle graph input collections are not supported", {}, id);
+                "Only buffers of exact nominal handles are supported",
+                {}, id);
         }
         if (input.type.is_handle()
             && !(input.type.is_open_handle()
@@ -459,10 +472,12 @@ ValidationResult validate(const GraphModule& module,
             result.error("ORLGRAPH_INTERFACE_DIRECTION",
                 "Graph output has invalid direction", {}, id);
         }
-        if (contains_handle(output.type) && !output.type.is_handle())
+        if (contains_handle(output.type) && !output.type.is_handle()
+            && !is_exact_handle_buffer(output.type))
         {
             result.error("ORLGRAPH_HANDLE_CARDINALITY",
-                "Handle graph output collections are not supported", {}, id);
+                "Only buffers of exact nominal handles are supported",
+                {}, id);
         }
         if (output.type.is_handle()
             && !(output.type.is_open_handle()
@@ -482,6 +497,50 @@ ValidationResult validate(const GraphModule& module,
     }
 
     for (const auto& connection : module.connections()) {
+        if (connection.sequence) {
+            if (connection.feedback
+                || connection.source.kind != EndpointKind::NodePort
+                || connection.destination.kind
+                    != EndpointKind::NodePort)
+            {
+                result.error("ORLGRAPH_INVALID_SEQUENCE",
+                    "Sequence edges must connect two node regions");
+                continue;
+            }
+            if (connection.source.owner
+                    == connection.destination.owner)
+            {
+                result.error("ORLGRAPH_INVALID_SEQUENCE",
+                    "A sequence edge cannot target the same node");
+                continue;
+            }
+            const auto* source_node =
+                module.node(connection.source.owner);
+            const auto* destination_node =
+                module.node(connection.destination.owner);
+            const auto* source_definition = source_node == nullptr
+                ? nullptr : registry.find(source_node->definition);
+            const auto* destination_definition =
+                destination_node == nullptr
+                ? nullptr : registry.find(destination_node->definition);
+            const auto is_region = [](const NodeDefinition* definition) {
+                return definition != nullptr
+                    && (definition->operation == "solver"
+                        || definition->operation == "constraint"
+                        || definition->partial_footprint.has_value()
+                        || definition->implementation.kind
+                            == ImplementationKind::OrlFunction);
+            };
+            if (!is_region(source_definition)
+                || !is_region(destination_definition))
+            {
+                result.error("ORLGRAPH_INVALID_SEQUENCE",
+                    "Sequence edges must connect solver regions",
+                    connection.source.owner,
+                    connection.source.port);
+            }
+            continue;
+        }
         const auto source = endpoint_info(module, registry, connection.source, true);
         const auto destination = endpoint_info(module, registry, connection.destination, false);
         if (!source.valid) {

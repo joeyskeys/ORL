@@ -390,9 +390,17 @@ TEST_CASE("parser enforces handle declaration order and scalar storage",
 
     Parser buffer(R"(
         handle joint_handle;
-        int invalid(joint_handle values[]) { return 0; }
+        int invalid(handle values[]) { return 0; }
     )");
     REQUIRE_FALSE(buffer.Parse());
+
+    Parser union_buffer(R"(
+        handle joint_handle;
+        handle locator_handle;
+        handle any_handle = joint_handle | locator_handle;
+        int invalid(any_handle values[]) { return 0; }
+    )");
+    REQUIRE_FALSE(union_buffer.Parse());
 }
 
 TEST_CASE("parser rejects duplicate and colliding handle names",

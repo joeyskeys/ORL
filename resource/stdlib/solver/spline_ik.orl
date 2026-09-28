@@ -1,10 +1,11 @@
 // Spline inverse kinematics.
 //   use solver/spline_ik;
 //
-// chain[] contains joint indices in root-to-end order. spline[] contains
+// root/end handles define a contiguous joint path. spline[] contains
 // world-space Catmull-Rom control points. The solver preserves local
-// translations and rotates each chain bone to follow the spline tangent.
+// translations and rotates each path segment to follow the spline tangent.
 
+use rig/handles;
 use joint;
 
 point solver_spline_ik_catmull(point p0, point p1, point p2, point p3, float t) {
@@ -76,65 +77,124 @@ quat solver_spline_ik_quat_from_to(vector from, vector to) {
     return quat_normalize(q);
 }
 
+point solver_spline_ik_joint_origin(joint_handle value) {
+    WorldTransform world_data = WorldTransform(value);
+    return world_data.xform * point(0.0, 0.0, 0.0);
+}
+
+matrix solver_spline_ik_local_matrix(joint_handle value) {
+    Joint joint_data = Joint(value);
+    quat rotation = quat_normalize(joint_data.rotation);
+    float x = rotation.x;
+    float y = rotation.y;
+    float z = rotation.z;
+    float w = rotation.w;
+    float xx = x * x;
+    float yy = y * y;
+    float zz = z * z;
+    float xy = x * y;
+    float xz = x * z;
+    float yz = y * z;
+    float wx = w * x;
+    float wy = w * y;
+    float wz = w * z;
+    float sx = joint_data.scale.x;
+    float sy = joint_data.scale.y;
+    float sz = joint_data.scale.z;
+    return matrix(
+        sx * (1.0 - 2.0 * (yy + zz)),
+        sy * (2.0 * (xy - wz)),
+        sz * (2.0 * (xz + wy)),
+        joint_data.translation.x,
+        sx * (2.0 * (xy + wz)),
+        sy * (1.0 - 2.0 * (xx + zz)),
+        sz * (2.0 * (yz - wx)),
+        joint_data.translation.y,
+        sx * (2.0 * (xz - wy)),
+        sy * (2.0 * (yz + wx)),
+        sz * (1.0 - 2.0 * (xx + yy)),
+        joint_data.translation.z,
+        0.0, 0.0, 0.0, 1.0);
+}
+
+matrix solver_spline_ik_parent_world(joint_handle value) {
+    joint_handle parent = joint_parent(value);
+    if (!handle_valid(parent)) {
+        return mat_identity();
+    }
+    WorldTransform world_data = WorldTransform(value);
+    return mat_mul(
+        world_data.xform,
+        mat_inverse(solver_spline_ik_local_matrix(value)));
+}
+
 export int solver_spline_ik [[
     string stage = "solver",
-    int partial_global = 1,
-    string partial_propagation = "full"
+    string partial_propagation = "descendants"
 ]]
-    (int chain[],
-                     point spline[],
-                     int chain_count,
-                     int point_count) {
-    int joint_count = solver_context.joint_count;
-    if (chain_count < 2 || point_count < 2) {
+    (joint_handle root,
+     joint_handle end,
+     point spline[],
+     int point_count) {
+    if (!handle_valid(root) || !handle_valid(end)
+        || point_count < 2
+        || joint_is_ancestor(root, end) == 0)
+    {
         return 0;
     }
 
-    int index = 0;
-    while (index < chain_count) {
-        int joint_index = chain[index];
-        if (joint_index < 0 || joint_index >= joint_count) {
-            return 0;
-        }
-        if (index > 0) {
-            int parent_index = chain[index - 1];
-            if (solver_context.joints[joint_index].parent
-                != parent_index) {
-                return 0;
-            }
-        }
-        index = index + 1;
+    int chain_count = 1;
+    joint_handle cursor = end;
+    while (cursor != root
+        && handle_valid(cursor)
+        && chain_count < solver_context.joint_count)
+    {
+        cursor = joint_parent(cursor);
+        chain_count = chain_count + 1;
+    }
+    if (cursor != root || chain_count < 2) {
+        return 0;
     }
 
-    index = 0;
-    while (index < chain_count - 1) {
-        int pivot_index = chain[index];
-        int child_index = chain[index + 1];
-        float t0 = index * 1.0 / (chain_count - 1);
-        float t1 = (index + 1) * 1.0 / (chain_count - 1);
-        point curve_start = solver_spline_ik_sample(spline, point_count, t0);
-        point curve_end = solver_spline_ik_sample(spline, point_count, t1);
+    int segment = chain_count - 2;
+    joint_handle child = end;
+    joint_handle pivot = joint_parent(child);
+    while (segment >= 0 && handle_valid(pivot)) {
+        float t0 = segment * 1.0 / (chain_count - 1);
+        float t1 = (segment + 1) * 1.0 / (chain_count - 1);
+        point curve_start =
+            solver_spline_ik_sample(spline, point_count, t0);
+        point curve_end =
+            solver_spline_ik_sample(spline, point_count, t1);
         vector tangent = curve_end - curve_start;
 
         if (length(tangent) > 0.000001) {
-            int parent_index = solver_context.joints[pivot_index].parent;
+            Joint child_data = Joint(child);
+            Joint pivot_data = Joint(pivot);
+            vector offset(
+                child_data.translation.x,
+                child_data.translation.y,
+                child_data.translation.z);
             vector desired = tangent;
-            if (parent_index >= 0 && parent_index < joint_count) {
-                matrix parent_inverse = mat_inverse(
-                    joint_world_matrix(
-                        solver_context.joints, parent_index));
+            joint_handle parent = joint_parent(pivot);
+            if (handle_valid(parent)) {
+                matrix parent_inverse =
+                    mat_inverse(solver_spline_ik_parent_world(pivot));
                 point local_start = parent_inverse * curve_start;
                 point local_end = parent_inverse * curve_end;
                 desired = local_end - local_start;
             }
-
-            Joint child = solver_context.joints[child_index];
-            vector offset(child.translation.x, child.translation.y, child.translation.z);
-            Joint pivot = solver_context.joints[pivot_index];
-            pivot.rotation = solver_spline_ik_quat_from_to(offset, desired);
-            solver_context.joints[pivot_index] = pivot;
+            pivot_data.rotation =
+                solver_spline_ik_quat_from_to(offset, desired);
         }
-        index = index + 1;
+
+        child = pivot;
+        if (pivot == root) {
+            pivot = joint_handle_invalid();
+        } else {
+            pivot = joint_parent(pivot);
+        }
+        segment = segment - 1;
     }
     return 1;
 }

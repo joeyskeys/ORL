@@ -53,6 +53,21 @@ struct HandleViewEffectSummary {
         const HandleViewEffectSummary&) = default;
 };
 
+struct HandleWalkEffectSummary {
+    std::string parameter;
+    std::string stop_parameter;
+    std::string handle_type;
+    std::string view_type;
+    std::string field;
+    orlgraph::HandleWalkKind kind =
+        orlgraph::HandleWalkKind::Ancestors;
+    ParameterAccess access = ParameterAccess::None;
+
+    friend bool operator==(
+        const HandleWalkEffectSummary&,
+        const HandleWalkEffectSummary&) = default;
+};
+
 struct HandleCallSiteSummary {
     std::string callee;
     std::vector<std::optional<std::size_t>> handle_sources;
@@ -89,6 +104,7 @@ struct FunctionSummary {
     bool has_loop = false;
     bool has_external_call = false;
     std::vector<HandleViewEffectSummary> handle_view_effects;
+    std::vector<HandleWalkEffectSummary> handle_walk_effects;
     std::vector<HandleCallSiteSummary> handle_calls;
 };
 

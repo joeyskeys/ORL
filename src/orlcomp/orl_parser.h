@@ -79,6 +79,7 @@ private:
     std::unordered_map<std::string, std::string> handle_type_names_;
     std::unordered_map<std::string, std::vector<std::string>>
         handle_type_leaves_;
+    bool parsing_exported_function_ = false;
     std::unique_ptr<Program> program_;
     std::unique_ptr<Expression> last_expression_;
     std::unique_ptr<Statement> last_statement_;

@@ -285,6 +285,7 @@ void GraphSceneRuntime::register_runtime_adapters() {
     for (const std::string_view runtime_name : {
              std::string_view{"orlrig.input.find_joint"},
              std::string_view{"orlrig.input.find_locator"},
+             std::string_view{"orlrig.input.find_joints_by_name"},
              std::string_view{"orlrig.input.find_mesh"}})
     {
         runtime_adapters_.emplace(
@@ -777,6 +778,39 @@ bool GraphSceneRuntime::resolve_scene_input_node(
         return true;
     }
 
+    if (runtime_name == "orlrig.input.find_joints_by_name") {
+        const auto parameter =
+            instance.parameter_values.find("name_regex");
+        const auto* regex = parameter == instance.parameter_values.end()
+            ? nullptr
+            : std::get_if<std::string>(&parameter->second.value);
+        if (regex == nullptr) {
+            std::cerr << "Deformer: scene joint collection node '"
+                << instance.name << "' has no regular expression\n";
+            return false;
+        }
+        orlgraph::InterfacePort port;
+        port.id = orlgraph::StableId{
+            "find_" + instance.name + "_joints"};
+        port.name = port.id.value;
+        port.type = orlgraph::LogicalType::buffer(
+            orlgraph::LogicalType::handle("orlrig::joint_handle"));
+        port.domain = orlgraph::Domain::joint();
+        port.shape = orlgraph::Shape::one("joint_handle_count");
+        port.binding = orlrig::scene_joint_handles_by_name_binding(*regex);
+        port.semantic = "scene.joint.handles";
+        exec::GraphInputBinding resolved;
+        std::string error;
+        if (!graph_context_.scene_inputs().resolve(
+                port, resolved, &error))
+        {
+            std::cerr << "Deformer: scene joint collection node '"
+                << instance.name << "' failed: " << error << '\n';
+            return false;
+        }
+        return true;
+    }
+
     SceneElementKind element_kind;
     const std::string_view element_name = runtime_name.substr(
         std::string_view{"orlrig.input.find_"}.size());
@@ -864,7 +898,9 @@ bool GraphSceneRuntime::add_scene_execution_input(
     std::string_view semantic,
     std::string_view coordinate_space,
     std::string* expression,
-    std::string* error)
+    std::string* error,
+    bool buffer_type,
+    bool scalar_value)
 {
     if (expression == nullptr) {
         if (error != nullptr) {
@@ -873,17 +909,22 @@ bool GraphSceneRuntime::add_scene_execution_input(
         return false;
     }
 
-    const bool scalar_handle = element_type.is_handle();
-    const auto expected_type = scalar_handle
+    const bool scalar_handle =
+        element_type.is_handle() && !buffer_type && !scalar_value;
+    const auto expected_type = scalar_value
         ? element_type
-        : orlgraph::LogicalType::buffer(element_type);
+        : scalar_handle
+            ? element_type
+            : orlgraph::LogicalType::buffer(element_type);
     const bool require_exact_binding = scalar_handle
         || ((binding.rfind("scene.rig.controller.", 0) == 0
                 || binding.rfind("scene.rig.locator.", 0) == 0)
             && binding.ends_with(".xform"));
     for (const auto& [id, input] : module.inputs()) {
         if (input.binding != binding
-            && (require_exact_binding || semantic.empty()
+            && (require_exact_binding
+                || binding.rfind("scene.rig.joints.by_name.", 0) == 0
+                || semantic.empty()
                 || input.semantic != semantic))
         {
             continue;
@@ -1002,6 +1043,50 @@ bool GraphSceneRuntime::prepare_runtime_output_expressions(
                 {
                     return false;
                 }
+            } else if (runtime_name
+                == "orlrig.input.find_joints_by_name")
+            {
+                const auto parameter =
+                    instance->parameter_values.find("name_regex");
+                const auto* regex = parameter
+                    == instance->parameter_values.end()
+                    ? nullptr
+                    : std::get_if<std::string>(&parameter->second.value);
+                if (regex == nullptr) {
+                    return fail("Scene joint collection node '"
+                        + instance->name + "' has no regular expression");
+                }
+                if (output.name == "joints") {
+                    const auto binding =
+                        orlrig::scene_joint_handles_by_name_binding(*regex);
+                    if (!add_scene_execution_input(
+                            module, binding,
+                            "find_" + instance->name + "_joints",
+                            orlgraph::LogicalType::handle(
+                                "orlrig::joint_handle"),
+                            orlgraph::Domain::joint(),
+                            output.shape,
+                            "scene.joint.handles", {},
+                            &output_expression, error, true))
+                    {
+                        return false;
+                    }
+                } else if (output.name == "count") {
+                    const auto binding =
+                        orlrig::scene_joint_handle_collection_count_binding(
+                            *regex);
+                    if (!add_scene_execution_input(
+                            module, binding,
+                            "find_" + instance->name + "_count",
+                            orlgraph::LogicalType::int64(),
+                            orlgraph::Domain::constant(),
+                            orlgraph::Shape::scalar(),
+                            "scene.joint.handle_count", {},
+                            &output_expression, error, false, true))
+                    {
+                        return false;
+                    }
+                }
             } else if (runtime_name == "orlrig.input.find_joint"
                 || runtime_name == "orlrig.input.find_locator"
                 || runtime_name == "orlrig.input.find_mesh")
@@ -1090,6 +1175,9 @@ bool GraphSceneRuntime::add_segment_connection(
     const std::set<orlgraph::StableId>& node_ids,
     std::string* error)
 {
+    if (connection.sequence) {
+        return true;
+    }
     if (connection.destination.kind
             != orlgraph::EndpointKind::NodePort
         || node_ids.find(connection.destination.owner) == node_ids.end())

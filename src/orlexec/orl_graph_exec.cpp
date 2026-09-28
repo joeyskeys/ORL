@@ -53,6 +53,9 @@ const ParameterDesc* find_parameter(const std::vector<ParameterDesc>& parameters
 ParameterKind parameter_kind_for(const orlgraph::LogicalType& type) {
     switch (type.kind) {
     case orlgraph::LogicalTypeKind::Buffer:
+        if (type.element != nullptr && type.element->is_handle()) {
+            return ParameterKind::HandleBuffer;
+        }
         return ParameterKind::Buffer;
     case orlgraph::LogicalTypeKind::Int64:
         return ParameterKind::Int64;
@@ -393,7 +396,9 @@ bool OrlGraphExecution::bind_graph_inputs(const orlgraph::GraphModule& module,
         }
 
         bool bound = false;
-        if (parameter->kind == ParameterKind::Buffer) {
+        if (parameter->kind == ParameterKind::Buffer
+            || parameter->kind == ParameterKind::HandleBuffer)
+        {
             if ((binding.buffer != nullptr && binding.device_ptr != 0)
                 || (binding.packed.has_value()
                     && (binding.buffer != nullptr || binding.device_ptr != 0)))
@@ -404,7 +409,14 @@ bool OrlGraphExecution::bind_graph_inputs(const orlgraph::GraphModule& module,
                 return false;
             }
             if (binding.buffer != nullptr) {
-                if (binding.buffer->orl_type() != parameter->orl_type
+                const bool type_matches =
+                    parameter->kind == ParameterKind::HandleBuffer
+                    ? (binding.buffer->orl_type()
+                            == parameter->canonical_type_name
+                        || binding.buffer->orl_type()
+                            == parameter->orl_type)
+                    : binding.buffer->orl_type() == parameter->orl_type;
+                if (!type_matches
                     || binding.buffer->element_stride() != parameter->element_stride)
                 {
                     errors_.push_back("Graph input '" + id.value
@@ -608,7 +620,8 @@ GraphEvaluationResult OrlGraphExecution::evaluate_result(
                 value.device_view = device->second;
             } else if (execution_.has_value()
                 && execution_->backend() == Backend::Cuda
-                && descriptor.kind == ParameterKind::Buffer)
+                && (descriptor.kind == ParameterKind::Buffer
+                    || descriptor.kind == ParameterKind::HandleBuffer))
             {
                 value.device_view = execution_->device_buffer_view(
                     descriptor.source_parameter);

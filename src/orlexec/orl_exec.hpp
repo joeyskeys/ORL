@@ -27,6 +27,7 @@ enum class Backend {
 
 enum class ParameterKind {
     Buffer,
+    HandleBuffer,
     Int64,
     Float64,
     Handle,
@@ -42,6 +43,9 @@ struct ParameterDesc {
     std::size_t element_stride = 0;
     std::string canonical_type_name;
     std::uint64_t handle_type_id = 0;
+    bool hidden_scratch = false;
+    std::string scratch_size_symbol;
+    std::size_t scratch_size_multiplier = 1;
 };
 
 struct DeviceBufferView {

@@ -1028,6 +1028,114 @@ TEST_CASE("evaluation plan resolves typed solver footprints and dirty levels",
     REQUIRE(glm::vec3{worlds[2][3]}.x == Catch::Approx(2.0f));
 }
 
+TEST_CASE("evaluation plan expands computed handle walks",
+    "[orlrig][partial][walk]")
+{
+    orlrig::ComponentStore store;
+    const auto root = store.create_joint("root");
+    auto mid_value = orlrig::make_identity_joint();
+    mid_value.parent = 0;
+    const auto mid = store.create_joint("mid", mid_value);
+    auto end_value = orlrig::make_identity_joint();
+    end_value.parent = 1;
+    const auto end = store.create_joint("end", end_value);
+
+    orlgraph::NodeRegistry registry;
+    orlgraph::NodeDefinition find;
+    find.id = orlgraph::StableId{"orlrig.input.find_joint"};
+    find.qualified_name = "orlrig.input.find_joint";
+    find.allowed_stages = orlgraph::GraphStageMask::All;
+    find.implementation.kind = orlgraph::ImplementationKind::Runtime;
+    find.implementation.runtime_name = find.qualified_name;
+    find.parameters.push_back({
+        orlgraph::StableId{"name"}, "name",
+        orlgraph::LogicalType::string(), true, std::nullopt, {}});
+    find.outputs.push_back({
+        orlgraph::StableId{"handle"}, "handle",
+        orlgraph::PortDirection::Output,
+        orlgraph::PortCardinality::Scalar,
+        orlgraph::LogicalType::handle("orlrig::joint_handle"),
+        orlgraph::Domain::constant(), orlgraph::Shape::scalar(), false,
+        std::nullopt, {}, {}});
+    REQUIRE(registry.register_definition(std::move(find)));
+
+    orlgraph::NodeDefinition walk;
+    walk.id = orlgraph::StableId{"test.ancestor_walk"};
+    walk.qualified_name = walk.id.value;
+    walk.allowed_stages = orlgraph::GraphStageMask::Solver;
+    walk.implementation.kind = orlgraph::ImplementationKind::Builtin;
+    walk.operation = "solver";
+    for (const char* name : {"end", "root"}) {
+        walk.inputs.push_back({
+            orlgraph::StableId{name}, name,
+            orlgraph::PortDirection::Input,
+            orlgraph::PortCardinality::Scalar,
+            orlgraph::LogicalType::handle("orlrig::joint_handle"),
+            orlgraph::Domain::constant(), orlgraph::Shape::scalar(), true,
+            std::nullopt, {}, {}});
+    }
+    orlgraph::PartialEvaluationFootprint footprint;
+    footprint.declared = true;
+    footprint.global = false;
+    footprint.propagation = orlgraph::PartialPropagation::None;
+    footprint.handle_walks.push_back({
+        orlgraph::StableId{"end"},
+        orlgraph::StableId{"root"},
+        "orlrig::joint_handle",
+        "Joint",
+        "rotation",
+        orlgraph::HandleWalkKind::Ancestors,
+        orlgraph::AccessMode::Write});
+    walk.partial_footprint = footprint;
+    REQUIRE(registry.register_definition(std::move(walk)));
+
+    orlgraph::GraphModule graph;
+    graph.module_id = "partial.walk";
+    const auto add_find = [&](const char* id, const char* name) {
+        return graph.add_node({
+            orlgraph::StableId{id},
+            orlgraph::StableId{"orlrig.input.find_joint"},
+            id,
+            {{"name", {
+                orlgraph::LogicalType::string(),
+                std::string{name}}}},
+            {}, orlgraph::InlinePolicy::Default});
+    };
+    REQUIRE(add_find("find.end", "end"));
+    REQUIRE(add_find("find.root", "root"));
+    REQUIRE(graph.add_node({
+        orlgraph::StableId{"walk"},
+        orlgraph::StableId{"test.ancestor_walk"},
+        "walk", {}, {}, orlgraph::InlinePolicy::Default}));
+    const auto connect = [&](const char* source, const char* destination) {
+        return graph.add_connection({
+            orlgraph::Endpoint::node_port(
+                orlgraph::StableId{source},
+                orlgraph::StableId{"handle"}),
+            orlgraph::Endpoint::node_port(
+                orlgraph::StableId{"walk"},
+                orlgraph::StableId{destination})});
+    };
+    REQUIRE(connect("find.end", "end"));
+    REQUIRE(connect("find.root", "root"));
+
+    const auto hierarchy = orlrig::compile_hierarchy_plan(store);
+    REQUIRE(hierarchy);
+    const auto compiled = orlrig::compile_evaluation_plan(
+        graph, registry, store, *hierarchy.plan);
+    REQUIRE(compiled);
+    REQUIRE(compiled.plan->regions.size() == 1);
+    const auto& region = compiled.plan->regions.front();
+    REQUIRE_FALSE(region.global);
+    REQUIRE(region.write_joints.size() == 3);
+    REQUIRE(std::find(region.write_joints.begin(),
+        region.write_joints.end(), root) != region.write_joints.end());
+    REQUIRE(std::find(region.write_joints.begin(),
+        region.write_joints.end(), mid) != region.write_joints.end());
+    REQUIRE(std::find(region.write_joints.begin(),
+        region.write_joints.end(), end) != region.write_joints.end());
+}
+
 #if 0 // Locator index constraints await typed constraint migration.
 TEST_CASE("evaluation plan orders a locator writer before its reader",
     "[orlrig][partial][order]")
