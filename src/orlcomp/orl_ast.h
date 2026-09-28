@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -111,6 +112,48 @@ struct MemberAssignmentExpression final : Expression {
     std::unique_ptr<Expression> value;
 };
 
+struct DispatchArrayBound {
+    std::string symbol;
+    std::size_t multiplier = 1;
+};
+
+inline std::optional<DispatchArrayBound> dispatch_array_bound(
+    const Expression& expression)
+{
+    if (const auto* identifier =
+            dynamic_cast<const IdentifierExpression*>(&expression))
+    {
+        return DispatchArrayBound{identifier->name, 1};
+    }
+    const auto* binary =
+        dynamic_cast<const BinaryExpression*>(&expression);
+    if (binary == nullptr || binary->op != BinaryOp::Multiply) {
+        return std::nullopt;
+    }
+    const auto* literal =
+        dynamic_cast<const LiteralExpression*>(binary->left.get());
+    const Expression* other = binary->right.get();
+    if (literal == nullptr) {
+        literal = dynamic_cast<const LiteralExpression*>(
+            binary->right.get());
+        other = binary->left.get();
+    }
+    if (literal == nullptr || literal->kind != LiteralKind::Int
+        || literal->int_value <= 0
+        || literal->int_value > 1024)
+    {
+        return std::nullopt;
+    }
+    const auto base = dispatch_array_bound(*other);
+    if (!base.has_value()) {
+        return std::nullopt;
+    }
+    return DispatchArrayBound{
+        base->symbol,
+        base->multiplier
+            * static_cast<std::size_t>(literal->int_value)};
+}
+
 struct BlockStatement final : Statement {
     std::vector<std::unique_ptr<Statement>> statements;
 };
@@ -123,6 +166,7 @@ struct DeclarationStatement final : Statement {
     std::string type_name;
     std::string variable_name;
     std::size_t array_size = 0;
+    std::unique_ptr<Expression> array_size_expression;
     std::unique_ptr<Expression> initializer;
     std::vector<std::unique_ptr<Expression>> constructor_arguments;
 };

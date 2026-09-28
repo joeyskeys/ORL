@@ -78,6 +78,7 @@ struct LogicalType {
 bool is_assignable(const LogicalType& source, const LogicalType& destination);
 bool is_valid_handle_name(std::string_view canonical_name);
 bool contains_handle(const LogicalType& type);
+bool is_exact_handle_buffer(const LogicalType& type);
 
 struct StructField {
     std::string name;

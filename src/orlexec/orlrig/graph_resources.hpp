@@ -39,6 +39,9 @@ inline constexpr std::string_view kComputedJointsBinding =
 
 std::string scene_mesh_positions_binding(std::string_view object_name);
 std::string scene_mesh_vertex_count_binding(std::string_view object_name);
+std::string scene_joint_handles_by_name_binding(std::string_view name_regex);
+std::string scene_joint_handle_collection_count_binding(
+    std::string_view name_regex);
 std::string scene_weight_buffer_binding(std::string_view component_name);
 std::string scene_weight_count_binding(std::string_view component_name);
 std::string scene_inverse_bindings_binding(std::string_view component_name);

@@ -76,8 +76,9 @@ These rules apply to every plan in this series:
    state.
 2. `Joint.parent` stays an ABI `int` in packed storage. Topology features
    wrap that slot as a handle; they do not change the 128-byte Joint layout.
-3. `find_joint` / `find_locator` remain the only public way to introduce a
-   scene identity into the graph.
+3. `find_joint` / `find_locator` remain the scalar public way to introduce a
+   scene identity into the graph. List-valued lookup nodes such as plan 1's
+   `find_joints_by_name` must resolve through the same typed identity path.
 4. Runtime-unknown identity stays conservative until plan 3 can prove a
    walk. Never guess a packed slot in the evaluation plan.
 5. CPU and CUDA must use the same value widths and validity rules. A

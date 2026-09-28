@@ -1458,7 +1458,13 @@ ProjectIoResult load_project_json(
     }
 
     const auto graph_document = orlgraph::deserialize_graph_stages_json(
-        write_json(*graph));
+        write_json(*graph), true);
+    for (const auto& diagnostic : graph_document.diagnostics) {
+        if (diagnostic.severity != orlgraph::DiagnosticSeverity::Error) {
+            result.warnings.push_back(
+                diagnostic.code + ": " + diagnostic.message);
+        }
+    }
     if (!graph_document.ok) {
         result.errors.push_back(
             graph_document.diagnostics.empty()

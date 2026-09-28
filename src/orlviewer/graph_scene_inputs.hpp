@@ -139,6 +139,10 @@ private:
         std::string label, std::string canonical_type,
         std::string semantic, Source source);
 
+    bool resolve_joint_handle_collection(
+        std::string_view name_regex,
+        bool count_only, exec::GraphInputBinding& result,
+        std::string* error);
     bool pack_mesh_positions(const std::string& object_name,
         const std::string& binding);
     bool pack_joints();
@@ -170,6 +174,8 @@ private:
     std::unordered_map<std::string, exec::OrlBuffer> mesh_positions_;
     std::unordered_map<std::string, exec::OrlBuffer> locator_xforms_;
     std::unordered_map<std::string, exec::OrlBuffer> controller_xforms_;
+    std::unordered_map<std::string, exec::OrlBuffer>
+        joint_handle_collections_;
     exec::OrlBuffer joints_;
     std::optional<exec::DeviceBufferView> computed_joints_device_;
     std::size_t computed_joints_device_count_ = 0;

@@ -80,6 +80,50 @@ TEST_CASE("CPU execution transports and validates exact handles",
     REQUIRE_FALSE(execution.evaluate().has_value());
 }
 
+TEST_CASE("CPU execution walks joint topology through handles",
+    "[orl][exec][handle][topology][cpu]")
+{
+    const auto program = OrlProgram::Compile(R"(
+        handle joint_handle;
+        int topology(joint_handle root, joint_handle end) {
+            joint_handle parent = joint_parent(end);
+            int ancestor = joint_is_ancestor(root, end);
+            if (handle_valid(parent)) {
+                return ancestor + 1;
+            }
+            return ancestor;
+        }
+    )", {
+        .entry_function = "topology",
+        .source_name = "orlrig",
+    });
+    REQUIRE(program.valid());
+
+    auto execution = OrlExecution::Create(program, Backend::Cpu);
+    REQUIRE(execution.valid());
+    orlrig::Joint joints[2] = {
+        orlrig::make_identity_joint(),
+        orlrig::make_identity_joint(),
+    };
+    joints[1].parent = 0;
+    orlrig::HandleViewContext context{
+        {joints, 2, sizeof(orlrig::Joint), true}, {}, 9};
+    REQUIRE(execution.bind_handle_view_context(context));
+    const auto handle_type =
+        orlcomp::HandleTypeIdFor("orlrig::joint_handle");
+    REQUIRE(execution.bind_handle("root", {handle_type, 0}));
+    REQUIRE(execution.bind_handle("end", {handle_type, 1}));
+    const auto result = execution.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 2);
+
+    REQUIRE(execution.bind_handle("root", {handle_type, 1}));
+    REQUIRE(execution.bind_handle("end", {handle_type, 0}));
+    const auto root_result = execution.evaluate();
+    REQUIRE(root_result.has_value());
+    REQUIRE(*root_result == 0);
+}
+
 TEST_CASE("runtime compilation applies semantic handle diagnostics first",
     "[orl][exec][handle][semantic]")
 {
@@ -96,6 +140,77 @@ TEST_CASE("runtime compilation applies semantic handle diagnostics first",
             return error.find("ORL_ANALYSIS_HANDLE_OPERATION")
                 != std::string::npos;
         }));
+}
+
+TEST_CASE("CPU execution transports and validates exact handle buffers",
+    "[orl][exec][handle][buffer][cpu]")
+{
+    const auto program = OrlProgram::Compile(R"(
+        handle joint_handle;
+        int inspect(joint_handle values[], int count) {
+            if (count > 0 && values[0] == values[0]) {
+                return count;
+            }
+            return 0;
+        }
+    )", {
+        .entry_function = "inspect",
+        .source_name = "handle_buffer_test",
+    });
+    REQUIRE(program.valid());
+    REQUIRE(program.parameters().size() == 2);
+    REQUIRE(program.parameters()[0].kind == ParameterKind::HandleBuffer);
+    REQUIRE(program.parameters()[0].element_stride
+        == sizeof(HandleValue));
+    REQUIRE(program.parameters()[0].handle_type_id
+        == orlcomp::HandleTypeIdFor("handle_buffer_test::joint_handle"));
+
+    auto execution = OrlExecution::Create(program, Backend::Cpu);
+    REQUIRE(execution.valid());
+    OrlBuffer values(
+        "handle_buffer_test::joint_handle", sizeof(HandleValue));
+    REQUIRE(values.resize(2));
+    const auto type = orlcomp::HandleTypeIdFor(
+        "handle_buffer_test::joint_handle");
+    REQUIRE(values.write(0, HandleValue{type, 2}));
+    REQUIRE(values.write(1, HandleValue{type, 5}));
+    REQUIRE(execution.bind_buffer("values", values));
+    REQUIRE(execution.bind_int("count", 2));
+    const auto result = execution.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 2);
+
+    REQUIRE(values.write(0, HandleValue{
+        orlcomp::HandleTypeIdFor("orlrig::locator_handle"), 2}));
+    REQUIRE_FALSE(execution.evaluate().has_value());
+}
+
+TEST_CASE("CPU execution allocates dispatch-sized local arrays",
+    "[orl][exec][dispatch-array][cpu]")
+{
+    const auto program = OrlProgram::Compile(R"(
+        export int working(int count) {
+            int values[count];
+            values[0] = 7;
+            return values[0];
+        }
+    )", {
+        .entry_function = "working",
+        .source_name = "dispatch_array_test",
+    });
+    REQUIRE(program.valid());
+    REQUIRE(std::any_of(
+        program.parameters().begin(), program.parameters().end(),
+        [](const ParameterDesc& parameter) {
+            return parameter.hidden_scratch;
+        }));
+
+    auto execution = OrlExecution::Create(program, Backend::Cpu);
+    REQUIRE(execution.valid());
+    REQUIRE(execution.bind_int("count", 4));
+    const auto result = execution.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 7);
 }
 
 TEST_CASE("CPU execution binds storage-backed Joint views",

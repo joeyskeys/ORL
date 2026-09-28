@@ -197,7 +197,7 @@ bool NodeGraphEditor::load_project_file()
     }
     if (!loaded.warnings.empty()) {
         QString message = QStringLiteral(
-            "The project opened with unfinished graph connections.");
+            "The project opened with warnings.");
         for (const auto& warning : loaded.warnings) {
             message += QStringLiteral("\n")
                 + QString::fromStdString(warning);

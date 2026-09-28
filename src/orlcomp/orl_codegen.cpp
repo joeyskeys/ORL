@@ -29,6 +29,7 @@
 #endif
 
 #include <memory>
+#include <map>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -80,6 +81,12 @@ struct LlvmIrCodegen::Impl {
         std::string handle_canonical;
     };
 
+    struct DispatchArrayInfo {
+        std::string name;
+        std::string type_name;
+        DispatchArrayBound bound;
+    };
+
     struct LoopContext {
         llvm::BasicBlock *break_target = nullptr;
         llvm::BasicBlock *continue_target = nullptr;
@@ -110,6 +117,13 @@ struct LlvmIrCodegen::Impl {
         const auto found = handle_type_identities_.find(type_name);
         return found == handle_type_identities_.end()
             || found->second == "handle";
+    }
+
+    static bool IsTopologyHelper(std::string_view name) {
+        return name == "handle_valid"
+            || name == "joint_handle_invalid"
+            || name == "joint_parent"
+            || name == "joint_is_ancestor";
     }
 
     bool StatementUsesHandle(const Statement &statement) const {
@@ -154,12 +168,16 @@ struct LlvmIrCodegen::Impl {
         if (const auto* call =
                 dynamic_cast<const CallExpression*>(&expression))
         {
-            if (const auto* callee = dynamic_cast<const IdentifierExpression*>(
+            const auto* callee =
+                dynamic_cast<const IdentifierExpression*>(
                     call->callee.get());
-                callee != nullptr
+            if (callee != nullptr
                 && global_handle_view_registry().has_destination(
                     callee->name))
             {
+                return true;
+            }
+            if (callee != nullptr && IsTopologyHelper(callee->name)) {
                 return true;
             }
             if (ExpressionUsesHandleView(*call->callee)) {
@@ -301,6 +319,59 @@ struct LlvmIrCodegen::Impl {
         return false;
     }
 
+    void CollectDispatchArrays(
+        const Statement& statement,
+        std::vector<DispatchArrayInfo>* output) const
+    {
+        if (const auto* declaration =
+                dynamic_cast<const DeclarationStatement*>(&statement))
+        {
+            if (declaration->array_size_expression != nullptr) {
+                const auto bound = dispatch_array_bound(
+                    *declaration->array_size_expression);
+                if (bound.has_value()) {
+                    output->push_back({
+                        declaration->variable_name,
+                        declaration->type_name,
+                        *bound});
+                }
+            }
+            return;
+        }
+        if (const auto* block =
+                dynamic_cast<const BlockStatement*>(&statement))
+        {
+            for (const auto& child : block->statements) {
+                if (child != nullptr) {
+                    CollectDispatchArrays(*child, output);
+                }
+            }
+        } else if (const auto* conditional =
+                dynamic_cast<const IfStatement*>(&statement))
+        {
+            CollectDispatchArrays(*conditional->then_branch, output);
+            if (conditional->else_branch != nullptr) {
+                CollectDispatchArrays(*conditional->else_branch, output);
+            }
+        } else if (const auto* loop =
+                dynamic_cast<const WhileStatement*>(&statement))
+        {
+            CollectDispatchArrays(*loop->body, output);
+        } else if (const auto* loop =
+                dynamic_cast<const DoWhileStatement*>(&statement))
+        {
+            CollectDispatchArrays(*loop->body, output);
+        } else if (const auto* loop =
+                dynamic_cast<const ForStatement*>(&statement))
+        {
+            CollectDispatchArrays(*loop->body, output);
+        } else if (const auto* loop =
+                dynamic_cast<const ParallelForStatement*>(&statement))
+        {
+            CollectDispatchArrays(*loop->body, output);
+        }
+    }
+
     bool Generate(const Program &program) {
         errors_.clear();
         module_ = std::make_unique<llvm::Module>(module_name_, *context_);
@@ -311,6 +382,7 @@ struct LlvmIrCodegen::Impl {
         function_names_.clear();
         handle_type_names_.clear();
         handle_canonical_names_.clear();
+        dispatch_arrays_.clear();
         handle_type_ = nullptr;
         parallel_body_counter_ = 0;
         current_function_ = nullptr;
@@ -320,6 +392,7 @@ struct LlvmIrCodegen::Impl {
         hierarchy_context_argument_ = nullptr;
         hierarchy_data_argument_ = nullptr;
         handle_context_argument_ = nullptr;
+        dispatch_array_arguments_.clear();
         generating_parallel_body_ = false;
         uses_solver_context_ = program.uses_solver_context;
         uses_hierarchy_context_ = program.uses_hierarchy_context;
@@ -348,6 +421,28 @@ struct LlvmIrCodegen::Impl {
                         item.get());
                 if (handle != nullptr && handle->canonical_name == local) {
                     handle_canonical_names_[handle->name] = canonical;
+                }
+            }
+        }
+        for (const auto& item : program.items) {
+            const auto* function =
+                dynamic_cast<const FunctionDefinitionStatement*>(
+                    item.get());
+            if (function == nullptr) {
+                continue;
+            }
+            std::vector<DispatchArrayInfo> arrays;
+            if (function->body != nullptr) {
+                CollectDispatchArrays(*function->body, &arrays);
+            }
+            if (!arrays.empty()) {
+                dispatch_arrays_[function->name] = std::move(arrays);
+                for (const auto& array :
+                    dispatch_arrays_.at(function->name))
+                {
+                    if (array.bound.symbol == "joint_count") {
+                        uses_solver_context_ = true;
+                    }
                 }
             }
         }
@@ -543,6 +638,18 @@ struct LlvmIrCodegen::Impl {
     std::string HandleCanonicalForExpression(
         const Expression& expression)
     {
+        if (const auto* index =
+                dynamic_cast<const IndexExpression*>(&expression))
+        {
+            const auto* base =
+                dynamic_cast<const IdentifierExpression*>(index->base.get());
+            if (base != nullptr) {
+                const auto* variable = FindVariable(base->name);
+                return variable == nullptr
+                    ? std::string{} : variable->handle_canonical;
+            }
+            return {};
+        }
         const auto* identifier =
             dynamic_cast<const IdentifierExpression*>(&expression);
         if (identifier == nullptr) {
@@ -1100,6 +1207,13 @@ struct LlvmIrCodegen::Impl {
             parameter_types.push_back(builder_.getPtrTy());
             parameter_types.push_back(builder_.getPtrTy());
         }
+        const auto scratch = dispatch_arrays_.find(
+            function_definition.name);
+        if (scratch != dispatch_arrays_.end()) {
+            parameter_types.insert(
+                parameter_types.end(), scratch->second.size(),
+                builder_.getPtrTy());
+        }
         if (uses_handle_context_) {
             parameter_types.push_back(builder_.getPtrTy());
         }
@@ -1124,6 +1238,7 @@ struct LlvmIrCodegen::Impl {
         current_function_return_type_ = function->getReturnType();
         current_function_definition_ = &function_definition;
         EnterScope();
+        dispatch_array_arguments_.clear();
 
         auto argument = function->arg_begin();
         for (const auto &parameter_ast : function_definition.parameters) {
@@ -1138,8 +1253,16 @@ struct LlvmIrCodegen::Impl {
             argument->setName(parameter_ast.name);
             if (parameter_ast.is_buffer) {
                 llvm::Type *element_type = MapTypeName(parameter_ast.type_name);
-                AddVariable(parameter_ast.name,
-                            VariableInfo{&*argument, element_type, true, false});
+                VariableInfo parameter_info{
+                    &*argument, element_type, true, false};
+                if (const auto found = handle_canonical_names_.find(
+                        parameter_ast.type_name);
+                    found != handle_canonical_names_.end())
+                {
+                    parameter_info.handle_canonical = found->second;
+                }
+                AddVariable(
+                    parameter_ast.name, std::move(parameter_info));
                 ++argument;
                 continue;
             }
@@ -1191,6 +1314,15 @@ struct LlvmIrCodegen::Impl {
                     false,
                     true,
                 });
+        }
+        const auto scratch = dispatch_arrays_.find(
+            function_definition.name);
+        if (scratch != dispatch_arrays_.end()) {
+            for (const auto& array : scratch->second) {
+                argument->setName("__orl_scratch_" + array.name);
+                dispatch_array_arguments_[array.name] = &*argument;
+                ++argument;
+            }
         }
         if (uses_handle_context_) {
             handle_context_argument_ = &*argument;
@@ -1341,6 +1473,22 @@ struct LlvmIrCodegen::Impl {
             call_arguments.push_back(hierarchy_context);
             call_arguments.push_back(hierarchy_data);
         }
+        const auto scratch = dispatch_arrays_.find(definition.name);
+        if (scratch != dispatch_arrays_.end()) {
+            std::size_t scratch_buffer_index = buffer_index
+                + (uses_solver_context_ ? 1 : 0)
+                + (uses_hierarchy_context_ ? 2 : 0);
+            for (std::size_t index = 0;
+                 index < scratch->second.size(); ++index)
+            {
+                llvm::Value *slot = wrapper_builder.CreateInBoundsGEP(
+                    builder_.getPtrTy(), buffers,
+                    wrapper_builder.getInt64(scratch_buffer_index++));
+                call_arguments.push_back(
+                    wrapper_builder.CreateLoad(
+                        builder_.getPtrTy(), slot));
+            }
+        }
 
         llvm::Value *result = wrapper_builder.CreateCall(target, call_arguments, "orl.exec.result");
         wrapper_builder.CreateRet(result);
@@ -1460,6 +1608,26 @@ struct LlvmIrCodegen::Impl {
             builder_.CreateStore(DefaultValueFor(array_type), slot);
             AddVariable(declaration.variable_name,
                 VariableInfo{slot, array_type, false, true});
+            return true;
+        }
+        if (declaration.array_size_expression != nullptr) {
+            const auto found = dispatch_array_arguments_.find(
+                declaration.variable_name);
+            if (found == dispatch_array_arguments_.end()) {
+                AddError(
+                    "Missing dispatch-sized array argument: "
+                    + declaration.variable_name);
+                return false;
+            }
+            VariableInfo info{
+                found->second, element_type, true, false};
+            if (const auto handle = handle_canonical_names_.find(
+                    declaration.type_name);
+                handle != handle_canonical_names_.end())
+            {
+                info.handle_canonical = handle->second;
+            }
+            AddVariable(declaration.variable_name, std::move(info));
             return true;
         }
 
@@ -1877,8 +2045,16 @@ struct LlvmIrCodegen::Impl {
                 field_type, field, parameter.name + ".capture");
             if (parameter.is_buffer) {
                 llvm::Type *element_type = MapTypeName(parameter.type_name);
-                AddVariable(parameter.name,
-                    VariableInfo{value, element_type, true, false});
+                VariableInfo parameter_info{
+                    value, element_type, true, false};
+                if (const auto found = handle_canonical_names_.find(
+                        parameter.type_name);
+                    found != handle_canonical_names_.end())
+                {
+                    parameter_info.handle_canonical = found->second;
+                }
+                AddVariable(
+                    parameter.name, std::move(parameter_info));
             } else {
                 llvm::AllocaInst *slot = CreateEntryAlloca(
                     parameter.name, field_type);
@@ -1955,6 +2131,296 @@ struct LlvmIrCodegen::Impl {
             {builder_.getInt64(0), bound, body_function, context_slot});
         call->setCallingConv(llvm::CallingConv::C);
         return true;
+    }
+
+    llvm::Value* MakeInvalidHandle() {
+        if (handle_type_ == nullptr) {
+            AddError("Handle runtime ABI is unavailable");
+            return nullptr;
+        }
+        llvm::Value* result = llvm::UndefValue::get(handle_type_);
+        result = builder_.CreateInsertValue(
+            result, builder_.getInt64(orlcomp::kInvalidHandleTypeId),
+            {0}, "topology.invalid.type");
+        return builder_.CreateInsertValue(
+            result,
+            builder_.getInt64(orlcomp::kInvalidHandleSlot),
+            {1}, "topology.invalid.slot");
+    }
+
+    llvm::Value* MakeHandle(llvm::Value* type_id, llvm::Value* slot,
+        const char* name)
+    {
+        if (handle_type_ == nullptr) {
+            AddError("Handle runtime ABI is unavailable");
+            return nullptr;
+        }
+        llvm::Value* result = llvm::UndefValue::get(handle_type_);
+        result = builder_.CreateInsertValue(
+            result, type_id, {0}, std::string{name} + ".type");
+        return builder_.CreateInsertValue(
+            result, slot, {1}, std::string{name} + ".slot");
+    }
+
+    llvm::Value* GenerateCudaHandleValid(llvm::Value* handle) {
+        auto* type_id = HandleTypeLane(handle);
+        auto* slot = HandleSlotLane(handle);
+        return builder_.CreateAnd(
+            builder_.CreateICmpNE(
+                type_id, builder_.getInt64(orlcomp::kInvalidHandleTypeId)),
+            builder_.CreateICmpSGE(
+                slot, builder_.getInt64(orlcomp::kInvalidHandleSlot)),
+            "topology.handle.valid");
+    }
+
+    llvm::Value* GenerateCudaJointParent(llvm::Value* handle) {
+        if (handle_context_argument_ == nullptr) {
+            AddError("Handle topology requires a CUDA handle context");
+            return nullptr;
+        }
+        auto* context = handle_context_argument_;
+        const auto load_context_field = [&](std::uint64_t index,
+                                            const char* name) {
+            auto* address = builder_.CreateInBoundsGEP(
+                builder_.getInt64Ty(), context,
+                builder_.getInt64(index),
+                std::string{"topology.context."} + name + ".address");
+            return CreatePackedLoad(
+                builder_.getInt64Ty(), address,
+                std::string{"topology.context."} + name);
+        };
+        auto* arena = load_context_field(0, "joint_arena");
+        auto* count = load_context_field(2, "joint_count");
+        auto* stride = load_context_field(4, "joint_stride");
+        auto* type_id = HandleTypeLane(handle);
+        auto* slot = HandleSlotLane(handle);
+        auto* input_valid = builder_.CreateAnd(
+            builder_.CreateICmpEQ(
+                type_id,
+                builder_.getInt64(
+                    orlcomp::HandleTypeIdFor("orlrig::joint_handle"))),
+            builder_.CreateAnd(
+                builder_.CreateICmpSGE(
+                    slot, builder_.getInt64(orlcomp::kInvalidHandleSlot)),
+                builder_.CreateAnd(
+                    builder_.CreateICmpSLT(slot, count),
+                    builder_.CreateICmpNE(
+                        arena, builder_.getInt64(0)))),
+            "topology.parent.input.valid");
+
+        auto* function = builder_.GetInsertBlock()->getParent();
+        auto* parent_block = llvm::BasicBlock::Create(
+            *context_, "topology.parent.read", function);
+        auto* invalid_block = llvm::BasicBlock::Create(
+            *context_, "topology.parent.invalid", function);
+        auto* merge_block = llvm::BasicBlock::Create(
+            *context_, "topology.parent.merge", function);
+        builder_.CreateCondBr(input_valid, parent_block, invalid_block);
+
+        builder_.SetInsertPoint(parent_block);
+        auto* arena_pointer = builder_.CreateIntToPtr(
+            arena, builder_.getPtrTy(), "topology.joint.arena");
+        auto* byte_offset = builder_.CreateMul(
+            slot, stride, "topology.parent.byte_offset");
+        auto* parent_address = builder_.CreateGEP(
+            builder_.getInt8Ty(), arena_pointer, byte_offset,
+            "topology.parent.address");
+        auto* parent = CreatePackedLoad(
+            builder_.getInt64Ty(), parent_address, "topology.parent");
+        auto* parent_valid = builder_.CreateAnd(
+            builder_.CreateICmpSGE(
+                parent, builder_.getInt64(0)),
+            builder_.CreateICmpSLT(parent, count),
+            "topology.parent.valid");
+        auto* parent_type = builder_.CreateSelect(
+            parent_valid,
+            builder_.getInt64(
+                orlcomp::HandleTypeIdFor("orlrig::joint_handle")),
+            builder_.getInt64(orlcomp::kInvalidHandleTypeId),
+            "topology.parent.type");
+        auto* parent_slot = builder_.CreateSelect(
+            parent_valid, parent,
+            builder_.getInt64(orlcomp::kInvalidHandleSlot),
+            "topology.parent.slot");
+        builder_.CreateBr(merge_block);
+
+        builder_.SetInsertPoint(invalid_block);
+        auto* invalid_type =
+            builder_.getInt64(orlcomp::kInvalidHandleTypeId);
+        auto* invalid_slot =
+            builder_.getInt64(orlcomp::kInvalidHandleSlot);
+        builder_.CreateBr(merge_block);
+
+        builder_.SetInsertPoint(merge_block);
+        auto* merged_type = builder_.CreatePHI(
+            builder_.getInt64Ty(), 2, "topology.parent.type.merge");
+        merged_type->addIncoming(parent_type, parent_block);
+        merged_type->addIncoming(invalid_type, invalid_block);
+        auto* merged_slot = builder_.CreatePHI(
+            builder_.getInt64Ty(), 2, "topology.parent.slot.merge");
+        merged_slot->addIncoming(parent_slot, parent_block);
+        merged_slot->addIncoming(invalid_slot, invalid_block);
+        return MakeHandle(
+            merged_type, merged_slot, "topology.parent.result");
+    }
+
+    llvm::Value* GenerateCudaJointIsAncestor(
+        llvm::Value* root, llvm::Value* end)
+    {
+        if (handle_context_argument_ == nullptr) {
+            AddError("Handle topology requires a CUDA handle context");
+            return nullptr;
+        }
+        auto* pivot_slot = CreateEntryAlloca(
+            "topology.ancestor.pivot", handle_type_);
+        auto* depth_slot = CreateEntryAlloca(
+            "topology.ancestor.depth", builder_.getInt64Ty());
+        auto* result_slot = CreateEntryAlloca(
+            "topology.ancestor.result", builder_.getInt64Ty());
+        builder_.CreateStore(end, pivot_slot);
+        builder_.CreateStore(builder_.getInt64(0), depth_slot);
+        builder_.CreateStore(builder_.getInt64(0), result_slot);
+
+        auto* function = builder_.GetInsertBlock()->getParent();
+        auto* condition_block = llvm::BasicBlock::Create(
+            *context_, "topology.ancestor.condition", function);
+        auto* matched_block = llvm::BasicBlock::Create(
+            *context_, "topology.ancestor.matched", function);
+        auto* body_block = llvm::BasicBlock::Create(
+            *context_, "topology.ancestor.body", function);
+        auto* end_block = llvm::BasicBlock::Create(
+            *context_, "topology.ancestor.end", function);
+        builder_.CreateBr(condition_block);
+
+        builder_.SetInsertPoint(condition_block);
+        auto* pivot = CreatePackedLoad(
+            handle_type_, pivot_slot, "topology.ancestor.pivot.load");
+        auto* depth = CreatePackedLoad(
+            builder_.getInt64Ty(), depth_slot,
+            "topology.ancestor.depth.load");
+        auto* valid = GenerateCudaHandleValid(pivot);
+        auto* equal = builder_.CreateAnd(
+            valid,
+            builder_.CreateAnd(
+                builder_.CreateICmpEQ(
+                    HandleTypeLane(root), HandleTypeLane(pivot)),
+                builder_.CreateICmpEQ(
+                    HandleSlotLane(root), HandleSlotLane(pivot))),
+            "topology.ancestor.match");
+        auto* count_address = builder_.CreateInBoundsGEP(
+            builder_.getInt64Ty(), handle_context_argument_,
+            builder_.getInt64(2), "topology.ancestor.count.address");
+        auto* count = CreatePackedLoad(
+            builder_.getInt64Ty(), count_address,
+            "topology.ancestor.count");
+        auto* can_continue = builder_.CreateAnd(
+            valid, builder_.CreateICmpSLT(depth, count),
+            "topology.ancestor.continue");
+        auto* condition = llvm::BasicBlock::Create(
+            *context_, "topology.ancestor.body.check", function);
+        builder_.CreateCondBr(equal, matched_block, condition);
+        builder_.SetInsertPoint(condition);
+        builder_.CreateCondBr(can_continue, body_block, end_block);
+
+        builder_.SetInsertPoint(matched_block);
+        builder_.CreateStore(builder_.getInt64(1), result_slot);
+        builder_.CreateBr(end_block);
+
+        builder_.SetInsertPoint(body_block);
+        auto* next = GenerateCudaJointParent(pivot);
+        if (next == nullptr) {
+            return nullptr;
+        }
+        builder_.CreateStore(next, pivot_slot);
+        builder_.CreateStore(
+            builder_.CreateAdd(depth, builder_.getInt64(1)),
+            depth_slot);
+        builder_.CreateBr(condition_block);
+
+        builder_.SetInsertPoint(end_block);
+        return CreatePackedLoad(
+            builder_.getInt64Ty(), result_slot,
+            "topology.ancestor.result.load");
+    }
+
+    llvm::Value* GenerateTopologyCall(
+        std::string_view name,
+        const std::vector<llvm::Value*>& arguments)
+    {
+        if (name == "handle_valid") {
+            if (arguments.size() != 1) {
+                AddError("handle_valid requires one argument");
+                return nullptr;
+            }
+            if (target_ == OrlCodegenTarget::Cuda) {
+                return builder_.CreateZExt(
+                    GenerateCudaHandleValid(arguments.front()),
+                    builder_.getInt64Ty(), "topology.handle.valid.i64");
+            }
+            const std::vector<llvm::Value*> lanes{
+                HandleTypeLane(arguments.front()),
+                HandleSlotLane(arguments.front())};
+            auto* function = GetOrCreateExtern(
+                "__orlrig_handle_valid", lanes);
+            return builder_.CreateCall(function, lanes,
+                "topology.handle.valid.call");
+        }
+        if (name == "joint_handle_invalid") {
+            if (!arguments.empty()) {
+                AddError("joint_handle_invalid takes no arguments");
+                return nullptr;
+            }
+            return MakeInvalidHandle();
+        }
+        if (name == "joint_parent") {
+            if (arguments.size() != 1) {
+                AddError("joint_parent requires one argument");
+                return nullptr;
+            }
+            if (target_ == OrlCodegenTarget::Cuda) {
+                return GenerateCudaJointParent(arguments.front());
+            }
+            auto* parent_type_slot = CreateEntryAlloca(
+                "topology.parent.type", builder_.getInt64Ty());
+            auto* parent_slot = CreateEntryAlloca(
+                "topology.parent.slot", builder_.getInt64Ty());
+            const std::vector<llvm::Value*> lanes{
+                HandleTypeLane(arguments.front()),
+                HandleSlotLane(arguments.front()),
+                parent_type_slot,
+                parent_slot};
+            auto* function = GetOrCreateExtern(
+                "__orlrig_joint_parent", lanes);
+            builder_.CreateCall(function, lanes);
+            return MakeHandle(
+                CreatePackedLoad(
+                    builder_.getInt64Ty(), parent_type_slot,
+                    "topology.parent.type.load"),
+                CreatePackedLoad(
+                    builder_.getInt64Ty(), parent_slot,
+                    "topology.parent.slot.load"),
+                "topology.joint.parent");
+        }
+        if (name == "joint_is_ancestor") {
+            if (arguments.size() != 2) {
+                AddError("joint_is_ancestor requires two arguments");
+                return nullptr;
+            }
+            if (target_ == OrlCodegenTarget::Cuda) {
+                return GenerateCudaJointIsAncestor(
+                    arguments[0], arguments[1]);
+            }
+            const std::vector<llvm::Value*> lanes{
+                HandleTypeLane(arguments[0]),
+                HandleSlotLane(arguments[0]),
+                HandleTypeLane(arguments[1]),
+                HandleSlotLane(arguments[1])};
+            auto* function = GetOrCreateExtern(
+                "__orlrig_joint_is_ancestor", lanes);
+            return builder_.CreateCall(function, lanes,
+                "topology.joint.is.ancestor");
+        }
+        return nullptr;
     }
 
     bool GenerateParallelFor(const ParallelForStatement &parallel_for) {
@@ -2758,6 +3224,9 @@ struct LlvmIrCodegen::Impl {
         llvm::Type *return_type = builder_.getInt64Ty();
         if (name == "print") {
             return_type = builder_.getVoidTy();
+        } else if (name == "__orlrig_joint_parent")
+        {
+            return_type = builder_.getVoidTy();
         } else if (name == "dot" &&
                    parameter_types.size() == 2 &&
                    parameter_types[0] == llvm::FixedVectorType::get(builder_.getDoubleTy(), 3) &&
@@ -2924,6 +3393,11 @@ struct LlvmIrCodegen::Impl {
             arguments.push_back(value);
         }
 
+        if (IsTopologyHelper(callee_identifier->name)) {
+            return GenerateTopologyCall(
+                callee_identifier->name, arguments);
+        }
+
         if (MapTypeName(callee_identifier->name) != nullptr) {
             const std::string source_type =
                 call.arguments.size() == 1
@@ -3060,6 +3534,10 @@ struct LlvmIrCodegen::Impl {
     std::unordered_set<std::string> handle_type_names_;
     std::unordered_map<std::string, std::string> handle_canonical_names_;
     std::unordered_map<std::string, std::string> handle_type_identities_;
+    std::map<std::string, std::vector<DispatchArrayInfo>>
+        dispatch_arrays_;
+    std::unordered_map<std::string, llvm::Value*>
+        dispatch_array_arguments_;
     llvm::StructType *handle_type_ = nullptr;
     llvm::Function *current_function_ = nullptr;
     llvm::Type *current_function_return_type_ = nullptr;

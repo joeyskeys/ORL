@@ -177,6 +177,79 @@ bool validate_handle_context(
     return true;
 }
 
+extern "C" std::int64_t __orlrig_handle_valid(
+    std::uint64_t type_id, std::int64_t slot)
+{
+    return orlcomp::IsValidHandleValue({type_id, slot}) ? 1 : 0;
+}
+
+extern "C" void __orlrig_joint_parent(
+    std::uint64_t type_id, std::int64_t slot,
+    std::uint64_t* parent_type_id, std::int64_t* parent_slot)
+{
+    if (parent_type_id == nullptr || parent_slot == nullptr) {
+        return;
+    }
+    *parent_type_id = orlcomp::kInvalidHandleTypeId;
+    *parent_slot = orlcomp::kInvalidHandleSlot;
+    if (active_context == nullptr) {
+        return;
+    }
+    const orlcomp::HandleValue handle{type_id, slot};
+    std::int64_t parent = -1;
+    if (!read_joint_int(*active_context, handle, 0, &parent)
+        || parent < 0
+        || static_cast<std::size_t>(parent)
+            >= active_context->joints.count)
+    {
+        return;
+    }
+    *parent_type_id = orlcomp::HandleTypeIdFor(kJointHandleCanonical);
+    *parent_slot = parent;
+}
+
+extern "C" std::int64_t __orlrig_joint_is_ancestor(
+    std::uint64_t root_type_id, std::int64_t root_slot,
+    std::uint64_t end_type_id, std::int64_t end_slot)
+{
+    const orlcomp::HandleValue root{root_type_id, root_slot};
+    const orlcomp::HandleValue end{end_type_id, end_slot};
+    if (active_context == nullptr
+        || !valid_handle(
+            *active_context, root,
+            orlcomp::HandleTypeIdFor(kJointHandleCanonical),
+            active_context->joints, sizeof(Joint), nullptr)
+        || !valid_handle(
+            *active_context, end,
+            orlcomp::HandleTypeIdFor(kJointHandleCanonical),
+            active_context->joints, sizeof(Joint), nullptr))
+    {
+        return 0;
+    }
+    if (root.slot == end.slot) {
+        return 1;
+    }
+    std::int64_t pivot = end.slot;
+    for (std::size_t depth = 0;
+         depth < active_context->joints.count;
+         ++depth)
+    {
+        const auto* joint = joint_at(active_context->joints, pivot);
+        const auto parent = joint->parent;
+        if (parent < 0
+            || static_cast<std::size_t>(parent)
+                >= active_context->joints.count)
+        {
+            return 0;
+        }
+        if (parent == root.slot) {
+            return 1;
+        }
+        pivot = parent;
+    }
+    return 0;
+}
+
 bool read_joint_int(const HandleViewContext& context,
     orlcomp::HandleValue handle, std::uint32_t field,
     std::int64_t* value, std::string* error)

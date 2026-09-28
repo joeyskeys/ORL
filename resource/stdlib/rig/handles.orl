@@ -7,6 +7,13 @@ use joint;
 handle joint_handle;
 handle locator_handle;
 
+// Topology helpers are compiler/runtime built-ins. Their public signatures
+// are:
+//   handle_valid(h)
+//   joint_handle_invalid()
+//   joint_parent(joint_handle)
+//   joint_is_ancestor(joint_handle, joint_handle)
+
 struct WorldTransform {
     matrix xform;
 }

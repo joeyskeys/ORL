@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <regex>
 #include <utility>
 
 #include <glm/vec4.hpp>
@@ -213,6 +214,82 @@ orlrig::HandleViewContext& SceneInputCatalog::handle_view_context()
     return handle_view_context_;
 }
 
+bool SceneInputCatalog::resolve_joint_handle_collection(
+    std::string_view name_regex,
+    bool count_only, exec::GraphInputBinding& result,
+    std::string* error)
+{
+    if (!count_only) {
+        result = {};
+    }
+
+    std::regex matcher;
+    try {
+        matcher = std::regex(
+            std::string{name_regex}, std::regex::ECMAScript);
+    } catch (const std::regex_error& exception) {
+        return set_error(error,
+            "Invalid joint name regular expression '"
+            + std::string{name_regex} + "': " + exception.what());
+    }
+
+    if (!pack_joints()) {
+        return set_error(error,
+            "Unable to pack scene joints for name collection");
+    }
+    std::vector<exec::HandleValue> matches;
+    matches.reserve(joint_ids_.size());
+    const auto joint_type =
+        orlcomp::HandleTypeIdFor("orlrig::joint_handle");
+    for (std::size_t slot = 0; slot < joint_ids_.size(); ++slot) {
+        const auto* component = components_.find(joint_ids_[slot]);
+        if (component != nullptr
+            && std::regex_match(component->name, matcher))
+        {
+            matches.push_back({
+                joint_type, static_cast<std::int64_t>(slot)});
+        }
+    }
+
+    const std::string collection_binding =
+        orlrig::scene_joint_handles_by_name_binding(name_regex);
+    auto found = joint_handle_collections_.find(collection_binding);
+    if (found == joint_handle_collections_.end()) {
+        found = joint_handle_collections_.emplace(
+            collection_binding,
+            exec::OrlBuffer{
+                "orlrig::joint_handle",
+                sizeof(exec::HandleValue)})
+            .first;
+    }
+    auto& collection = found->second;
+    if (!collection.resize(matches.size())) {
+        return set_error(error,
+            "Unable to allocate joint name collection for '"
+            + std::string{name_regex} + "'");
+    }
+    if (matches.empty() && !collection.reserve(1)) {
+        return set_error(error,
+            "Unable to reserve an empty joint name collection for '"
+            + std::string{name_regex} + "'");
+    }
+    if (!matches.empty()) {
+        std::memcpy(
+            collection.data(), matches.data(),
+            matches.size() * sizeof(exec::HandleValue));
+    }
+
+    if (count_only) {
+        result.kind = exec::ParameterKind::Int64;
+        result.int_value = static_cast<std::int64_t>(collection.count());
+        return true;
+    }
+    result.kind = exec::ParameterKind::HandleBuffer;
+    result.buffer = &collection;
+    result.element_count = collection.count();
+    return true;
+}
+
 bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
     exec::GraphInputBinding& binding, std::string* error)
 {
@@ -221,6 +298,44 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
         return set_error(error, "Unable to prepare packed CUDA scene inputs");
     }
     const std::string key = port.binding.empty() ? port.id.value : port.binding;
+    constexpr std::string_view joint_collection_prefix =
+        "scene.rig.joints.by_name.";
+    constexpr std::string_view joint_collection_count_prefix =
+        "scene.rig.joints.by_name.count:";
+    if (key.starts_with(joint_collection_count_prefix)) {
+        const auto regex_text =
+            key.substr(joint_collection_count_prefix.size());
+        if (port.type != orlgraph::LogicalType::int64()
+            || port.domain != orlgraph::Domain::constant()
+            || !port.shape.is_scalar()
+            || (!port.semantic.empty()
+                && port.semantic != "scene.joint.handle_count"))
+        {
+            return set_error(error,
+                "Joint name collection count '" + key
+                + "' has incompatible graph metadata");
+        }
+        return resolve_joint_handle_collection(
+            regex_text, true, binding, error);
+    }
+    if (key.starts_with(joint_collection_prefix)) {
+        const auto regex_text = key.substr(joint_collection_prefix.size());
+        const auto expected_type = orlgraph::LogicalType::buffer(
+            orlgraph::LogicalType::handle("orlrig::joint_handle"));
+        if (port.type != expected_type
+            || port.domain != orlgraph::Domain::joint()
+            || port.shape != orlgraph::Shape::one("joint_handle_count")
+            || (!port.semantic.empty()
+                && port.semantic != "scene.joint.handles"))
+        {
+            return set_error(error,
+                "Joint name collection '" + key
+                + "' has incompatible graph metadata");
+        }
+
+        return resolve_joint_handle_collection(
+            regex_text, false, binding, error);
+    }
     const auto descriptor = std::find_if(descriptors_.begin(), descriptors_.end(),
         [&key](const SceneInputDescriptor& candidate) {
             return candidate.port.binding == key;

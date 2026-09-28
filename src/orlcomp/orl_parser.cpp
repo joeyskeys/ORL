@@ -387,12 +387,14 @@ bool Parser::ParseFunctionDefinition(bool exported) {
                 }
                 is_buffer = true;
             }
-            if (is_buffer
-                && (parameter_type.kind == TokenKind::KwHandle
-                    || handle_type_names_.contains(parameter_type.lexeme)))
+            const bool universal_handle =
+                parameter_type.kind == TokenKind::KwHandle;
+            const bool handle_union =
+                handle_type_leaves_.contains(parameter_type.lexeme);
+            if (is_buffer && (universal_handle || handle_union))
             {
                 AddError(parameter_type,
-                    "Handle parameters cannot be buffers");
+                    "Only exact nominal handle parameters can be buffers");
                 return false;
             }
             parameters.push_back(Parameter{parameter_type.lexeme, parameter_name.lexeme, is_buffer});
@@ -403,7 +405,12 @@ bool Parser::ParseFunctionDefinition(bool exported) {
         return false;
     }
 
-    if (!ParseBlock()) {
+    const bool previous_exported_function =
+        parsing_exported_function_;
+    parsing_exported_function_ = exported;
+    const bool parsed_body = ParseBlock();
+    parsing_exported_function_ = previous_exported_function;
+    if (!parsed_body) {
         return false;
     }
     auto body_statement = TakeStatement();
@@ -576,23 +583,34 @@ bool Parser::ParseDeclarationStatement() {
     declaration->variable_name = variable_name.lexeme;
 
     if (Match(TokenKind::LBracket)) {
-        if (type_name.kind == TokenKind::KwHandle
-            || handle_type_names_.contains(type_name.lexeme))
-        {
-            AddError(type_name, "Handle declarations cannot be arrays");
-            return false;
+        if (Peek().kind == TokenKind::IntLiteral) {
+            if (type_name.kind == TokenKind::KwHandle
+                || handle_type_names_.contains(type_name.lexeme))
+            {
+                AddError(type_name, "Handle declarations cannot be arrays");
+                return false;
+            }
+            const Token size_token = Advance();
+            if (size_token.int_value <= 0 ||
+                static_cast<std::uint64_t>(size_token.int_value)
+                    > std::numeric_limits<std::size_t>::max()) {
+                AddError(size_token, "Array size must be greater than zero");
+                return false;
+            }
+            declaration->array_size =
+                static_cast<std::size_t>(size_token.int_value);
+        } else {
+            if (!parsing_exported_function_) {
+                AddError(type_name,
+                    "Dispatch-sized arrays are only allowed in "
+                    "exported functions");
+                return false;
+            }
+            if (!ParseExpression()) {
+                return false;
+            }
+            declaration->array_size_expression = TakeExpression();
         }
-        if (Peek().kind != TokenKind::IntLiteral) {
-            AddError(Peek(), "Array size must be an integer literal");
-            return false;
-        }
-        const Token size_token = Advance();
-        if (size_token.int_value <= 0 ||
-            static_cast<std::uint64_t>(size_token.int_value) > std::numeric_limits<std::size_t>::max()) {
-            AddError(size_token, "Array size must be greater than zero");
-            return false;
-        }
-        declaration->array_size = static_cast<std::size_t>(size_token.int_value);
         if (!Expect(TokenKind::RBracket, "Expected ']' after array size")) {
             return false;
         }

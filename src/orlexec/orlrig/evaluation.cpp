@@ -214,6 +214,102 @@ void resolve_handle_effects(
 }
 
 bool is_ancestor(const HierarchyPlan& hierarchy,
+    ComponentId ancestor, ComponentId joint);
+
+void resolve_handle_walks(
+    const orlgraph::GraphModule& graph,
+    const orlgraph::NodeRegistry& registry,
+    const ComponentStore& components,
+    const HierarchyPlan& hierarchy,
+    const orlgraph::StableId& node_id,
+    const std::vector<orlgraph::PartialEvaluationFootprint::HandleWalk>&
+        walks,
+    SolverRegion* region,
+    bool* global,
+    std::vector<std::string>* errors)
+{
+    for (const auto& walk : walks) {
+        const auto expected =
+            expected_kind_for_handle(walk.handle_type);
+        const auto connected = connected_element(
+            graph, registry, components, node_id,
+            walk.parameter.value);
+        if (!expected.has_value()
+            || *expected != ExpectedKind::Joint
+            || connected.kind != ConnectedKind::Joint)
+        {
+            *global = true;
+            continue;
+        }
+
+        std::optional<ComponentId> stop;
+        if (!walk.stop_parameter.empty()) {
+            const auto stop_connected = connected_element(
+                graph, registry, components, node_id,
+                walk.stop_parameter.value);
+            if (stop_connected.kind != ConnectedKind::Joint) {
+                *global = true;
+                continue;
+            }
+            stop = stop_connected.id;
+        }
+
+        std::vector<ComponentId> ids;
+        if (walk.kind == orlgraph::HandleWalkKind::Parent) {
+            if (const auto parent =
+                    hierarchy.parent_of(connected.id))
+            {
+                ids.push_back(*parent);
+            }
+        } else if (walk.kind
+            == orlgraph::HandleWalkKind::Ancestors)
+        {
+            if (stop.has_value()
+                && *stop != connected.id
+                && !is_ancestor(hierarchy, *stop, connected.id))
+            {
+                if (errors != nullptr) {
+                    errors->push_back(
+                        "Handle walk root is not an ancestor at node '"
+                        + node_id.value + "'");
+                }
+                *global = true;
+                continue;
+            }
+            ids.push_back(connected.id);
+            auto current = connected.id;
+            while (const auto parent = hierarchy.parent_of(current)) {
+                ids.push_back(*parent);
+                current = *parent;
+                if (stop.has_value() && current == *stop) {
+                    break;
+                }
+            }
+            if (stop.has_value() && ids.back() != *stop) {
+                *global = true;
+                continue;
+            }
+        } else {
+            *global = true;
+            continue;
+        }
+
+        const bool reads = walk.access == orlgraph::AccessMode::Read
+            || walk.access == orlgraph::AccessMode::ReadWrite;
+        const bool writes = walk.access == orlgraph::AccessMode::Write
+            || walk.access == orlgraph::AccessMode::ReadWrite;
+        for (const auto id : ids) {
+            if (reads) {
+                append_unique(&region->read_joints, id);
+            }
+            if (writes) {
+                append_unique(&region->write_joints, id);
+            }
+        }
+    }
+}
+
+bool is_ancestor(const HierarchyPlan& hierarchy,
     ComponentId ancestor, ComponentId joint)
 {
     auto current = hierarchy.parent_of(joint);
@@ -439,6 +535,10 @@ EvaluationPlanCompileResult compile_evaluation_plan(
             resolve_handle_effects(
                 graph, registry, components, node_id,
                 footprint.handle_effects, &region, &region.global);
+            resolve_handle_walks(
+                graph, registry, components, hierarchy, node_id,
+                footprint.handle_walks, &region, &region.global,
+                &result.errors);
             if (definition->qualified_name
                 == "orlrig.solver.ik_two_bone")
             {
@@ -596,7 +696,8 @@ EvaluationPlanCompileResult compile_evaluation_plan(
                 connection.source.owner.value
                 + connection.source.port.value
                 + connection.destination.owner.value
-                + connection.destination.port.value)
+                + connection.destination.port.value
+                + (connection.sequence ? ":sequence" : ""))
             + 0x9e3779b97f4a7c15ULL
             + (plan.dependency_revision << 6)
             + (plan.dependency_revision >> 2);

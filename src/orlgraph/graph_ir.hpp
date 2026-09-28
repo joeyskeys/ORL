@@ -86,6 +86,12 @@ enum class PartialPropagation : std::uint8_t {
     Full,
 };
 
+enum class HandleWalkKind : std::uint8_t {
+    Parent,
+    Ancestors,
+    Element,
+};
+
 // Element-level dependency information for incremental rig evaluation.
 // Port names are resolved against a node instance's graph connections during
 // evaluation-plan compilation. Explicit IDs are useful for registry-owned
@@ -109,6 +115,21 @@ struct PartialEvaluationFootprint {
     };
 
     std::vector<HandleEffect> handle_effects;
+
+    struct HandleWalk {
+        StableId parameter;
+        StableId stop_parameter;
+        std::string handle_type;
+        std::string view_type;
+        std::string field;
+        HandleWalkKind kind = HandleWalkKind::Ancestors;
+        AccessMode access = AccessMode::Read;
+
+        friend bool operator==(const HandleWalk&,
+            const HandleWalk&) = default;
+    };
+
+    std::vector<HandleWalk> handle_walks;
 
     std::vector<StableId> read_resources;
     std::vector<StableId> write_resources;
@@ -291,6 +312,7 @@ struct Connection {
     Shape shape = Shape::scalar();
     Provenance provenance;
     bool feedback = false;
+    bool sequence = false;
 };
 
 enum class ParameterSourceKind : std::uint8_t {

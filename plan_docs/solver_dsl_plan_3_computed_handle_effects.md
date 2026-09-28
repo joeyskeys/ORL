@@ -138,18 +138,19 @@ was also inferred.
 
 ### Buffer lists
 
-If `effectors[]` is a collect of `find_joint` nodes, the footprint is
-the union of `Ancestors(effectors[k])` for each proven element. If the
-list contents are only known at dispatch, either:
+If `effectors[]` is the result of plan 1's `find_joints_by_name`, the
+footprint is the union of `Ancestors(effectors[k])` for each proven match.
+The same rule can cover a future collect node. If the list contents are
+only known at dispatch, either:
 
 - treat the buffer port as global, or
-- if the collect node is graph-constant (its incoming edges are
-  `find_*`), resolve at plan compile time.
+- if the name-filter pattern or a future collect node is graph-constant and
+  the current scene snapshot is available, resolve at plan compile time.
 
 Do not expand a list that the user can retarget every frame without
-recompiling the graph unless the collect inputs are themselves graph
-parameters that trigger a plan rebuild (they already do when
-`find_joint` names change).
+recompiling the graph unless the pattern/source parameters are graph
+parameters that trigger a plan rebuild (as `find_joint` names do when they
+change).
 
 ## How
 

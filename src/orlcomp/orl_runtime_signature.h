@@ -3,6 +3,7 @@
 #include "orl_ast.h"
 
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <cstdint>
 #include <string>
@@ -126,6 +127,7 @@ private:
 
 enum class OrlRuntimeParameterKind {
     Buffer,
+    HandleBuffer,
     Int64,
     Float64,
     Handle,
@@ -138,6 +140,9 @@ struct OrlRuntimeParameter {
     OrlRuntimeParameterKind kind = OrlRuntimeParameterKind::Unsupported;
     std::string canonical_type_name;
     std::uint64_t handle_type_id = 0;
+    bool hidden_scratch = false;
+    std::string scratch_size_symbol;
+    std::size_t scratch_size_multiplier = 1;
 };
 
 struct OrlRuntimeFunctionSignature {
@@ -197,7 +202,9 @@ inline std::optional<OrlRuntimeFunctionSignature> DescribeRuntimeFunction(
             };
             const auto found = handle_types.find(parameter.type_name);
             if (found != handle_types.end()) {
-                runtime.kind = OrlRuntimeParameterKind::Handle;
+                runtime.kind = parameter.is_buffer
+                    ? OrlRuntimeParameterKind::HandleBuffer
+                    : OrlRuntimeParameterKind::Handle;
                 runtime.canonical_type_name = found->second;
                 if (const auto override = handle_type_identities.find(
                         parameter.type_name);
@@ -221,6 +228,84 @@ inline std::optional<OrlRuntimeFunctionSignature> DescribeRuntimeFunction(
             }
             signature.parameters.push_back(std::move(runtime));
         }
+        std::vector<OrlRuntimeParameter> scratch_parameters;
+        std::function<void(const Statement&)> collect_scratch;
+        collect_scratch = [&](const Statement& statement) {
+            if (const auto* declaration =
+                    dynamic_cast<const DeclarationStatement*>(&statement))
+            {
+                if (declaration->array_size_expression == nullptr) {
+                    return;
+                }
+                const auto bound = dispatch_array_bound(
+                    *declaration->array_size_expression);
+                if (!bound.has_value()) {
+                    return;
+                }
+                if (bound->symbol == "joint_count") {
+                    signature.uses_solver_context = true;
+                }
+                OrlRuntimeParameter scratch{
+                    "__orl_scratch_" + declaration->variable_name,
+                    declaration->type_name,
+                    OrlRuntimeParameterKind::Buffer,
+                    {},
+                    0,
+                    true,
+                    bound->symbol,
+                    bound->multiplier,
+                };
+                if (const auto found = handle_types.find(
+                        declaration->type_name);
+                    found != handle_types.end())
+                {
+                    scratch.canonical_type_name = found->second;
+                    if (const auto override = handle_type_identities.find(
+                            declaration->type_name);
+                        override != handle_type_identities.end())
+                    {
+                        scratch.canonical_type_name = override->second;
+                    }
+                    scratch.handle_type_id = HandleTypeIdFor(
+                        scratch.canonical_type_name);
+                }
+                scratch_parameters.push_back(std::move(scratch));
+                return;
+            }
+            if (const auto* block =
+                    dynamic_cast<const BlockStatement*>(&statement))
+            {
+                for (const auto& child : block->statements) {
+                    if (child != nullptr) {
+                        collect_scratch(*child);
+                    }
+                }
+            } else if (const auto* conditional =
+                    dynamic_cast<const IfStatement*>(&statement))
+            {
+                collect_scratch(*conditional->then_branch);
+                if (conditional->else_branch != nullptr) {
+                    collect_scratch(*conditional->else_branch);
+                }
+            } else if (const auto* loop =
+                    dynamic_cast<const WhileStatement*>(&statement))
+            {
+                collect_scratch(*loop->body);
+            } else if (const auto* loop =
+                    dynamic_cast<const DoWhileStatement*>(&statement))
+            {
+                collect_scratch(*loop->body);
+            } else if (const auto* loop =
+                    dynamic_cast<const ForStatement*>(&statement))
+            {
+                collect_scratch(*loop->body);
+            } else if (const auto* loop =
+                    dynamic_cast<const ParallelForStatement*>(&statement))
+            {
+                collect_scratch(*loop->body);
+            }
+        };
+        collect_scratch(*function->body);
         if (signature.uses_solver_context) {
             signature.parameters.push_back({
                 std::string{kSolverContextParameterName},
@@ -239,6 +324,9 @@ inline std::optional<OrlRuntimeFunctionSignature> DescribeRuntimeFunction(
                 std::string{kHierarchyDataTypeName},
                 OrlRuntimeParameterKind::Buffer,
             });
+        }
+        for (auto& scratch : scratch_parameters) {
+            signature.parameters.push_back(std::move(scratch));
         }
         return signature;
     }

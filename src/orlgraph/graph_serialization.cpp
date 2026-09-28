@@ -262,6 +262,26 @@ Json partial_footprint_value(
         handle_effects.PushBack(std::move(value), allocator);
     }
     add(result, "handle_effects", std::move(handle_effects), allocator);
+    Json handle_walks(rapidjson::kArrayType);
+    for (const auto& walk : footprint.handle_walks) {
+        Json value(rapidjson::kObjectType);
+        add(value, "parameter",
+            string_value(walk.parameter.value, allocator), allocator);
+        add(value, "stop_parameter",
+            string_value(walk.stop_parameter.value, allocator), allocator);
+        add(value, "handle_type",
+            string_value(walk.handle_type, allocator), allocator);
+        add(value, "view_type",
+            string_value(walk.view_type, allocator), allocator);
+        add(value, "field",
+            string_value(walk.field, allocator), allocator);
+        add(value, "kind",
+            Json(static_cast<std::uint32_t>(walk.kind)), allocator);
+        add(value, "access",
+            Json(static_cast<std::uint32_t>(walk.access)), allocator);
+        handle_walks.PushBack(std::move(value), allocator);
+    }
+    add(result, "handle_walks", std::move(handle_walks), allocator);
     add(result, "read_resources",
         stable_id_array(footprint.read_resources, allocator), allocator);
     add(result, "write_resources",
@@ -491,6 +511,7 @@ Json graph_value(const GraphModule& module, Allocator& allocator) {
         add(item, "shape", shape_value(connection.shape, allocator), allocator);
         add(item, "provenance", provenance_value(connection.provenance, allocator), allocator);
         add(item, "feedback", Json(connection.feedback), allocator);
+        add(item, "sequence", Json(connection.sequence), allocator);
         connections.PushBack(std::move(item), allocator);
     }
     add(result, "connections", std::move(connections), allocator);
@@ -750,6 +771,63 @@ bool parse_partial_footprint(const Json& value,
             output->handle_effects.push_back(std::move(effect));
         }
     }
+    const Json* handle_walks = member(value, "handle_walks");
+    if (handle_walks != nullptr) {
+        if (!handle_walks->IsArray()) {
+            diagnostics->push_back({
+                DiagnosticSeverity::Error,
+                "ORLGRAPH_INVALID_HANDLE_WALKS",
+                "Handle walks are not an array",
+                {}, {}, {},
+            });
+            return false;
+        }
+        for (const auto& item : handle_walks->GetArray()) {
+            if (!item.IsObject()) {
+                diagnostics->push_back({
+                    DiagnosticSeverity::Error,
+                    "ORLGRAPH_INVALID_HANDLE_WALK",
+                    "Handle walk is not an object",
+                    {}, {}, {},
+                });
+                return false;
+            }
+            PartialEvaluationFootprint::HandleWalk walk;
+            if (!read_string(item, "parameter",
+                    &walk.parameter.value, diagnostics)
+                || !read_string(item, "stop_parameter",
+                    &walk.stop_parameter.value, diagnostics)
+                || !read_string(item, "handle_type",
+                    &walk.handle_type, diagnostics)
+                || !read_string(item, "view_type",
+                    &walk.view_type, diagnostics)
+                || !read_string(item, "field",
+                    &walk.field, diagnostics))
+            {
+                return false;
+            }
+            std::uint32_t kind = 0;
+            std::uint32_t access = 0;
+            if (!read_u32(item, "kind", &kind, diagnostics)
+                || kind > static_cast<std::uint32_t>(
+                    HandleWalkKind::Element)
+                || !read_u32(item, "access", &access, diagnostics)
+                || access > static_cast<std::uint32_t>(
+                    AccessMode::ReadWrite))
+            {
+                diagnostics->push_back({
+                    DiagnosticSeverity::Error,
+                    "ORLGRAPH_INVALID_HANDLE_WALK",
+                    "Handle walk kind or access is out of range",
+                    {}, {}, {},
+                });
+                return false;
+            }
+            walk.kind = static_cast<HandleWalkKind>(kind);
+            walk.access = static_cast<AccessMode>(access);
+            output->handle_walks.push_back(std::move(walk));
+        }
+    }
     if (member(value, "read_resources") != nullptr) {
         read_stable_id_array(value, "read_resources",
             &output->read_resources, diagnostics);
@@ -868,11 +946,14 @@ bool parse_type(const Json& value, LogicalType* type,
         });
         return false;
     }
-    if (contains_handle(*type) && !type->is_handle()) {
+    if (contains_handle(*type)
+        && !type->is_handle()
+        && !is_exact_handle_buffer(*type))
+    {
         diagnostics->push_back({
             DiagnosticSeverity::Error,
             "ORLGRAPH_INVALID_HANDLE_TYPE",
-            "Handle logical types cannot be nested in collections",
+            "Only buffers of exact nominal handles may contain handles",
             {}, {}, {},
         });
         return false;
@@ -1610,6 +1691,7 @@ bool parse_graph(const Json& value, GraphModule* output,
                 parse_provenance(*provenance, &connection.provenance, diagnostics);
             }
             read_bool(item, "feedback", &connection.feedback, diagnostics);
+            read_bool(item, "sequence", &connection.sequence, diagnostics);
             if (!output->add_connection(std::move(connection))) {
                 diagnostics->push_back({
                     DiagnosticSeverity::Error, "ORLGRAPH_INVALID_GRAPH",
@@ -1849,6 +1931,8 @@ OroDocument deserialize_oro(std::string_view text) {
                 parse_shape(*shape, &connection.shape, &result.diagnostics);
             }
             read_bool(item, "feedback", &connection.feedback, &result.diagnostics);
+            read_bool(item, "sequence", &connection.sequence,
+                &result.diagnostics);
             const Json* provenance = member(item, "provenance");
             if (provenance != nullptr) {
                 parse_provenance(*provenance, &connection.provenance,
@@ -2112,7 +2196,8 @@ GraphStagesJsonSerializationResult serialize_graph_stages_json(
     return result;
 }
 
-GraphStagesJsonDocument deserialize_graph_stages_json(std::string_view text)
+GraphStagesJsonDocument deserialize_graph_stages_json(
+    std::string_view text, bool allow_hash_mismatch)
 {
     GraphStagesJsonDocument result;
     rapidjson::Document document;
@@ -2227,7 +2312,10 @@ GraphStagesJsonDocument deserialize_graph_stages_json(std::string_view text)
             && canonical.content_hash != result.content_hash)
         {
             result.diagnostics.push_back({
-                DiagnosticSeverity::Error, "ORLGRAPH_HASH_MISMATCH",
+                allow_hash_mismatch
+                    ? DiagnosticSeverity::Warning
+                    : DiagnosticSeverity::Error,
+                "ORLGRAPH_HASH_MISMATCH",
                 "The staged graph JSON content hash does not match its "
                 "canonical payload", {}, {}, {},
             });

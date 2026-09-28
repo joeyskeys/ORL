@@ -44,6 +44,56 @@ TEST_CASE("semantic analysis imports a typed ORL function", "[orl][analysis]") {
     REQUIRE(definition->outputs.size() == 1);
 }
 
+TEST_CASE("semantic analysis imports exact handle buffer parameters",
+    "[orl][analysis][handle][buffer]")
+{
+    const auto imported = import_node_definitions(R"(
+        handle joint_handle;
+        export int inspect(joint_handle values[], int count) {
+            if (count > 0 && values[0] == values[0]) {
+                return 1;
+            }
+            return 0;
+        }
+    )", NodeImportOptions{.module_name = "handle_buffers"});
+
+    REQUIRE(imported.ok());
+    const auto* definition =
+        imported.registry.find("handle_buffers.inspect");
+    REQUIRE(definition != nullptr);
+    REQUIRE(definition->inputs.size() == 2);
+    const auto* values = definition->input("values");
+    REQUIRE(values != nullptr);
+    REQUIRE(values->cardinality == orlgraph::PortCardinality::Buffer);
+    REQUIRE(values->type
+        == orlgraph::LogicalType::buffer(
+            orlgraph::LogicalType::handle(
+                "handle_buffers::joint_handle")));
+    REQUIRE(values->shape == orlgraph::Shape::one("values_count"));
+}
+
+TEST_CASE("semantic analysis classifies dispatch-sized local arrays",
+    "[orl][analysis][array][dispatch]")
+{
+    const auto imported = import_node_definitions(R"(
+        export int working(int count) {
+            int values[count];
+            values[0] = 1;
+            return values[0];
+        }
+    )", NodeImportOptions{.module_name = "dispatch_arrays"});
+    REQUIRE(imported.ok());
+
+    Parser parser(R"(
+        int helper(int count) {
+            int values[count];
+            return values[0];
+        }
+    )");
+    REQUIRE_FALSE(parser.Parse());
+    REQUIRE_FALSE(parser.Errors().empty());
+}
+
 TEST_CASE("semantic analysis permits read-only solver context",
     "[orl][analysis][solver_context]")
 {
@@ -300,6 +350,95 @@ TEST_CASE("semantic analysis preserves and checks exact handle types",
         == function->resolved_return_type);
     REQUIRE(function->parameters[0].logical_type.kind
         == orlgraph::LogicalTypeKind::Unknown);
+}
+
+TEST_CASE("semantic analysis accepts handle topology helpers",
+    "[orl][analysis][handle][topology]")
+{
+    Parser parser(R"(
+        handle joint_handle;
+        handle locator_handle;
+        int walk(joint_handle end, joint_handle root) {
+            joint_handle pivot = joint_parent(end);
+            while (handle_valid(pivot)) {
+                if (pivot == root) {
+                    pivot = joint_handle_invalid();
+                } else {
+                    pivot = joint_parent(pivot);
+                }
+            }
+            return joint_is_ancestor(root, end);
+        }
+    )");
+    REQUIRE(parser.Parse());
+    const auto analysis = SemanticAnalyzer{}.analyze(*parser.Ast());
+    REQUIRE(analysis.ok());
+    REQUIRE(std::none_of(
+        analysis.diagnostics.begin(), analysis.diagnostics.end(),
+        [](const AnalysisDiagnostic& diagnostic) {
+            return diagnostic.code == "ORL_ANALYSIS_UNKNOWN_CALL";
+        }));
+
+    Parser bad_parser(R"(
+        handle joint_handle;
+        handle locator_handle;
+        joint_handle bad(locator_handle value) {
+            return joint_parent(value);
+        }
+    )");
+    REQUIRE(bad_parser.Parse());
+    const auto bad = SemanticAnalyzer{}.analyze(*bad_parser.Ast());
+    REQUIRE_FALSE(bad.ok());
+    REQUIRE(std::any_of(
+        bad.diagnostics.begin(), bad.diagnostics.end(),
+        [](const AnalysisDiagnostic& diagnostic) {
+            return diagnostic.code
+                == "ORL_ANALYSIS_HANDLE_TYPE_MISMATCH";
+        }));
+}
+
+TEST_CASE("semantic analysis records ancestor walk view effects",
+    "[orl][analysis][handle][walk]")
+{
+    auto& registry = global_handle_view_registry();
+    registry.clear();
+    REQUIRE(registry.register_view({
+        "<source>::joint_handle", "Joint", 1, 1, "joint_arena",
+        {{"rotation", HandleViewFieldKind::Vec4, 5,
+            "read_rotation", "write_rotation", "quat"}}}));
+
+    Parser parser(R"(
+        handle joint_handle;
+        struct Joint { quat rotation; }
+        int solve(joint_handle end, joint_handle root) {
+            joint_handle pivot = end;
+            while (handle_valid(pivot)) {
+                Joint data = Joint(pivot);
+                data.rotation = data.rotation;
+                if (pivot == root) {
+                    pivot = joint_handle_invalid();
+                } else {
+                    pivot = joint_parent(pivot);
+                }
+            }
+            return 1;
+        }
+    )");
+    REQUIRE(parser.Parse());
+    const auto analysis = SemanticAnalyzer{}.analyze(*parser.Ast());
+    for (const auto& diagnostic : analysis.diagnostics) {
+        INFO(diagnostic.code << ": " << diagnostic.message);
+    }
+    REQUIRE(analysis.ok());
+    const auto* solve = analysis.function("solve");
+    REQUIRE(solve != nullptr);
+    REQUIRE(solve->handle_walk_effects.size() == 1);
+    const auto& walk = solve->handle_walk_effects.front();
+    REQUIRE(walk.parameter == "end");
+    REQUIRE(walk.stop_parameter == "root");
+    REQUIRE(walk.kind == orlgraph::HandleWalkKind::Ancestors);
+    REQUIRE(walk.access == ParameterAccess::ReadWrite);
+    registry.clear();
 }
 
 TEST_CASE("semantic analysis flow-narrows handle unions with is",

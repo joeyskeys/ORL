@@ -104,6 +104,14 @@ void __orlrig_world_read_matrix(
 void __orlrig_world_write_matrix(
     const double* value, std::uint64_t type_id, std::int64_t slot,
     std::int64_t field);
+std::int64_t __orlrig_handle_valid(
+    std::uint64_t type_id, std::int64_t slot);
+void __orlrig_joint_parent(
+    std::uint64_t type_id, std::int64_t slot,
+    std::uint64_t* parent_type_id, std::int64_t* parent_slot);
+std::int64_t __orlrig_joint_is_ancestor(
+    std::uint64_t root_type_id, std::int64_t root_slot,
+    std::uint64_t end_type_id, std::int64_t end_slot);
 }
 
 } // namespace orlrig

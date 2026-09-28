@@ -186,10 +186,24 @@ public:
             parameter_indices_.emplace(parameter.name, summary_.parameters.size() - 1);
             variables_.emplace(parameter.name,
                 summary_.parameters.back().resolved_type);
+            if (parameter.is_buffer) {
+                buffer_variables_.insert(parameter.name);
+                if (summary_.parameters.back().resolved_type.kind
+                    == SemanticTypeKind::NominalHandle)
+                {
+                    handle_buffer_variables_.insert(parameter.name);
+                }
+            }
             if (summary_.parameters.back().resolved_type.is_handle())
             {
                 handle_sources_.emplace(
                     parameter.name, summary_.parameters.size() - 1);
+                if (!parameter.is_buffer) {
+                    handle_provenance_[parameter.name] = {
+                        HandleProvenanceKind::Parameter,
+                        summary_.parameters.size() - 1,
+                        std::nullopt};
+                }
             }
         }
     }
@@ -198,9 +212,13 @@ public:
         validate_type(definition_.return_type, "return type");
         for (const auto& parameter : definition_.parameters) {
             validate_type(parameter.type_name, "parameter type");
-            if (parameter.is_buffer && type_of(parameter.type_name).is_handle()) {
+            if (parameter.is_buffer
+                && type_of(parameter.type_name).is_handle()
+                && type_of(parameter.type_name).kind
+                    != SemanticTypeKind::NominalHandle)
+            {
                 add_error("ORL_ANALYSIS_HANDLE_COLLECTION",
-                    "Handle parameters cannot be buffers");
+                    "Only exact nominal handle parameters can be buffers");
             }
         }
         visit_block(*definition_.body);
@@ -216,8 +234,23 @@ public:
     }
 
 private:
+    enum class HandleProvenanceKind {
+        Unknown,
+        Parameter,
+        Parent,
+        Walk,
+        Element,
+    };
+
+    struct HandleProvenance {
+        HandleProvenanceKind kind = HandleProvenanceKind::Unknown;
+        std::size_t parameter = 0;
+        std::optional<std::size_t> stop_parameter;
+    };
+
     struct ViewBinding {
-        std::size_t source_parameter = 0;
+        HandleProvenance provenance;
+        std::optional<std::size_t> source_parameter;
         const HandleViewDescriptor* descriptor = nullptr;
     };
 
@@ -298,6 +331,61 @@ private:
             open_handles_, aliases_);
     }
 
+    std::optional<std::pair<std::string, std::size_t>>
+    dispatch_array_bound(const Expression& expression) const
+    {
+        if (const auto* identifier =
+                dynamic_cast<const IdentifierExpression*>(&expression))
+        {
+            if (identifier->name == "joint_count") {
+                return std::pair<std::string, std::size_t>{
+                    identifier->name, 1};
+            }
+            const auto parameter = std::find_if(
+                summary_.parameters.begin(), summary_.parameters.end(),
+                [&](const FunctionParameterSummary& value) {
+                    return value.name == identifier->name;
+                });
+            if (parameter != summary_.parameters.end()
+                && parameter->resolved_type.kind
+                    == SemanticTypeKind::Builtin
+                && (parameter->resolved_type.name == "int"
+                    || parameter->resolved_type.name == "int64"))
+            {
+                return std::pair<std::string, std::size_t>{
+                    identifier->name, 1};
+            }
+            return std::nullopt;
+        }
+        const auto* binary =
+            dynamic_cast<const BinaryExpression*>(&expression);
+        if (binary == nullptr || binary->op != BinaryOp::Multiply) {
+            return std::nullopt;
+        }
+        const auto* literal =
+            dynamic_cast<const LiteralExpression*>(binary->left.get());
+        const Expression* other = binary->right.get();
+        if (literal == nullptr) {
+            literal = dynamic_cast<const LiteralExpression*>(
+                binary->right.get());
+            other = binary->left.get();
+        }
+        if (literal == nullptr || literal->kind != LiteralKind::Int
+            || literal->int_value <= 0
+            || literal->int_value > 1024)
+        {
+            return std::nullopt;
+        }
+        const auto base = dispatch_array_bound(*other);
+        if (!base.has_value()) {
+            return std::nullopt;
+        }
+        return std::pair<std::string, std::size_t>{
+            base->first,
+            base->second
+                * static_cast<std::size_t>(literal->int_value)};
+    }
+
     static bool compatible(
         const SemanticType& expected, const SemanticType& actual)
     {
@@ -360,9 +448,27 @@ private:
     std::optional<std::size_t> handle_source(
         const Expression& expression) const
     {
+        if (const auto* index =
+                dynamic_cast<const IndexExpression*>(&expression))
+        {
+            const auto* base =
+                dynamic_cast<const IdentifierExpression*>(index->base.get());
+            if (base != nullptr
+                && handle_buffer_variables_.contains(base->name))
+            {
+                const auto found = handle_sources_.find(base->name);
+                return found == handle_sources_.end()
+                    ? std::nullopt
+                    : std::optional<std::size_t>{found->second};
+            }
+            return std::nullopt;
+        }
         const auto* value =
             dynamic_cast<const IdentifierExpression*>(&expression);
         if (value == nullptr) {
+            return std::nullopt;
+        }
+        if (handle_buffer_variables_.contains(value->name)) {
             return std::nullopt;
         }
         const auto found = handle_sources_.find(value->name);
@@ -370,7 +476,113 @@ private:
             ? std::nullopt : std::optional<std::size_t>{found->second};
     }
 
+    HandleProvenance provenance_for_expression(
+        const Expression& expression) const
+    {
+        if (const auto* index =
+                dynamic_cast<const IndexExpression*>(&expression))
+        {
+            const auto* base =
+                dynamic_cast<const IdentifierExpression*>(index->base.get());
+            if (base != nullptr
+                && handle_buffer_variables_.contains(base->name))
+            {
+                const auto found = handle_sources_.find(base->name);
+                return found == handle_sources_.end()
+                    ? HandleProvenance{}
+                    : HandleProvenance{
+                        HandleProvenanceKind::Element,
+                        found->second, std::nullopt};
+            }
+            return {};
+        }
+        if (const auto* identifier =
+                dynamic_cast<const IdentifierExpression*>(&expression))
+        {
+            const auto found = handle_provenance_.find(identifier->name);
+            return found == handle_provenance_.end()
+                ? HandleProvenance{} : found->second;
+        }
+        if (const auto* call =
+                dynamic_cast<const CallExpression*>(&expression))
+        {
+            const auto* callee =
+                dynamic_cast<const IdentifierExpression*>(
+                    call->callee.get());
+            if (callee != nullptr && callee->name == "joint_parent"
+                && call->arguments.size() == 1)
+            {
+                const auto inner = provenance_for_expression(
+                    *call->arguments.front());
+                if (inner.kind == HandleProvenanceKind::Parameter
+                    || inner.kind == HandleProvenanceKind::Parent)
+                {
+                    return {
+                        HandleProvenanceKind::Parent,
+                        inner.parameter, std::nullopt};
+                }
+                if (inner.kind == HandleProvenanceKind::Walk) {
+                    return inner;
+                }
+            }
+        }
+        return {};
+    }
+
+    void add_walk_effect(
+        const HandleProvenance& provenance,
+        std::string_view view, std::string_view field,
+        ParameterAccess access_mode)
+    {
+        if (provenance.kind != HandleProvenanceKind::Parent
+            && provenance.kind != HandleProvenanceKind::Walk)
+        {
+            return;
+        }
+        if (provenance.parameter >= summary_.parameters.size()) {
+            return;
+        }
+        const auto& parameter = summary_.parameters[provenance.parameter];
+        HandleWalkEffectSummary effect;
+        effect.parameter = parameter.name;
+        effect.stop_parameter = provenance.stop_parameter.has_value()
+            ? summary_.parameters[*provenance.stop_parameter].name
+            : std::string{};
+        effect.handle_type = parameter.resolved_type.canonical_name;
+        effect.view_type = std::string{view};
+        effect.field = std::string{field};
+        effect.kind = provenance.kind == HandleProvenanceKind::Parent
+            ? orlgraph::HandleWalkKind::Parent
+            : orlgraph::HandleWalkKind::Ancestors;
+        effect.access = access_mode;
+        for (auto& existing : summary_.handle_walk_effects) {
+            if (existing.parameter == effect.parameter
+                && existing.stop_parameter == effect.stop_parameter
+                && existing.kind == effect.kind
+                && existing.view_type == effect.view_type
+                && existing.field == effect.field)
+            {
+                existing.access = add_access(
+                    existing.access, access_mode);
+                return;
+            }
+        }
+        summary_.handle_walk_effects.push_back(std::move(effect));
+    }
+
     SemanticType type_of_expression(const Expression& expression) const {
+        if (const auto* index =
+                dynamic_cast<const IndexExpression*>(&expression))
+        {
+            const auto* base =
+                dynamic_cast<const IdentifierExpression*>(index->base.get());
+            if (base != nullptr && buffer_variables_.contains(base->name)) {
+                const auto found = variables_.find(base->name);
+                return found == variables_.end()
+                    ? SemanticType{} : found->second;
+            }
+            return {};
+        }
         const auto* value =
             dynamic_cast<const IdentifierExpression*>(&expression);
         if (value == nullptr) {
@@ -411,6 +623,107 @@ private:
             : type_of(field.type_name);
     }
 
+    bool contains_parent_assignment(
+        const Statement& statement, std::string_view variable) const
+    {
+        if (const auto* expression =
+                dynamic_cast<const ExpressionStatement*>(&statement))
+        {
+            const auto* assignment =
+                dynamic_cast<const AssignmentExpression*>(
+                    expression->expression.get());
+            if (assignment == nullptr
+                || assignment->target_name != variable)
+            {
+                return false;
+            }
+            const auto* call =
+                dynamic_cast<const CallExpression*>(
+                    assignment->value.get());
+            const auto* callee = call == nullptr ? nullptr
+                : dynamic_cast<const IdentifierExpression*>(
+                    call->callee.get());
+            const auto* argument = call == nullptr
+                || call->arguments.size() != 1
+                ? nullptr
+                : dynamic_cast<const IdentifierExpression*>(
+                    call->arguments.front().get());
+            return callee != nullptr && callee->name == "joint_parent"
+                && argument != nullptr && argument->name == variable;
+        }
+        if (const auto* block =
+                dynamic_cast<const BlockStatement*>(&statement))
+        {
+            return std::any_of(
+                block->statements.begin(), block->statements.end(),
+                [&](const std::unique_ptr<Statement>& child) {
+                    return child != nullptr
+                        && contains_parent_assignment(*child, variable);
+                });
+        }
+        if (const auto* conditional =
+                dynamic_cast<const IfStatement*>(&statement))
+        {
+            return contains_parent_assignment(
+                    *conditional->then_branch, variable)
+                || (conditional->else_branch != nullptr
+                    && contains_parent_assignment(
+                        *conditional->else_branch, variable));
+        }
+        return false;
+    }
+
+    std::optional<std::string> find_walk_stop(
+        const Statement& statement, std::string_view variable) const
+    {
+        if (const auto* conditional =
+                dynamic_cast<const IfStatement*>(&statement))
+        {
+            if (const auto* binary =
+                    dynamic_cast<const BinaryExpression*>(
+                        conditional->condition.get());
+                binary != nullptr && binary->op == BinaryOp::Equal)
+            {
+                const auto* left =
+                    dynamic_cast<const IdentifierExpression*>(
+                        binary->left.get());
+                const auto* right =
+                    dynamic_cast<const IdentifierExpression*>(
+                        binary->right.get());
+                if (left != nullptr && right != nullptr) {
+                    if (left->name == variable) {
+                        return right->name;
+                    }
+                    if (right->name == variable) {
+                        return left->name;
+                    }
+                }
+            }
+            if (const auto found = find_walk_stop(
+                    *conditional->then_branch, variable))
+            {
+                return found;
+            }
+            if (conditional->else_branch != nullptr) {
+                return find_walk_stop(
+                    *conditional->else_branch, variable);
+            }
+        } else if (const auto* block =
+                dynamic_cast<const BlockStatement*>(&statement))
+        {
+            for (const auto& child : block->statements) {
+                if (child != nullptr) {
+                    if (const auto found = find_walk_stop(
+                            *child, variable))
+                    {
+                        return found;
+                    }
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
     void visit_block(const BlockStatement& block) {
         for (const auto& statement : block.statements) {
             if (statement != nullptr) {
@@ -439,10 +752,32 @@ private:
                 add_error("ORL_ANALYSIS_HANDLE_COLLECTION",
                     "Handle declarations cannot be arrays");
             }
+            if (declaration->array_size_expression != nullptr) {
+                const auto bound = dispatch_array_bound(
+                    *declaration->array_size_expression);
+                if (!definition_.exported) {
+                    add_error("ORL_ANALYSIS_RUNTIME_ARRAY_SCOPE",
+                        "Dispatch-sized arrays are only allowed in "
+                        "exported functions");
+                } else if (!bound.has_value()) {
+                    add_error("ORL_ANALYSIS_RUNTIME_ARRAY_SIZE",
+                        "Array size must be joint_count, an int parameter, "
+                        "or a small literal multiple of one");
+                } else if (declared_type.is_handle()
+                    && declared_type.kind
+                        != SemanticTypeKind::NominalHandle)
+                {
+                    add_error("ORL_ANALYSIS_HANDLE_COLLECTION",
+                        "Only exact handles may use dispatch-sized arrays");
+                }
+            }
             variables_[declaration->variable_name] = declared_type;
             if (declared_type.is_handle()
                 && declaration->initializer != nullptr)
             {
+                handle_provenance_[declaration->variable_name] =
+                    provenance_for_expression(
+                        *declaration->initializer);
                 if (const auto source =
                         handle_source(*declaration->initializer))
                 {
@@ -463,11 +798,19 @@ private:
                             declaration->type_name)
                         : nullptr;
                     if (view != nullptr) {
-                        if (const auto source = handle_source(
-                                *call->arguments.front()))
+                        const auto provenance = provenance_for_expression(
+                            *call->arguments.front());
+                        if (provenance.kind
+                            != HandleProvenanceKind::Unknown)
                         {
-                            view_bindings_[declaration->variable_name] =
-                                {*source, view};
+                            std::optional<std::size_t> source;
+                            if (provenance.kind
+                                == HandleProvenanceKind::Parameter)
+                            {
+                                source = provenance.parameter;
+                            }
+                            view_bindings_[declaration->variable_name] = {
+                                provenance, source, view};
                         }
                     }
                 }
@@ -580,7 +923,60 @@ private:
         } else if (const auto* loop = dynamic_cast<const WhileStatement*>(&statement)) {
             summary_.has_loop = true;
             visit_expression(*loop->condition);
-            visit_statement(*loop->body);
+            const auto* condition_call =
+                dynamic_cast<const CallExpression*>(
+                    loop->condition.get());
+            const auto* condition_callee = condition_call == nullptr
+                ? nullptr
+                : dynamic_cast<const IdentifierExpression*>(
+                    condition_call->callee.get());
+            const auto* condition_argument =
+                condition_call == nullptr
+                || condition_call->arguments.size() != 1
+                ? nullptr
+                : dynamic_cast<const IdentifierExpression*>(
+                    condition_call->arguments.front().get());
+            if (condition_callee != nullptr
+                && condition_callee->name == "handle_valid"
+                && condition_argument != nullptr
+                && contains_parent_assignment(
+                    *loop->body, condition_argument->name))
+            {
+                const auto found = handle_provenance_.find(
+                    condition_argument->name);
+                if (found != handle_provenance_.end()
+                    && (found->second.kind
+                            == HandleProvenanceKind::Parameter
+                        || found->second.kind
+                            == HandleProvenanceKind::Parent))
+                {
+                    std::optional<std::size_t> stop_parameter;
+                    if (const auto stop_name = find_walk_stop(
+                            *loop->body, condition_argument->name))
+                    {
+                        const auto stop = handle_provenance_.find(
+                            *stop_name);
+                        if (stop != handle_provenance_.end()
+                            && stop->second.kind
+                                == HandleProvenanceKind::Parameter)
+                        {
+                            stop_parameter = stop->second.parameter;
+                        }
+                    }
+                    const auto previous = found->second;
+                    handle_provenance_[condition_argument->name] = {
+                        HandleProvenanceKind::Walk,
+                        found->second.parameter,
+                        stop_parameter};
+                    visit_statement(*loop->body);
+                    handle_provenance_[condition_argument->name] =
+                        previous;
+                } else {
+                    visit_statement(*loop->body);
+                }
+            } else {
+                visit_statement(*loop->body);
+            }
         } else if (const auto* loop = dynamic_cast<const DoWhileStatement*>(&statement)) {
             summary_.has_loop = true;
             visit_statement(*loop->body);
@@ -612,6 +1008,11 @@ private:
                     "Handle-backed views cannot be used as whole values");
             }
             access(value->name, ParameterAccess::Read);
+            if (handle_buffer_variables_.contains(value->name)) {
+                add_error("ORL_ANALYSIS_HANDLE_COLLECTION",
+                    "Handle buffers must be indexed before use");
+                return {};
+            }
             if (const auto found = variables_.find(value->name);
                 found != variables_.end())
             {
@@ -676,6 +1077,15 @@ private:
             access(assignment->target_name, ParameterAccess::Write);
             const SemanticType actual = visit_expression(*assignment->value);
             if (type_of(assignment->target_name).is_handle()) {
+                const auto current = handle_provenance_.find(
+                    assignment->target_name);
+                if (current == handle_provenance_.end()
+                    || current->second.kind
+                        != HandleProvenanceKind::Walk)
+                {
+                    handle_provenance_[assignment->target_name] =
+                        provenance_for_expression(*assignment->value);
+                }
                 if (const auto source = handle_source(*assignment->value)) {
                     handle_sources_[assignment->target_name] = *source;
                 }
@@ -699,6 +1109,58 @@ private:
                     "Only direct function calls can be imported as graph nodes");
             } else {
                 const std::string& name = callee->name;
+                if (name == "handle_valid") {
+                    if (argument_types.size() != 1) {
+                        add_error("ORL_ANALYSIS_CALL_ARGUMENT",
+                            "handle_valid expects exactly one argument");
+                    } else if (!argument_types.front().is_handle()) {
+                        add_error("ORL_ANALYSIS_HANDLE_TEST",
+                            "handle_valid requires a handle argument");
+                    }
+                    return type_of("int");
+                }
+                if (name == "joint_handle_invalid") {
+                    if (!argument_types.empty()) {
+                        add_error("ORL_ANALYSIS_CALL_ARGUMENT",
+                            "joint_handle_invalid expects no arguments");
+                    }
+                    return type_of("joint_handle");
+                }
+                if (name == "joint_parent") {
+                    const auto expected = type_of("joint_handle");
+                    if (argument_types.size() != 1) {
+                        add_error("ORL_ANALYSIS_CALL_ARGUMENT",
+                            "joint_parent expects exactly one argument");
+                    } else if (expected.kind
+                            != SemanticTypeKind::NominalHandle
+                        || argument_types.front() != expected)
+                    {
+                        add_error("ORL_ANALYSIS_HANDLE_TYPE_MISMATCH",
+                            "joint_parent requires an exact joint_handle");
+                    }
+                    return expected;
+                }
+                if (name == "joint_is_ancestor") {
+                    const auto expected = type_of("joint_handle");
+                    if (argument_types.size() != 2) {
+                        add_error("ORL_ANALYSIS_CALL_ARGUMENT",
+                            "joint_is_ancestor expects two arguments");
+                    } else {
+                        for (const auto& argument : argument_types) {
+                            if (expected.kind
+                                    != SemanticTypeKind::NominalHandle
+                                || argument != expected)
+                            {
+                                add_error(
+                                    "ORL_ANALYSIS_HANDLE_TYPE_MISMATCH",
+                                    "joint_is_ancestor requires exact "
+                                    "joint_handle arguments");
+                                break;
+                            }
+                        }
+                    }
+                    return type_of("int");
+                }
                 const bool constructor = is_supported_orl_type(name)
                     || structs_.contains(name) || name == "handle"
                     || handles_.contains(name);
@@ -767,9 +1229,28 @@ private:
             }
             return {};
         } else if (const auto* index = dynamic_cast<const IndexExpression*>(&expression)) {
-            const SemanticType base = visit_expression(*index->base);
+            SemanticType base;
+            if (const auto* identifier =
+                    dynamic_cast<const IdentifierExpression*>(
+                        index->base.get());
+                identifier != nullptr
+                    && buffer_variables_.contains(identifier->name))
+            {
+                access(identifier->name, ParameterAccess::Read);
+                base = variables_.at(identifier->name);
+            } else {
+                base = visit_expression(*index->base);
+            }
             visit_expression(*index->index);
             if (base.is_handle()) {
+                const auto* identifier =
+                    dynamic_cast<const IdentifierExpression*>(
+                        index->base.get());
+                if (identifier != nullptr
+                    && buffer_variables_.contains(identifier->name))
+                {
+                    return base;
+                }
                 add_error("ORL_ANALYSIS_HANDLE_INDEX",
                     "Handles cannot be indexed");
                 return {};
@@ -777,7 +1258,9 @@ private:
             return base;
         } else if (const auto* assignment = dynamic_cast<const IndexAssignmentExpression*>(&expression)) {
             SemanticType base_type;
-            if (const auto* base = base_identifier(assignment->target.get())) {
+            const auto* base =
+                base_identifier(assignment->target.get());
+            if (base != nullptr) {
                 if (base->name == "hierarchy_data") {
                     add_error("ORL_ANALYSIS_CONTEXT_WRITE",
                         "The implicit hierarchy_data global is read-only");
@@ -793,7 +1276,10 @@ private:
                 visit_expression(*assignment->target->index);
             }
             visit_expression(*assignment->value);
-            if (base_type.is_handle()) {
+            if (base_type.is_handle()
+                && (base == nullptr
+                    || !buffer_variables_.contains(base->name)))
+            {
                 add_error("ORL_ANALYSIS_HANDLE_INDEX",
                     "Handles cannot be indexed");
             }
@@ -815,10 +1301,17 @@ private:
                                     ->destination_struct);
                         return {};
                     }
-                    add_view_effect(
-                        found->second.source_parameter,
-                        found->second.descriptor->destination_struct,
-                        field->name, ParameterAccess::Read);
+                    if (found->second.source_parameter.has_value()) {
+                        add_view_effect(
+                            *found->second.source_parameter,
+                            found->second.descriptor->destination_struct,
+                            field->name, ParameterAccess::Read);
+                    } else {
+                        add_walk_effect(
+                            found->second.provenance,
+                            found->second.descriptor->destination_struct,
+                            field->name, ParameterAccess::Read);
+                    }
                     return view_field_type(*field);
                 }
             }
@@ -851,10 +1344,17 @@ private:
                                         ->destination_struct);
                             return {};
                         }
-                        add_view_effect(
-                            found->second.source_parameter,
-                            found->second.descriptor->destination_struct,
-                            field->name, ParameterAccess::Write);
+                        if (found->second.source_parameter.has_value()) {
+                            add_view_effect(
+                                *found->second.source_parameter,
+                                found->second.descriptor->destination_struct,
+                                field->name, ParameterAccess::Write);
+                        } else {
+                            add_walk_effect(
+                                found->second.provenance,
+                                found->second.descriptor->destination_struct,
+                                field->name, ParameterAccess::Write);
+                        }
                         visit_expression(*assignment->value);
                         return view_field_type(*field);
                     }
@@ -897,7 +1397,11 @@ private:
     FunctionSummary summary_;
     std::unordered_map<std::string, std::size_t> parameter_indices_;
     std::unordered_map<std::string, SemanticType> variables_;
+    std::unordered_set<std::string> buffer_variables_;
+    std::unordered_set<std::string> handle_buffer_variables_;
     std::unordered_map<std::string, std::size_t> handle_sources_;
+    std::unordered_map<std::string, HandleProvenance>
+        handle_provenance_;
     std::unordered_map<std::string, ViewBinding> view_bindings_;
 };
 
@@ -929,11 +1433,12 @@ bool is_supported_orl_type(std::string_view name) {
 }
 
 bool is_known_orl_builtin(std::string_view name) {
-    static constexpr std::array<std::string_view, 18> builtins = {
+    static constexpr std::array<std::string_view, 22> builtins = {
         "global_id", "print", "dot", "cross", "length", "normalize",
         "clamp", "lerp", "mat_identity", "mat_transpose", "mat_inverse",
         "mat_mul", "quat_mul", "quat_conjugate", "quat_normalize",
-        "quat_rotate", "min", "max",
+        "quat_rotate", "min", "max", "handle_valid",
+        "joint_handle_invalid", "joint_parent", "joint_is_ancestor",
     };
     return std::find(builtins.begin(), builtins.end(), name) != builtins.end();
 }
