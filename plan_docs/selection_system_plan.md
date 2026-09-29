@@ -12,7 +12,9 @@ The first implementation must provide these semantics:
 | --- | --- |
 | Direct click on an allowed element | Replace the complete ordered selection with that element. Every previous element is deselected. |
 | Shift-click on an allowed element | Append the element to the ordered selection if it is not already present. |
-| Shift-click on an already selected element | No-op. Do not duplicate or reorder it. |
+| Direct click on the same pixel when a hit in that pixel's overlay list is already selected | Resolve the next allowed hit in the GPU list, wrapping around, then replace the complete selection with it. |
+| Shift-click on the same pixel when a hit in that pixel's overlay list is already selected | Resolve the next allowed hit that is not already selected and append it. If every allowed hit is selected, do nothing. |
+| Shift-click resolves to an already selected element and there is no other allowed hit in the overlay list | No-op. Do not duplicate or reorder it. |
 | Direct click on empty space | Clear the selection. |
 | Shift-click on empty space | No-op. |
 | Click on an element rejected by the active mask | No-op; it is not treated as empty space. |
@@ -54,6 +56,10 @@ general selection system:
   on the CPU, then GPU joints are preferred over GPU meshes, and a separate
   CPU joint fallback is used. This is not a common candidate/arbitration
   path.
+- GPU picking is not uniform: joints use an A-buffer, meshes use a single
+  `R32Uint` object result, and controllers/locators are CPU-projected. The
+  existing joint A-buffer is the basis for a GPU-first picker, but it must be
+  generalized to every selectable element and preserve all overlay hits.
 - Joint and mesh picking are asynchronous independently. `SelectOp` uses
   `awaiting_joint`, `awaiting_mesh`, and `joint_hit` flags rather than a
   request transaction. A later scene repack can also make a packed joint
@@ -130,6 +136,12 @@ Identity rules:
    not be used for equality, ordering, persistence, or deferred GPU callbacks.
 4. Every key includes its kind. The same text or numeric value in two domains
    is not the same element.
+
+GPU pick shaders should use a frame-local `PickToken`/identity table to encode
+these keys into 32-bit shader values. A token may refer to a component ID,
+scene-object identity, or point identity, but the host-side table must be tied
+to the render/pick generation that produced it. The selection list stores the
+resolved stable key, never a packed index or transient GPU token.
 
 Keep transform resolution lazy. A selection item should contain a stable key
 and enough resolver information to obtain an `XformAttr` at use time.
@@ -235,121 +247,228 @@ Mode state is viewer interaction state. Do not add it to project files in the
 first implementation. If selection persistence is later required, serialize
 stable keys only and resolve them after scene assets/components are restored.
 
-## 4. Picking and click application
+## 4. GPU-first picking and click application
 
-### 4.1 One picker contract
+GPU picking is the primary selection path for every selectable element. Mesh
+instances, joints, controllers, locators, and future point/component
+providers should all render pick geometry into the same logical GPU selection
+surface. CPU projection is a degraded fallback for environments where GPU
+selection preparation or readback is unavailable; it is not a second
+selection design with different click semantics.
 
-Add a common picker/coordinator between `SelectOp` and the current CPU/GPU
-providers. A provider returns candidates, not a final selection:
+### 4.1 One GPU pick surface and identity table
+
+Add a common picker/coordinator between `SelectOp` and the viewport features.
+Each feature contributes GPU pick fragments, and the coordinator resolves the
+readback into candidates without mutating `Selection`.
+
+The pick pass should use a frame-local identity table:
 
 ```cpp
+struct PickToken {
+    std::uint32_t value = 0;
+};
+
 struct PickCandidate {
-    SelectionTarget target;
+    SelectionTarget target;       // resolved stable SelectionKey
     SelectableKind kind;
     float depth = 0.0f;
-    float screen_distance = 0.0f;
     std::uint32_t provider_priority = 0;
-    std::uint64_t scene_revision = 0;
     std::uint64_t pick_generation = 0;
 };
 
 struct PickResult {
-    std::vector<PickCandidate> candidates;
-    bool hit_any_element = false; // includes masked kinds
+    std::vector<PickCandidate> hits; // normalized front-to-back
+    bool hit_any_element = false;    // includes masked kinds
     bool overflow = false;
+    std::uint64_t pick_generation = 0;
 };
 ```
 
-The initial providers are:
+The identity table maps GPU tokens to stable keys for exactly the scene,
+component packing, and viewport generation used to render the pick pass.
+Joints must not rely on resolving a packed index against a later
+`packed_joint_ids()` call. Mesh IDs must likewise resolve through the scene
+object table associated with that pass.
 
-- controller CPU provider;
-- locator CPU provider;
-- joint GPU provider with CPU fallback;
-- scene-object/mesh GPU provider.
+The existing `JointPickingFeature` already demonstrates the required
+direction: it renders joint points to an A-buffer and calls
+`read_abuffer_pixel()` to retrieve all nodes for the clicked pixel. Generalize
+that mechanism instead of reducing it to a single winning ID:
 
-Each provider reports the element kind and stable identity. It may return
-multiple overlapping hits when its backend supports that; it must not mutate
-`Selection`.
+- `JointPickingFeature` contributes joint tokens.
+- `MeshPickingFeature` contributes scene-object tokens; its current
+  single-value `R32Uint` target is replaced or supplemented by the common
+  A-buffer.
+- Controller and locator features receive GPU pick passes using the same
+  transforms and visible geometry as their scene passes.
+- Point and future vertex/edge/face providers contribute tokens through the
+  same interface.
 
-### 4.2 Candidate filtering and arbitration
+Separate feature passes may share and append to one cleared A-buffer, or use
+compatible per-kind A-buffers that the coordinator merges. In either design,
+the result must be one ordered list for the clicked pixel, not a hard-coded
+kind priority and not whichever asynchronous callback completes first.
 
-The coordinator performs the same sequence for every kind:
+### 4.2 Preserve the per-pixel overlay list
 
-1. Collect all provider results for the click.
-2. Discard stale results whose request/generation or scene revision no longer
-   matches the click.
-3. Convert packed joint IDs and scene object IDs to stable keys using the
-   identity snapshot associated with the rendered pick pass.
-4. Apply the active `SelectionMask`.
-5. Deduplicate equal keys.
-6. Choose the front-most allowed candidate using one documented depth rule.
-   Use provider priority and a stable kind/key tie-break only within a depth
-   epsilon.
+The original A-buffer list is essential for overlapping components. Extend its
+node payload so every entry contains at least:
+
+```text
+GPU pick token
+element kind or identity-table domain
+fragment depth
+next-list index
+```
+
+The current joint node stores a vertex/element ID and a next pointer. Add the
+kind/token and depth information needed to merge all element types and to
+normalize the list deterministically. A fragment shader can write
+`gl_FragCoord.z`; the coordinator then sorts front-to-back and uses a stable
+token tie-break within a depth epsilon. It must also deduplicate fragments
+from the same element, since a mesh triangle or controller curve can produce
+multiple entries at one pixel.
+
+The list capacity must be large enough for normal overlays and expose its
+overflow state. If the A-buffer overflows, the preferred behavior is to repeat
+the pixel pick with a larger capacity or a targeted second pass. Do not claim
+that cycling is complete when the GPU reported that some hits were dropped.
+If a bounded fallback is temporarily required, expose a visible diagnostic and
+test the truncation rule.
+
+The coordinator does not select the first list entry immediately. It retains
+the normalized list long enough to apply the active mask and the repeat-click
+cycle below. Masking happens after hit collection so a masked mesh remains
+distinguishable from empty space and does not accidentally clear a joint
+selection.
+
+### 4.3 Repeated-click cycle for one pixel
+
+Add a `PickCycleState` owned by the picker coordinator:
+
+```text
+pixel coordinate
+pick/render generation
+normalized overlay hit list
+last cycle position
+```
+
+The cached list may be reused when the pixel and render generation are
+unchanged. Invalidate it when the cursor pixel changes, the camera/viewport
+changes, the scene or component topology changes, the active mask/mode
+changes, or the pick pass reports a new generation. A selection mutation caused
+by the click itself must not invalidate the list; it is needed to identify the
+currently selected hit on the next click.
+
+For each click:
+
+1. Resolve the GPU list to stable keys, remove duplicate fragments, and filter
+   out kinds rejected by the captured `SelectionMask`.
+2. Find the current cycle anchor. Prefer the focused selected item if it is in
+   this pixel's allowed list; otherwise use the last selected item in the
+   ordered selection that appears in the list.
+3. For a direct click, choose the next allowed hit after the anchor, wrapping
+   to the front. If there is no anchor, choose the front-most allowed hit.
+   Apply `SelectionAction::Replace`, so the chosen object becomes the only
+   selection.
+4. For a Shift-click, scan after the anchor, wrapping as needed, and choose
+   the first allowed hit that is not already selected. Apply
+   `SelectionAction::Add`; existing items retain their positions. If all
+   allowed hits are already selected, do nothing.
+5. A direct click on a different pixel starts that pixel's cycle at the
+   front-most allowed hit. A Shift-click on an already selected hit therefore
+   advances to the next unselected overlay entry rather than duplicating it.
+
+This gives the required DCC behavior while preserving the ordered selection
+contract:
+
+```text
+overlay list:        A, B, C
+direct click:        A
+direct click again:  B        (selection becomes [B])
+Shift-click again:   C        (selection becomes [B, C])
+Shift-click again:   A        (selection becomes [B, C, A])
+```
+
+The example assumes all three hits pass the active mask. If the list contains
+only masked entries, report a masked hit and leave the current selection
+unchanged. If the list is empty, direct click clears and Shift-click is a
+no-op. Cycling never reorders existing selected items; only an appended
+candidate is placed at the end and becomes focus.
+
+### 4.4 Candidate filtering and arbitration
+
+The coordinator performs the same sequence for every element kind:
+
+1. Collect all GPU A-buffer results for the click.
+2. Discard stale results whose request, identity-table generation, or scene
+   revision no longer matches the click.
+3. Resolve tokens to stable `SelectionKey` values.
+4. Deduplicate equal keys and normalize front-to-back using depth.
+5. Apply the captured `SelectionMask`.
+6. Run the repeated-click cycle over the remaining list.
 7. If there is no allowed candidate but `hit_any_element` is true, report a
    masked hit. If there was no hit at all, report empty space.
 
 The current unconditional “joint beats mesh” rule must not remain hidden in
-`SelectOp`. Prefer a depth-aware common rule. If the rendering backend cannot
-read comparable depth for a provider in the first pass, document a temporary
-provider priority and cover it with a test; do not let callback arrival order
-choose the result.
+`SelectOp`. GPU depth and the normalized overlay list determine the cycle
+order. Provider priority and a stable kind/key tie-break are permitted only
+within a depth epsilon. CPU fallback providers must return the same ordered
+candidate contract, including multiple hits where they can determine them.
 
-The mask is applied after detecting hits so a masked mesh does not look like
-empty space. This prevents a direct click in joint mode from unexpectedly
-clearing an existing joint selection merely because the cursor landed on a
-non-selectable mesh. An allowed joint behind a masked mesh may still win if the
-active mode is configured to ignore masked occluders. If a future mode needs
-strict occlusion, make that an explicit mode policy rather than an accidental
-provider detail.
+The default mode ignores masked entries for cycling, allowing an allowed joint
+to be selected through a masked mesh when both are present in the GPU list. A
+future mode may request strict masked occlusion, but that must be an explicit
+mode policy and must still retain enough hit information to distinguish it
+from empty space.
 
-### 4.3 Asynchronous request transaction
+### 4.5 Asynchronous request transaction
 
-Replace `SelectOp`'s independent boolean flags with a
-`PickTransaction`:
+Replace `SelectOp`'s independent boolean flags with a `PickTransaction`:
 
 ```text
 request_id
-cursor position
+pixel/cursor position
 SelectionAction (Replace or Add)
 mask snapshot
-scene/topology/pick generation snapshot
-expected provider count
-completed provider results
+scene/topology/camera/pick generation snapshot
+identity-table snapshot
+expected provider/pass count
+completed GPU overlay results
 ```
 
 Capture the action and mask at mouse-press time. Do not re-read Shift or the
-active mode when a GPU callback arrives.
+active mode when a GPU callback arrives. The transaction commits only after
+the required GPU passes have completed and the complete overlay list is
+available. If no GPU provider is available, the CPU fallback can complete the
+same transaction immediately.
 
-The transaction commits once all requested providers complete, or immediately
-when no asynchronous provider is available. A new click supersedes an older
-transaction. Scene clear, model load, component deletion, project load,
-topology repack, resize, and mode change invalidate outstanding transactions.
-Callbacks with an old request ID are ignored.
+A new click supersedes an older transaction. Scene clear, model load,
+component deletion, project load, topology repack, camera/viewport resize,
+camera movement, and mode change invalidate outstanding transactions and the
+cached cycle list. Callbacks with an old request ID or pick generation are
+ignored.
 
-The joint pick pass currently returns packed indices. The pass must return (or
-be paired with) the exact `packed_joint_ids()` snapshot/generation used to
-render it. Resolving an index against a newly repacked vector is unsafe.
-Likewise, mesh pick IDs must resolve through the scene-object map associated
-with that render generation, not an unbounded mutable name map.
-
-### 4.4 Applying the result
+### 4.6 Applying the result
 
 `SelectOp` becomes a thin gesture adapter:
 
 ```text
 ignore click while create-joint modal is active
 derive Replace/Add from the event
-start picker transaction with action + mask snapshot
-on completed result:
-  allowed candidate -> Selection::apply(action, target)
+start GPU pick transaction with action + mask snapshot
+on completed overlay result:
+  cycle to an allowed target
+    -> Selection::apply(action, target)
   empty-space:
     Replace -> Selection::clear()
     Add -> no-op
-  masked-only hit -> no-op
+  masked-only hit or exhausted Shift cycle -> no-op
 ```
 
-All CPU fallback paths must feed this same result path. They must not call
-`selection.set()` or `selection.add()` directly.
+All CPU fallback paths must feed this same cycle/result path. They must not
+call `selection.set()` or `selection.add()` directly.
 
 ## 5. Input and mode integration
 
@@ -395,7 +514,6 @@ understand why a click did not select a mesh.
 Reserve, but do not require for the first milestone:
 
 - Ctrl-click removal/toggle;
-- click cycling through overlapping candidates;
 - box/lasso selection;
 - hierarchy expansion (select parent, subtree, or descendants);
 - hover/preselection.
@@ -505,8 +623,8 @@ have been remapped during load.
 
 ### Phase 0: contract and test scaffolding
 
-1. Add `selection_system_plan.md` (this document) and record the current
-   behavior in focused tests.
+1. Keep `plan_docs/selection_system_plan.md` as the design contract and record
+   the current behavior in focused tests.
 2. Add unit coverage for direct replacement, cross-kind replacement, current
    focus behavior, and the duplicate behavior that the new system must remove.
 3. Define stable key equality and a test resolver for components, scene
@@ -529,13 +647,16 @@ semantics without involving GPU picking.
 
 ### Phase 2: common picker and input gestures
 
-1. Introduce `PickCandidate`, `PickResult`, provider interfaces, and
-   generation-aware transactions.
-2. Move current CPU controller/locator/joint logic behind providers.
-3. Make GPU callbacks carry request IDs and identity snapshots.
-4. Add depth/arbitration data, including the chosen temporary fallback policy
-   where the backend cannot yet return common depth.
-5. Change `SelectOp` to use only the common result path.
+1. Introduce the GPU pick-token table, common A-buffer payload, normalized
+   overlay-list result, provider interfaces, and generation-aware
+   transactions.
+2. Generalize the existing joint A-buffer to meshes, controllers, locators,
+   and other current viewport elements; retain CPU providers only as fallback.
+3. Make GPU callbacks carry request IDs, identity snapshots, depth, and all
+   overlay hits for the clicked pixel.
+4. Implement per-pixel repeat-click cycling for direct and Shift-click,
+   including overflow handling and mask filtering.
+5. Change `SelectOp` to use only the common GPU/fallback cycle result path.
 6. Add the unmodified and Shift-click control bindings.
 
 At the end of this phase, direct and Shift-click behavior is identical across
@@ -557,13 +678,16 @@ all currently pickable kinds.
 ### Phase 4: verification and hardening
 
 1. Run headless selection and scene tests.
-2. Run the viewer with GPU picking enabled and with GPU preparation forced to
-   fail so CPU fallback is exercised.
-3. Test out-of-order asynchronous callbacks, resize, scene deletion during a
-   pending pick, and joint repacking during a pending pick.
-4. Verify mixed mesh-plus-joint binding in `bind`/`all` mode and rejection of
+2. Run the viewer with GPU picking enabled and verify that meshes, joints,
+   controllers, locators, and points contribute to the same GPU hit-list path.
+3. Force GPU preparation to fail and verify that CPU fallback preserves the
+   same selection/cycle semantics.
+4. Test out-of-order asynchronous callbacks, A-buffer overflow, resize,
+   camera movement, scene deletion during a pending pick, and joint repacking
+   during a pending pick.
+5. Verify mixed mesh-plus-joint binding in `bind`/`all` mode and rejection of
    mesh hits in `joints` mode.
-5. Add manual acceptance coverage for overlapping joints, mesh instances,
+6. Add manual acceptance coverage for overlapping joints, mesh instances,
    controllers, and locators.
 
 ## 8. Test matrix
@@ -587,14 +711,27 @@ all currently pickable kinds.
 ### Picker tests
 
 - Every provider produces the same `SelectionKey` for the same target.
+- Every current selectable kind contributes a GPU hit to the common
+  per-pixel overlay list.
+- A-buffer entries are normalized front-to-back, deduplicated by element, and
+  preserve all non-overflowed overlay hits.
 - Candidate filtering uses the captured mask, not the mask at callback time.
 - Allowed candidates are deduplicated.
-- Depth/tie arbitration is deterministic and independent of callback order.
+- Depth/tie ordering is deterministic and independent of fragment or callback
+  order.
+- Repeated direct clicks on one pixel cycle A -> B -> C -> A and replace the
+  selection each time.
+- Repeated Shift-clicks on one pixel append the next unselected hit in list
+  order and never duplicate an existing selection.
+- Direct cycling wraps even when the next hit is already selected; Shift-cycle
+  stops when all allowed hits are selected.
 - A masked mesh is distinguishable from empty space.
 - A stale request ID, scene revision, or pick generation cannot mutate
   selection.
 - Joint packed indices resolve using the render snapshot, or the result is
   safely discarded.
+- A-buffer overflow is reported and either retried with sufficient capacity or
+  follows the documented incomplete-list policy.
 - CPU fallback and GPU paths produce equivalent selection actions.
 
 ### Consumer/operation tests
@@ -622,8 +759,9 @@ all currently pickable kinds.
    existing binding/auto-weight actions.
 5. Delete or reload an element while selected and confirm the UI, colors, and
    operation predicates have no stale selection.
-6. Click overlapping elements repeatedly and confirm the documented depth/tie
-   rule rather than whichever asynchronous callback completes first.
+6. Click overlapping elements repeatedly and confirm GPU list cycling:
+   direct clicks replace with the next hit, while Shift-clicks append the next
+   unselected hit in overlay order.
 
 ## 9. Follow-up features that should build on this system
 
@@ -633,8 +771,6 @@ special cases:
 - Ctrl-click subtract/toggle, represented by another `SelectionAction`.
 - Marquee and lasso selection, producing a batch of candidates while retaining
   the same mask and order policy.
-- Cycling through overlapping candidates, using the ordered candidate list and
-  a cursor/selection history.
 - Parent/child or subtree selection policies for joints.
 - Hover/preselection and selection outlines as separate visual state.
 - Selection history, undo/redo, named selection sets, and optional project
@@ -642,7 +778,7 @@ special cases:
 - Component-level mesh selection once vertices/edges/faces have stable IDs and
   dedicated providers.
 
-The core deliverable is complete when all three required semantics—uniform
-direct replacement, customizable masks/modes, and ordered Shift-add—are
+The core deliverable is complete when uniform direct replacement,
+customizable masks/modes, ordered Shift-add, and GPU overlay-list cycling are
 enforced by one selection state and one picker result path for every current
 viewport element.
