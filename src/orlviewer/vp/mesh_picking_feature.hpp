@@ -17,27 +17,28 @@
 #include "vk_ins/shader_module_pack.hpp"
 #include "vp/feature.hpp"
 #include "vp/object_picking.hpp"
+#include "vp/picking.hpp"
 
 namespace ORL
 {
 
-// GPU mesh pick: writes scene-object IDs into an R32Uint target, matching
-// vkkk ObjectPickingFeature but request-driven so SelectOp owns the click.
+// GPU mesh pick: writes scene-object IDs into an overlap-safe A-buffer so
+// SelectOp can cycle through all mesh instances at one pixel.
 class MeshPickingFeature final : public vkkk::vp::ViewportFeature<vkkk::vp::ViewportPhase::Picking> {
 public:
     MeshPickingFeature(vkkk::Scene& scene, const vkkk::Camera& camera,
-        std::filesystem::path shader_dir)
+        std::filesystem::path shader_dir, std::uint32_t nodes_per_pixel = 8)
         : scene(scene)
         , camera(camera)
         , shader_dir(std::move(shader_dir))
+        , nodes_per_pixel(nodes_per_pixel)
     {
     }
 
     void on_attach(vkkk::Context& context, vk::Extent2D) {
-        target_index = context.add_render_target(
-            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc,
-            vk::Format::eR32Uint, 0, 0, vk::ImageLayout::eGeneral);
-        ready = target_index != vkkk::kInvalidTargetIndex && create_pipeline(context);
+        ready = nodes_per_pixel != 0
+            && create_pipeline(context)
+            && resize_buffers(context, context.extent());
         if (ready) {
             std::cout << "Mesh picking: GPU\n";
         }
@@ -46,9 +47,10 @@ public:
         }
     }
 
-    void on_resize(vkkk::Context&, vk::Extent2D) {
+    void on_resize(vkkk::Context& context, vk::Extent2D extent) {
         pick_pending = false;
         last_render_serial = 0;
+        ready = ready && resize_buffers(context, extent);
     }
 
     void on_update(vkkk::Context& context, const vkkk::Context::Frame& frame) {
@@ -59,11 +61,17 @@ public:
         }
 
         if (pick_pending && last_render_serial >= pending_serial) {
-            std::uint32_t object_id = 0;
-            if (context.read_render_target_pixel(target_index, pending_x, pending_y, object_id)
-                && hit_callback)
-            {
-                hit_callback(object_id);
+            std::vector<vkkk::ABufferHit> raw_hits;
+            std::vector<GpuPickHit> hits;
+            bool overflow = false;
+            context.read_abuffer_pixel(kABufferName, last_image_index,
+                pending_x, pending_y, raw_hits, overflow);
+            hits.reserve(raw_hits.size());
+            for (const auto& hit : raw_hits) {
+                hits.push_back(GpuPickHit{hit.vertex_id, hit.depth});
+            }
+            if (hit_callback) {
+                hit_callback(pending_request_id, hits, overflow);
             }
             pick_pending = false;
         }
@@ -76,7 +84,11 @@ public:
                 pending_x, pending_y))
         {
             pending_serial = frame.serial;
+            pending_request_id = requested_request_id;
             pick_pending = true;
+        }
+        else if (hit_callback) {
+            hit_callback(requested_request_id, {}, false);
         }
         want_pick = false;
     }
@@ -88,11 +100,11 @@ public:
             return;
         }
 
-        vkkk::ColorTargetRef<std::uint32_t> color{};
-        color.target_index = static_cast<std::int32_t>(target_index);
-        color.clear = {0u, 0u, 0u, 0u};
-        vkkk::PassDescT<std::uint32_t> pass{};
-        pass.colors = {color};
+        if (!context.clear_abuffer(kABufferName, image_index)) {
+            return;
+        }
+        vkkk::PassDesc pass{};
+        pass.colors.clear();
         pass.present = false;
         context.begin_pass(cmd, image_index, pass);
         if (!instances.empty()) {
@@ -106,21 +118,27 @@ public:
             }
         }
         context.end_pass(cmd, image_index, pass);
+        context.barrier_abuffer_for_host(cmd);
+        last_image_index = image_index;
         last_render_serial = current_serial;
     }
 
     bool available() const { return ready && enabled; }
 
-    bool request(const vkkk::InputEvent& event) {
+    std::uint64_t request(const vkkk::InputEvent& event) {
         if (!available()) {
-            return false;
+            return 0;
         }
         pick_event = event;
+        requested_request_id = ++next_request_id;
         want_pick = true;
-        return true;
+        return requested_request_id;
     }
 
-    void set_hit_callback(std::function<void(std::uint32_t)> callback) {
+    void set_hit_callback(
+        std::function<void(
+            std::uint64_t, const std::vector<GpuPickHit>&, bool)> callback)
+    {
         hit_callback = std::move(callback);
     }
 
@@ -134,13 +152,14 @@ public:
 
 private:
     static constexpr const char* kPipeline = "orl_mesh_picking";
+    static constexpr const char* kABufferName = "orl_mesh_picking_abuffer";
 
     bool create_pipeline(vkkk::Context& context) {
         if (context.pipelines.contains(kPipeline)) {
             return true;
         }
         const auto vert_path = shader_dir / "object_picking.vert";
-        const auto frag_path = shader_dir / "object_picking.frag";
+        const auto frag_path = shader_dir / "object_picking_abuffer.frag";
         vkkk::ShaderModule vert_module;
         vkkk::ShaderModule frag_module;
         if (!context.load_shader(
@@ -159,9 +178,15 @@ private:
         option.setup_multisampling(false, vk::SampleCountFlagBits::e1);
         option.setup_rasterizer(false, false, vk::PolygonMode::eFill, 1.0f,
             vk::CullModeFlagBits::eNone, vk::FrontFace::eCounterClockwise, false);
-        option.setup_depth_stencil(true, true, vk::CompareOp::eLess, false, false);
-        return context.create_pipeline(kPipeline, pack, option, {vkkk::VERTEX, vkkk::NORMAL},
-            true, false, {vk::Format::eR32Uint});
+        option.setup_depth_stencil(false, false, vk::CompareOp::eAlways, false, false);
+        return context.create_pipeline(kPipeline, pack, option,
+            {vkkk::VERTEX, vkkk::NORMAL}, true, true, {},
+            static_cast<vk::Format>(context.get_depth_format()));
+    }
+
+    bool resize_buffers(vkkk::Context& context, vk::Extent2D extent) {
+        return context.resize_abuffer(kABufferName, extent, nodes_per_pixel)
+            && context.bind_pipeline_abuffer(kPipeline, kABufferName, 3, 4);
     }
 
     std::uint32_t id_for(const std::string& name) {
@@ -223,14 +248,19 @@ private:
     std::vector<std::string> mesh_names;
     std::unordered_map<std::string, std::uint32_t> name_ids;
     std::unordered_map<std::uint32_t, std::string> id_names;
-    std::function<void(std::uint32_t)> hit_callback;
+    std::function<void(
+        std::uint64_t, const std::vector<GpuPickHit>&, bool)> hit_callback;
     std::uint32_t next_id = 1;
-    std::uint32_t target_index = vkkk::kInvalidTargetIndex;
+    std::uint32_t last_image_index = 0;
     std::uint32_t pending_x = 0;
     std::uint32_t pending_y = 0;
     std::uint64_t pending_serial = 0;
     std::uint64_t last_render_serial = 0;
     std::uint64_t current_serial = 0;
+    std::uint64_t next_request_id = 0;
+    std::uint64_t requested_request_id = 0;
+    std::uint64_t pending_request_id = 0;
+    std::uint32_t nodes_per_pixel = 8;
     std::size_t allocated_instance_count = 0;
     vkkk::InputEvent pick_event;
     bool want_pick = false;

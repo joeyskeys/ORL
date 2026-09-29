@@ -1,6 +1,6 @@
 #version 460
 
-layout(location = 0) flat in uint joint_id;
+layout(location = 0) flat in uint element_id;
 
 layout(std430, binding = 3) buffer HeadBuffer {
     uint width;
@@ -25,12 +25,11 @@ layout(std430, binding = 4) buffer NodePool {
     ABufferNode nodes[];
 } node_pool;
 
-void main() {
-    vec2 radial = gl_PointCoord * 2.0 - 1.0;
-    if (dot(radial, radial) > 1.0) {
-        discard;
-    }
+layout(push_constant) uniform PickId {
+    uint value;
+} pick_id;
 
+void main() {
     const uint node_index = atomicAdd(node_pool.allocation_count, 1);
     if (node_index >= node_pool.capacity) {
         atomicOr(node_pool.overflow, 1);
@@ -42,7 +41,9 @@ void main() {
         return;
     }
     const uint head_index = pixel.y * head_buffer.width + pixel.x;
-    node_pool.nodes[node_index].vertex_id = joint_id;
+    node_pool.nodes[node_index].vertex_id =
+        element_id != 0u ? element_id : pick_id.value;
     node_pool.nodes[node_index].depth = gl_FragCoord.z;
-    node_pool.nodes[node_index].next = atomicExchange(head_buffer.heads[head_index], node_index);
+    node_pool.nodes[node_index].next =
+        atomicExchange(head_buffer.heads[head_index], node_index);
 }

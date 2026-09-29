@@ -84,7 +84,7 @@ public:
             return;
         }
 
-        selection.set(SelectionRef::controller(target.controller));
+        selection.replace(SelectionRef::controller(target.controller));
         const auto* end_meta = components.find(end_id);
         const auto* target_meta = components.find(target.controller);
         const auto* pole_meta = components.find(pole.controller);

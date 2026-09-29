@@ -95,7 +95,7 @@ public:
         if (created) {
             // Keep the target selected while also selecting the new control,
             // so the next C press toggles the same attachment off.
-            selection.set(SelectionRef::controller(controller));
+            selection.add(SelectionRef::controller(controller));
         }
         std::cout << "Controller attached to '"
                   << components.find(target)->name << "'\n";
