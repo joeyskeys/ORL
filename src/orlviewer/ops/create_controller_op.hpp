@@ -68,7 +68,7 @@ private:
             std::cerr << "CreateControllerOp: failed to create controller\n";
             return;
         }
-        selection.set(SelectionRef::controller(id));
+        selection.replace(SelectionRef::controller(id));
         if (const auto* created = components.find(id)) {
             std::cout << "Created '" << created->name << "'\n";
         }

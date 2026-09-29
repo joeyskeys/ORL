@@ -60,6 +60,7 @@
 #include "vp/mesh_csr_feature.hpp"
 #include "vp/mesh_picking_feature.hpp"
 #include "vp/ortho_grid_feature.hpp"
+#include "vp/rig_picking_feature.hpp"
 #include "vp/runtime_hud_feature.hpp"
 #include "vp/scene_mesh_feature.hpp"
 #include "vp/transform_guide_feature.hpp"
@@ -257,6 +258,11 @@ int main(int argc, char** argv) {
     }
 #endif
     ORL::Selection selection(components, scene);
+    ORL::SelectionModeRegistry selection_modes;
+    ORL::register_default_selection_modes(selection_modes);
+    if (const auto* mode = selection_modes.active(); mode != nullptr) {
+        selection.set_mode(*mode);
+    }
 #if ORL_USE_QT6
     if (node_graph_editor != nullptr) {
         node_graph_editor->set_selection(&selection);
@@ -280,6 +286,7 @@ int main(int argc, char** argv) {
         ORL::JointFeature,
         ORL::ControllerFeature,
         ORL::MeshPickingFeature,
+        ORL::RigPickingFeature,
         ORL::MeshCsrFeature,
         ORL::AutoWeightFeature,
         ORL::SolverFeature,
@@ -353,6 +360,11 @@ int main(int argc, char** argv) {
         scene, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     if (auto* mesh_pick = viewport.find_feature(mesh_pick_handle)) {
         select_op.set_mesh_picking(*mesh_pick);
+    }
+    const auto rig_pick_handle = viewport.add_feature<ORL::RigPickingFeature>(
+        components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    if (auto* rig_pick = viewport.find_feature(rig_pick_handle)) {
+        select_op.set_rig_picking(*rig_pick);
     }
     ORL::MoveOp move_op(selection, navigator, &window_backend);
     ORL::RotateOp rotate_op(selection, navigator, &window_backend);
