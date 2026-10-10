@@ -2,15 +2,22 @@
 
 #if ORL_USE_QT6
 
+#include <algorithm>
 #include <cmath>
+#include <variant>
+#include <vector>
 
 #include <QFormLayout>
 #include <QFrame>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QDoubleValidator>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QStringList>
@@ -112,6 +119,23 @@ PropertyEditor::PropertyEditor(const Selection& selection,
     node_layout->addRow(QStringLiteral("Ports"), node_ports_);
     content_layout->addWidget(node_group_);
     node_group_->setVisible(false);
+
+    static_value_editor_.group = new QGroupBox(
+        QStringLiteral("Static Value"), content);
+    auto* static_layout = new QVBoxLayout(static_value_editor_.group);
+    static_value_editor_.fields_widget = new QWidget(
+        static_value_editor_.group);
+    static_layout->addWidget(static_value_editor_.fields_widget);
+    static_value_editor_.relative_button = new QPushButton(
+        QStringLiteral("Set Relative Xform"),
+        static_value_editor_.group);
+    static_layout->addWidget(static_value_editor_.relative_button);
+    QObject::connect(static_value_editor_.relative_button,
+        &QPushButton::clicked, this, [this] {
+            apply_relative_xform();
+        });
+    content_layout->addWidget(static_value_editor_.group);
+    static_value_editor_.group->setVisible(false);
 
     nameGroup = new QGroupBox(QStringLiteral("Name"), content);
     auto* name_layout = new QFormLayout(nameGroup);
@@ -236,6 +260,7 @@ void PropertyEditor::refresh() {
 void PropertyEditor::refresh_scene_context() {
     selection_group_->setVisible(true);
     node_group_->setVisible(false);
+    static_value_editor_.group->setVisible(false);
     draft_note_->setVisible(true);
 
     const auto& refs = selection_.refs();
@@ -301,6 +326,7 @@ void PropertyEditor::refresh_node_graph_context() {
         node_id_->setText(QStringLiteral("None"));
         node_definition_->setText(QStringLiteral("Node graph is unavailable."));
         node_ports_->setText(QStringLiteral("None"));
+        refresh_static_value_editor(std::nullopt, {});
         return;
     }
 
@@ -315,6 +341,7 @@ void PropertyEditor::refresh_node_graph_context() {
         node_definition_->setText(
             QStringLiteral("Click a node in the graph to inspect it."));
         node_ports_->setText(QStringLiteral("None"));
+        refresh_static_value_editor(std::nullopt, {});
         return;
     }
 
@@ -328,6 +355,164 @@ void PropertyEditor::refresh_node_graph_context() {
         ? QStringLiteral("None") : node->outputs.join(QStringLiteral(", "));
     node_ports_->setText(
         QStringLiteral("Inputs: %1\nOutputs: %2").arg(inputs, outputs));
+    refresh_static_value_editor(node->static_value, node->id);
+}
+
+void PropertyEditor::refresh_static_value_editor(
+    const std::optional<orlgraph::ConstantValue>& value,
+    const QString& node_id)
+{
+    if (!value.has_value()
+        || value->type.lanes == 0
+        || !std::holds_alternative<std::vector<double>>(value->value))
+    {
+        static_value_editor_.group->setVisible(false);
+        static_value_editor_.kind.reset();
+        static_value_editor_.node_id.clear();
+        return;
+    }
+
+    const auto& lanes = std::get<std::vector<double>>(value->value);
+    const bool same_node = static_value_editor_.node_id == node_id
+        && static_value_editor_.kind.has_value()
+        && *static_value_editor_.kind == value->type.kind
+        && static_value_editor_.fields.size() == lanes.size();
+
+    if (!same_node) {
+        if (static_value_editor_.fields_widget->layout() != nullptr) {
+            QLayoutItem* item = nullptr;
+            while ((item = static_value_editor_.fields_widget->layout()
+                ->takeAt(0)) != nullptr)
+            {
+                delete item->widget();
+                delete item;
+            }
+            delete static_value_editor_.fields_widget->layout();
+        }
+        static_value_editor_.fields.clear();
+
+        auto* layout = new QGridLayout(static_value_editor_.fields_widget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setHorizontalSpacing(4);
+        layout->setVerticalSpacing(4);
+
+        const bool matrix =
+            value->type.kind == orlgraph::LogicalTypeKind::Matrix;
+        static_value_editor_.group->setTitle(matrix
+            ? QStringLiteral("Matrix Value")
+            : value->type.kind == orlgraph::LogicalTypeKind::Vec4
+                ? QStringLiteral("Vec4 Value")
+                : QStringLiteral("Vec3 Value"));
+
+        for (std::size_t index = 0; index < lanes.size(); ++index) {
+            auto* field = new QLineEdit(static_value_editor_.fields_widget);
+            field->setAlignment(Qt::AlignRight);
+            auto* validator = new QDoubleValidator(
+                -1.0e12, 1.0e12, 6, field);
+            validator->setNotation(QDoubleValidator::ScientificNotation);
+            field->setValidator(validator);
+            QObject::connect(field, &QLineEdit::editingFinished, this,
+                [this, field] {
+                    if (!field->isModified()) {
+                        return;
+                    }
+                    apply_static_value_edit();
+                    field->setModified(false);
+                });
+            if (matrix) {
+                layout->addWidget(field,
+                    static_cast<int>(index / 4),
+                    static_cast<int>(index % 4));
+            } else {
+                static constexpr const char* kLabels[] = {
+                    "X", "Y", "Z", "W"};
+                auto* label = new QLabel(
+                    QString::fromLatin1(
+                        kLabels[std::min(index, std::size_t{3})]),
+                    static_value_editor_.fields_widget);
+                label->setAlignment(Qt::AlignCenter);
+                layout->addWidget(label, 0, static_cast<int>(index * 2));
+                layout->addWidget(field, 0, static_cast<int>(index * 2 + 1));
+            }
+            static_value_editor_.fields.push_back(field);
+        }
+
+        static_value_editor_.kind = value->type.kind;
+        static_value_editor_.node_id = node_id;
+        static_value_editor_.relative_button->setVisible(matrix);
+    }
+
+    for (std::size_t index = 0; index < lanes.size(); ++index) {
+        auto* field = static_value_editor_.fields[index];
+        if (field->hasFocus()) {
+            continue;
+        }
+        const QSignalBlocker blocker(field);
+        field->setText(QString::number(lanes[index], 'g', 8));
+    }
+    static_value_editor_.group->setVisible(true);
+}
+
+void PropertyEditor::apply_static_value_edit()
+{
+    if (node_graph_editor_ == nullptr
+        || !static_value_editor_.kind.has_value())
+    {
+        return;
+    }
+
+    orlgraph::LogicalType type;
+    switch (*static_value_editor_.kind) {
+    case orlgraph::LogicalTypeKind::Vector:
+        type = orlgraph::LogicalType::vector();
+        break;
+    case orlgraph::LogicalTypeKind::Vec4:
+        type = orlgraph::LogicalType::vec4();
+        break;
+    case orlgraph::LogicalTypeKind::Matrix:
+        type = orlgraph::LogicalType::matrix();
+        break;
+    default:
+        return;
+    }
+
+    std::vector<double> lanes;
+    lanes.reserve(static_value_editor_.fields.size());
+    for (auto* field : static_value_editor_.fields) {
+        bool ok = false;
+        const double parsed = field->text().toDouble(&ok);
+        if (!ok || !std::isfinite(parsed)) {
+            refresh();
+            return;
+        }
+        lanes.push_back(parsed);
+    }
+    if (lanes.size() != type.lanes) {
+        refresh();
+        return;
+    }
+
+    const auto result = node_graph_editor_->set_selected_static_value(
+        orlgraph::ConstantValue{std::move(type), std::move(lanes)});
+    if (!result.ok) {
+        QMessageBox::warning(this, QStringLiteral("Static Value"),
+            result.error);
+    }
+    refresh();
+}
+
+void PropertyEditor::apply_relative_xform()
+{
+    if (node_graph_editor_ == nullptr) {
+        return;
+    }
+    const auto result =
+        node_graph_editor_->apply_relative_xform_to_selected_matrix();
+    if (!result.ok) {
+        QMessageBox::warning(this, QStringLiteral("Set Relative Xform"),
+            result.error);
+    }
+    refresh();
 }
 
 bool PropertyEditor::read_vector_component(

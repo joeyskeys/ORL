@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <utility>
+#include <variant>
+#include <vector>
 
 #if defined(ORLGRAPH_HAS_IO)
 #include "graph_serialization.hpp"
@@ -958,5 +960,42 @@ TEST_CASE("staged project graphs tolerate stale content hashes",
         }));
 }
 #endif
+
+TEST_CASE("graph validation rejects aggregate lane count mismatches",
+    "[orlgraph][validation][aggregate]")
+{
+    NodeRegistry registry;
+    NodeDefinition definition;
+    definition.id = StableId{"test.static_matrix"};
+    definition.qualified_name = "test.static_matrix";
+    definition.implementation.kind = ImplementationKind::Builtin;
+    definition.operation = "static_value";
+    definition.parameters.push_back(ParameterSpec{
+        StableId{"value"}, "value", LogicalType::matrix(), true,
+        ConstantValue{LogicalType::matrix(),
+            std::vector<double>(16, 0.0)},
+        {}});
+    definition.outputs.push_back(Port{
+        StableId{"value"}, "value", PortDirection::Output,
+        PortCardinality::Scalar, LogicalType::matrix(), Domain::constant(),
+        Shape::scalar(), false, std::nullopt, {}, {}});
+    REQUIRE(registry.register_definition(std::move(definition)));
+
+    GraphModule module;
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"node"}, StableId{"test.static_matrix"}, "node",
+        {{"value", ConstantValue{
+            LogicalType::matrix(),
+            std::vector<double>{1.0, 0.0, 0.0}}}},
+        {}, InlinePolicy::Default}));
+
+    const auto result = validate(module, registry);
+    REQUIRE_FALSE(result.ok());
+    REQUIRE(std::any_of(result.diagnostics.begin(),
+        result.diagnostics.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "ORLGRAPH_AGGREGATE_VALUE";
+        }));
+}
 
 #endif

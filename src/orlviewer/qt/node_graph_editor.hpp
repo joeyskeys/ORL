@@ -44,6 +44,12 @@ struct NodeSelectionInfo {
     QString definition;
     QStringList inputs;
     QStringList outputs;
+    std::optional<orlgraph::ConstantValue> static_value;
+};
+
+struct StaticValueSetResult {
+    bool ok = false;
+    QString error;
 };
 
 // Draft Blender-style node canvas. When attached to a SceneGraphContext it
@@ -65,6 +71,9 @@ public:
     void set_stage(orlgraph::GraphStage stage);
     orlgraph::GraphStage stage() const { return stage_; }
     std::optional<NodeSelectionInfo> selected_node_info() const;
+    StaticValueSetResult set_selected_static_value(
+        const orlgraph::ConstantValue& value);
+    StaticValueSetResult apply_relative_xform_to_selected_matrix();
     void set_node_color_theme(NodeColorTheme theme);
     void set_scene_input_catalog(const SceneInputCatalog* catalog);
     void refresh_scene_inputs();
@@ -177,6 +186,9 @@ private:
     int find_control_at(const QPointF& scene) const;
     void show_find_control_popup(int control_index, const QPoint& anchor);
     void position_find_controls();
+    bool node_is_matrix_input(const Node& node) const;
+    QRectF matrix_setup_button_rect(const Node& node) const;
+    int matrix_setup_button_at(const QPointF& scene) const;
     void clear_frame_controls();
     void rebuild_frame_controls();
     void position_frame_controls();

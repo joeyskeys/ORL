@@ -254,6 +254,32 @@ orlgraph::NodeDefinition make_mesh_find_definition() {
     return definition;
 }
 
+orlgraph::NodeDefinition make_static_value_definition(
+    std::string short_name, orlgraph::LogicalType type,
+    std::vector<double> default_lanes)
+{
+    const std::string qualified_name = "orlrig.input." + short_name;
+    orlgraph::NodeDefinition definition;
+    definition.id = orlgraph::StableId{qualified_name};
+    definition.qualified_name = qualified_name;
+    definition.allowed_stages = orlgraph::GraphStageMask::All;
+    definition.implementation.kind = orlgraph::ImplementationKind::Builtin;
+    definition.parameters.push_back({
+        orlgraph::StableId{"value"}, "value", type, true,
+        orlgraph::ConstantValue{type, std::move(default_lanes)},
+        "static.value"});
+    auto value = stdlib_scalar_port("value", std::move(type));
+    value.direction = orlgraph::PortDirection::Output;
+    value.required = false;
+    value.semantic = "static.value";
+    definition.outputs.push_back(std::move(value));
+    definition.capabilities = {"builtin", "input", "static"};
+    definition.operation = "static_value";
+    definition.pure = true;
+    definition.inline_policy = orlgraph::InlinePolicy::Always;
+    return definition;
+}
+
 std::vector<orlgraph::NodeDefinition> make_input_definitions() {
     return {
         make_typed_find_definition("joint",
@@ -264,6 +290,18 @@ std::vector<orlgraph::NodeDefinition> make_input_definitions() {
             std::string{kSceneLocatorHandleSemantic}),
         make_joint_name_collection_definition(),
         make_mesh_find_definition(),
+        make_static_value_definition("matrix",
+            orlgraph::LogicalType::matrix(),
+            {1.0, 0.0, 0.0, 0.0,
+             0.0, 1.0, 0.0, 0.0,
+             0.0, 0.0, 1.0, 0.0,
+             0.0, 0.0, 0.0, 1.0}),
+        make_static_value_definition("vec3",
+            orlgraph::LogicalType::vector(),
+            {0.0, 0.0, 0.0}),
+        make_static_value_definition("vec4",
+            orlgraph::LogicalType::vec4(),
+            {0.0, 0.0, 0.0, 0.0}),
     };
 }
 

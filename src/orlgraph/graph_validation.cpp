@@ -1,14 +1,62 @@
 #include "graph_validation.hpp"
 
+#include <cmath>
 #include <map>
 #include <set>
+#include <string_view>
 #include <utility>
+#include <variant>
+#include <vector>
 
 namespace orlgraph
 {
 
 namespace
 {
+
+bool aggregate_value_ok(const ConstantValue& value, std::string* message)
+{
+    if (value.type.lanes == 0) {
+        return true;
+    }
+    const auto* floats = std::get_if<std::vector<double>>(&value.value);
+    if (floats == nullptr) {
+        if (message != nullptr) {
+            *message = "Aggregate constant must store float64 lanes";
+        }
+        return false;
+    }
+    if (floats->size() != value.type.lanes) {
+        if (message != nullptr) {
+            *message = "Aggregate constant lane count mismatch: expected "
+                + std::to_string(value.type.lanes) + ", got "
+                + std::to_string(floats->size());
+        }
+        return false;
+    }
+    for (const double lane : *floats) {
+        if (!std::isfinite(lane)) {
+            if (message != nullptr) {
+                *message = "Aggregate constant lanes must be finite";
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+bool report_aggregate_value(ValidationResult& result,
+    const ConstantValue& value, std::string_view label,
+    const StableId& node = {}, const StableId& port = {})
+{
+    std::string message;
+    if (aggregate_value_ok(value, &message)) {
+        return true;
+    }
+    result.error("ORLGRAPH_AGGREGATE_VALUE",
+        std::string{label} + ": " + message, node, port);
+    return false;
+}
 
 const Port* find_port(const NodeDefinition* definition,
     StableId port_id, bool input)
@@ -235,6 +283,9 @@ ValidationResult validate(const GraphModule& module,
                 result.error("ORLGRAPH_HANDLE_CONSTANT",
                     "Handle constants are not supported: " + port.name,
                     node_id, port.id);
+            } else if (port.default_value.has_value()) {
+                report_aggregate_value(result, *port.default_value,
+                    "Port default", node_id, port.id);
             }
         };
         for (const auto& port : definition->inputs) {
@@ -250,6 +301,10 @@ ValidationResult validate(const GraphModule& module,
                 result.error("ORLGRAPH_HANDLE_CONSTANT",
                     "Handle parameter defaults are not supported: "
                         + parameter.name,
+                    node_id);
+            } else if (parameter.default_value.has_value()) {
+                report_aggregate_value(result, *parameter.default_value,
+                    "Parameter default (" + parameter.name + ")",
                     node_id);
             }
         }
@@ -369,6 +424,9 @@ ValidationResult validate(const GraphModule& module,
                         "Node parameter has incompatible type",
                         value.type, parameter->type) + " (" + name + ")",
                     node_id);
+            } else {
+                report_aggregate_value(result, value,
+                    "Node parameter (" + name + ")", node_id);
             }
         }
 
@@ -402,6 +460,11 @@ ValidationResult validate(const GraphModule& module,
                             "Constant parameter mapping has an incompatible type",
                             mapping.constant->type, parameter->type)
                             + " (" + mapping.parameter + ")",
+                        node_id);
+                } else {
+                    report_aggregate_value(result, *mapping.constant,
+                        "Constant parameter mapping ("
+                            + mapping.parameter + ")",
                         node_id);
                 }
                 continue;
@@ -465,6 +528,9 @@ ValidationResult validate(const GraphModule& module,
         {
             result.error("ORLGRAPH_HANDLE_CONSTANT",
                 "Handle constants are not supported", {}, id);
+        } else if (input.default_value.has_value()) {
+            report_aggregate_value(result, *input.default_value,
+                "Graph input default", {}, id);
         }
     }
     for (const auto& [id, output] : module.outputs()) {
@@ -493,6 +559,9 @@ ValidationResult validate(const GraphModule& module,
         {
             result.error("ORLGRAPH_HANDLE_CONSTANT",
                 "Handle constants are not supported", {}, id);
+        } else if (output.default_value.has_value()) {
+            report_aggregate_value(result, *output.default_value,
+                "Graph output default", {}, id);
         }
     }
 

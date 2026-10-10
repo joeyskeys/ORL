@@ -108,7 +108,45 @@ void add_type_module(const orlgraph::LogicalType& type,
     }
 }
 
+std::string aggregate_constructor_name(const orlgraph::LogicalType& type) {
+    using Kind = orlgraph::LogicalTypeKind;
+    switch (type.kind) {
+    case Kind::Vector:
+    case Kind::Point:
+    case Kind::Normal:
+    case Kind::Vec4:
+    case Kind::Quaternion:
+    case Kind::Matrix:
+        return type_name(type);
+    default:
+        return {};
+    }
+}
+
 std::string literal(const orlgraph::ConstantValue& value) {
+    if (const auto* floats =
+            std::get_if<std::vector<double>>(&value.value))
+    {
+        const std::string constructor =
+            aggregate_constructor_name(value.type);
+        if (constructor.empty()
+            || (value.type.lanes != 0
+                && floats->size() != value.type.lanes))
+        {
+            return "0";
+        }
+        std::ostringstream stream;
+        stream << constructor << "(";
+        for (std::size_t index = 0; index < floats->size(); ++index) {
+            if (index != 0) {
+                stream << ", ";
+            }
+            stream << (*floats)[index];
+        }
+        stream << ")";
+        return stream.str();
+    }
+
     std::ostringstream stream;
     std::visit([&stream](const auto& item) {
         using T = std::decay_t<decltype(item)>;
@@ -127,6 +165,21 @@ std::string literal(const orlgraph::ConstantValue& value) {
         }
     }, value.value);
     return stream.str();
+}
+
+const orlgraph::ConstantValue* static_value_parameter(
+    const orlgraph::NodeInstance& node,
+    const orlgraph::NodeDefinition& definition)
+{
+    const auto found = node.parameter_values.find("value");
+    if (found != node.parameter_values.end()) {
+        return &found->second;
+    }
+    const auto* parameter = definition.parameter("value");
+    if (parameter != nullptr && parameter->default_value.has_value()) {
+        return &*parameter->default_value;
+    }
+    return nullptr;
 }
 
 const orlgraph::Connection* connection_to(
@@ -596,6 +649,32 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
                 }
                 output_expressions[node_id.value + ":"
                     + definition->outputs.front().id.value] = expression;
+            } else if (definition->operation == "static_value"
+                && !definition->outputs.empty())
+            {
+                const auto* constant =
+                    static_value_parameter(*node, *definition);
+                if (constant == nullptr) {
+                    error(result, "ORL_LOWERING_STATIC_VALUE",
+                        "Static value node has no value parameter: "
+                            + node_id.value);
+                    return result;
+                }
+                const auto* floats =
+                    std::get_if<std::vector<double>>(&constant->value);
+                if (floats == nullptr
+                    || constant->type.lanes == 0
+                    || floats->size() != constant->type.lanes
+                    || aggregate_constructor_name(constant->type).empty())
+                {
+                    error(result, "ORL_LOWERING_STATIC_VALUE",
+                        "Static value node has an invalid aggregate value: "
+                            + node_id.value);
+                    return result;
+                }
+                output_expressions[node_id.value + ":"
+                    + definition->outputs.front().id.value] =
+                    literal(*constant);
             } else if (definition->implementation.kind
                     == orlgraph::ImplementationKind::Runtime
                 && options.runtime_output_expression)

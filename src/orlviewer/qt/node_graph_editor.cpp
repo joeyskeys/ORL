@@ -30,7 +30,11 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
+
+#include <glm/gtc/matrix_inverse.hpp>
+#include <glm/mat4x4.hpp>
 
 #include "../graph_scene_inputs.hpp"
 #include "../project_serialization.hpp"
@@ -62,6 +66,45 @@ std::optional<SceneElementKind> find_element_kind(
         return SceneElementKind::Mesh;
     }
     return std::nullopt;
+}
+
+bool is_static_value_definition(std::string_view qualified_name)
+{
+    return qualified_name == "orlrig.input.matrix"
+        || qualified_name == "orlrig.input.vec3"
+        || qualified_name == "orlrig.input.vec4";
+}
+
+bool is_matrix_input_definition(std::string_view qualified_name)
+{
+    return qualified_name == "orlrig.input.matrix";
+}
+
+std::vector<double> pack_orl_matrix(const glm::mat4& matrix)
+{
+    std::vector<double> values(16, 0.0);
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            values[static_cast<std::size_t>(row * 4 + col)] =
+                static_cast<double>(matrix[col][row]);
+        }
+    }
+    return values;
+}
+
+const orlgraph::ConstantValue* resolve_static_value(
+    const orlgraph::NodeInstance& instance,
+    const orlgraph::NodeDefinition& definition)
+{
+    const auto found = instance.parameter_values.find("value");
+    if (found != instance.parameter_values.end()) {
+        return &found->second;
+    }
+    const auto* parameter = definition.parameter("value");
+    if (parameter != nullptr && parameter->default_value.has_value()) {
+        return &*parameter->default_value;
+    }
+    return nullptr;
 }
 
 } // namespace
@@ -246,6 +289,17 @@ std::optional<NodeSelectionInfo> NodeGraphEditor::selected_node_info() const
         {
             result.definition =
                 QString::fromStdString(instance->definition.value);
+            if (const auto* definition =
+                    active_registry().find(instance->definition);
+                definition != nullptr
+                && is_static_value_definition(definition->qualified_name))
+            {
+                if (const auto* value =
+                        resolve_static_value(*instance, *definition))
+                {
+                    result.static_value = *value;
+                }
+            }
         }
         break;
     case Node::Kind::GraphInput:
@@ -262,6 +316,106 @@ std::optional<NodeSelectionInfo> NodeGraphEditor::selected_node_info() const
         result.outputs.push_back(port.name);
     }
     return result;
+}
+
+StaticValueSetResult NodeGraphEditor::set_selected_static_value(
+    const orlgraph::ConstantValue& value)
+{
+    StaticValueSetResult result;
+    if (selected_node_ < 0 || selected_node_ >= nodes_.size()) {
+        result.error = QStringLiteral("No node is selected.");
+        return result;
+    }
+    const Node& node = nodes_[selected_node_];
+    if (node.kind != Node::Kind::Definition) {
+        result.error = QStringLiteral("Selected item is not a node.");
+        return result;
+    }
+
+    auto& nodes = active_graph().mutable_nodes();
+    const auto iterator = nodes.find(
+        orlgraph::StableId{node.id.toStdString()});
+    if (iterator == nodes.end()) {
+        result.error = QStringLiteral("Selected node is unavailable.");
+        return result;
+    }
+    const auto* definition =
+        active_registry().find(iterator->second.definition);
+    if (definition == nullptr
+        || !is_static_value_definition(definition->qualified_name))
+    {
+        result.error = QStringLiteral(
+            "Selected node is not a static value input.");
+        return result;
+    }
+    const auto* parameter = definition->parameter("value");
+    if (parameter == nullptr
+        || !orlgraph::is_assignable(value.type, parameter->type))
+    {
+        result.error = QStringLiteral("Value type does not match the node.");
+        return result;
+    }
+    if (value.type.lanes == 0
+        || !std::holds_alternative<std::vector<double>>(value.value)
+        || std::get<std::vector<double>>(value.value).size()
+            != value.type.lanes)
+    {
+        result.error = QStringLiteral(
+            "Value must provide the expected number of float lanes.");
+        return result;
+    }
+    for (const double lane : std::get<std::vector<double>>(value.value)) {
+        if (!std::isfinite(lane)) {
+            result.error = QStringLiteral("Value lanes must be finite.");
+            return result;
+        }
+    }
+
+    iterator->second.parameter_values["value"] = value;
+    notify_graph_changed();
+    result.ok = true;
+    return result;
+}
+
+StaticValueSetResult
+NodeGraphEditor::apply_relative_xform_to_selected_matrix()
+{
+    StaticValueSetResult result;
+    if (project_selection == nullptr) {
+        result.error = QStringLiteral("No scene selection is available.");
+        return result;
+    }
+    const auto& refs = project_selection->refs();
+    if (refs.size() != 2) {
+        result.error = QStringLiteral(
+            "Select exactly two transform objects "
+            "(first = source, second = destination).");
+        return result;
+    }
+    const auto first = project_selection->dest(refs[0]);
+    const auto second = project_selection->dest(refs[1]);
+    if (!first || !first.has_world_matrix()
+        || !second || !second.has_world_matrix())
+    {
+        result.error = QStringLiteral(
+            "Both selected objects must have a world transform.");
+        return result;
+    }
+
+    const glm::mat4 offset =
+        glm::inverse(first.world_matrix()) * second.world_matrix();
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            if (!std::isfinite(offset[col][row])) {
+                result.error = QStringLiteral(
+                    "The source transform cannot be inverted.");
+                return result;
+            }
+        }
+    }
+    return set_selected_static_value(orlgraph::ConstantValue{
+        orlgraph::LogicalType::matrix(),
+        pack_orl_matrix(offset)});
 }
 
 void NodeGraphEditor::set_node_color_theme(NodeColorTheme theme)
@@ -702,6 +856,7 @@ void NodeGraphEditor::rebuild_view()
             80.0 + static_cast<double>(index / 3) * 210.0);
         node.color = node_color_theme_.default_color();
         bool has_find_control = false;
+        bool has_matrix_setup = false;
 
         if (const auto* definition = active_registry().find(instance.definition)) {
             node.title = QString::fromStdString(definition->qualified_name);
@@ -709,6 +864,8 @@ void NodeGraphEditor::rebuild_view()
                 definition->qualified_name);
             has_find_control = find_element_kind(
                 definition->qualified_name).has_value();
+            has_matrix_setup = is_matrix_input_definition(
+                definition->qualified_name);
             for (const auto& port : definition->inputs) {
                 Port view_port;
                 view_port.id = QString::fromStdString(port.id.value);
@@ -738,7 +895,8 @@ void NodeGraphEditor::rebuild_view()
             }
         }
         const int rows = std::max(node.inputs.size(), node.outputs.size());
-        const double control_space = has_find_control ? 34.0 : 0.0;
+        const double control_space =
+            (has_find_control || has_matrix_setup) ? 34.0 : 0.0;
         node.size.setHeight(std::max(
             86.0, 42.0 + rows * 22.0 + control_space));
         restore_position(node);
@@ -1208,6 +1366,41 @@ QRectF NodeGraphEditor::find_control_rect(const Node& node) const
         rect.bottom() - 29.0,
         rect.width() - 24.0,
         22.0};
+}
+
+bool NodeGraphEditor::node_is_matrix_input(const Node& node) const
+{
+    if (node.kind != Node::Kind::Definition) {
+        return false;
+    }
+    const auto* instance = active_graph().node(
+        orlgraph::StableId{node.id.toStdString()});
+    if (instance == nullptr) {
+        return false;
+    }
+    const auto* definition =
+        active_registry().find(instance->definition);
+    return definition != nullptr
+        && is_matrix_input_definition(definition->qualified_name);
+}
+
+QRectF NodeGraphEditor::matrix_setup_button_rect(const Node& node) const
+{
+    return find_control_rect(node);
+}
+
+int NodeGraphEditor::matrix_setup_button_at(const QPointF& scene) const
+{
+    for (int index = 0; index < nodes_.size(); ++index) {
+        const Node& node = nodes_[index];
+        if (node_is_hidden(node) || !node_is_matrix_input(node)) {
+            continue;
+        }
+        if (matrix_setup_button_rect(node).contains(scene)) {
+            return index;
+        }
+    }
+    return -1;
 }
 
 int NodeGraphEditor::find_control_at(const QPointF& scene) const
@@ -2106,6 +2299,19 @@ void NodeGraphEditor::draw_node(QPainter& painter, int index) const
         painter.drawLine(
             arrow_center + QPointF{0.0, 2.0},
             arrow_center + QPointF{4.0, -2.0});
+    } else if (node_is_matrix_input(node)) {
+        const QRectF button_rect = matrix_setup_button_rect(node);
+        const QString label = QStringLiteral("Set Relative Xform");
+        const QString display = metrics.elidedText(
+            label, Qt::ElideRight,
+            static_cast<int>(std::max(0.0, button_rect.width() - 12.0)));
+        painter.setPen(QPen(
+            QColor{QStringLiteral("#3c4a5c")}, 1.0 / zoom_));
+        painter.setBrush(QColor{QStringLiteral("#1d2733")});
+        painter.drawRoundedRect(button_rect, 4.0, 4.0);
+        painter.setPen(QColor{QStringLiteral("#c5d2e2")});
+        painter.drawText(button_rect.adjusted(6.0, 0.0, -6.0, 0.0),
+            Qt::AlignCenter, display);
     }
 }
 
@@ -2201,6 +2407,19 @@ void NodeGraphEditor::mousePressEvent(QMouseEvent* event)
             if (combo != nullptr && combo->isEnabled() && combo->count() > 0) {
                 show_find_control_popup(
                     find_control, event->position().toPoint());
+            }
+            update();
+            event->accept();
+            return;
+        }
+        const int matrix_button = matrix_setup_button_at(scene);
+        if (matrix_button >= 0) {
+            select_only(matrix_button);
+            const auto applied = apply_relative_xform_to_selected_matrix();
+            if (!applied.ok) {
+                QMessageBox::warning(this,
+                    QStringLiteral("Set Relative Xform"),
+                    applied.error);
             }
             update();
             event->accept();

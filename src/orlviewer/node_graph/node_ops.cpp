@@ -229,6 +229,13 @@ bool create_node(orlgraph::GraphModule& graph, const orlgraph::NodeRegistry& reg
     instance.id = orlgraph::StableId{instance_id};
     instance.definition = definition->id;
     instance.name = instance_id;
+    for (const auto& parameter : definition->parameters) {
+        if (!parameter.default_value.has_value()) {
+            continue;
+        }
+        instance.parameter_values.emplace(
+            parameter.name, *parameter.default_value);
+    }
     if (!graph.add_node(std::move(instance), error)) {
         return false;
     }

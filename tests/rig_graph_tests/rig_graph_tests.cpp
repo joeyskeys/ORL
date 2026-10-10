@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <string>
+#include <variant>
+#include <vector>
 
 #include <catch2/catch_all.hpp>
 
@@ -88,6 +90,9 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
         "orlrig.input.find_locator",
         "orlrig.input.find_joints_by_name",
         "orlrig.input.find_mesh",
+        "orlrig.input.matrix",
+        "orlrig.input.vec3",
+        "orlrig.input.vec4",
         "orlrig.stage.computed_joints",
     };
 
@@ -95,6 +100,10 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
         const auto* definition = graph.registry.find(name);
         REQUIRE(definition != nullptr);
         const bool is_scene_input = name.rfind("orlrig.input.", 0) == 0;
+        const bool is_static_input =
+            name == "orlrig.input.matrix"
+            || name == "orlrig.input.vec3"
+            || name == "orlrig.input.vec4";
         const bool is_stage_boundary = name.rfind("orlrig.stage.", 0) == 0;
         if (is_stage_boundary) {
             REQUIRE(definition->implementation.kind
@@ -104,6 +113,42 @@ TEST_CASE("standard rig graph registers public stdlib nodes",
             REQUIRE(definition->inputs.empty());
             REQUIRE(definition->outputs.size() == 1);
             REQUIRE(definition->output("joints") != nullptr);
+            continue;
+        }
+        if (is_static_input) {
+            REQUIRE(definition->implementation.kind
+                == ImplementationKind::Builtin);
+            REQUIRE(definition->operation == "static_value");
+            REQUIRE(definition->allowed_stages == GraphStageMask::All);
+            REQUIRE(definition->inputs.empty());
+            REQUIRE(definition->outputs.size() == 1);
+            REQUIRE(definition->output("value") != nullptr);
+            REQUIRE(definition->parameter("value") != nullptr);
+            REQUIRE(definition->parameter("value")->default_value.has_value());
+            const auto& default_value =
+                *definition->parameter("value")->default_value;
+            REQUIRE(std::holds_alternative<std::vector<double>>(
+                default_value.value));
+            const auto& lanes =
+                std::get<std::vector<double>>(default_value.value);
+            if (name == "orlrig.input.matrix") {
+                REQUIRE(definition->output("value")->type
+                    == LogicalType::matrix());
+                REQUIRE(lanes.size() == 16);
+                REQUIRE(lanes[0] == 1.0);
+                REQUIRE(lanes[5] == 1.0);
+                REQUIRE(lanes[10] == 1.0);
+                REQUIRE(lanes[15] == 1.0);
+            } else if (name == "orlrig.input.vec3") {
+                REQUIRE(definition->output("value")->type
+                    == LogicalType::vector());
+                REQUIRE(lanes == std::vector<double>({0.0, 0.0, 0.0}));
+            } else {
+                REQUIRE(definition->output("value")->type
+                    == LogicalType::vec4());
+                REQUIRE(lanes
+                    == std::vector<double>({0.0, 0.0, 0.0, 0.0}));
+            }
             continue;
         }
         REQUIRE(definition->implementation.kind

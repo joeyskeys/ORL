@@ -3,6 +3,9 @@
 #if ORL_USE_QT6
 
 #include <array>
+#include <cstddef>
+#include <optional>
+#include <vector>
 
 #include <QString>
 #include <QWidget>
@@ -10,10 +13,12 @@
 #include <glm/vec3.hpp>
 
 #include "../selection.hpp"
+#include "orlgraph/orlgraph.hpp"
 
 class QGroupBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QScrollArea;
 
 namespace ORL
@@ -35,7 +40,7 @@ public:
         QWidget* parent = nullptr);
 
     void set_context(Context context) { context_ = context; }
-    void set_node_graph_editor(const NodeGraphEditor* editor) {
+    void set_node_graph_editor(NodeGraphEditor* editor) {
         node_graph_editor_ = editor;
     }
     void refresh();
@@ -58,8 +63,22 @@ private:
         std::array<QLineEdit*, 3> fields{};
     };
 
+    struct AggregateEditor {
+        QGroupBox* group = nullptr;
+        QWidget* fields_widget = nullptr;
+        std::vector<QLineEdit*> fields;
+        QPushButton* relative_button = nullptr;
+        std::optional<orlgraph::LogicalTypeKind> kind;
+        QString node_id;
+    };
+
     void refresh_scene_context();
     void refresh_node_graph_context();
+    void refresh_static_value_editor(
+        const std::optional<orlgraph::ConstantValue>& value,
+        const QString& node_id);
+    void apply_static_value_edit();
+    void apply_relative_xform();
     bool make_transform(const SelectionRef& ref,
         TransformValues& values, QString& source) const;
     bool read_vector_component(const VectorEditor& editor,
@@ -78,7 +97,7 @@ private:
     const Selection& selection_;
     ComponentManager& components_;
     SceneGraphContext* graphContext = nullptr;
-    const NodeGraphEditor* node_graph_editor_ = nullptr;
+    NodeGraphEditor* node_graph_editor_ = nullptr;
     Context context_ = Context::Scene;
     QGroupBox* selection_group_ = nullptr;
     QLabel* selection_summary_ = nullptr;
@@ -89,6 +108,7 @@ private:
     QLabel* node_id_ = nullptr;
     QLabel* node_definition_ = nullptr;
     QLabel* node_ports_ = nullptr;
+    AggregateEditor static_value_editor_;
     QGroupBox* nameGroup = nullptr;
     QLineEdit* nameField = nullptr;
     QGroupBox* transform_group_ = nullptr;

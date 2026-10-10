@@ -212,7 +212,7 @@ std::string selected_scene_object_name(const Selection& selection) {
 
 std::string constant_fingerprint(const orlgraph::ConstantValue& value) {
     std::ostringstream stream;
-    stream << value.value.index();
+    stream << value.type.canonical_name() << ':' << value.value.index();
     if (const auto* text = std::get_if<std::string>(&value.value)) {
         stream << ':' << *text;
     } else if (const auto* integer = std::get_if<std::int64_t>(
@@ -222,6 +222,28 @@ std::string constant_fingerprint(const orlgraph::ConstantValue& value) {
         stream << ':' << *floating;
     } else if (const auto* boolean = std::get_if<bool>(&value.value)) {
         stream << ':' << (*boolean ? 1 : 0);
+    } else if (const auto* floats =
+                   std::get_if<std::vector<double>>(&value.value))
+    {
+        stream << ":[";
+        for (std::size_t index = 0; index < floats->size(); ++index) {
+            if (index != 0) {
+                stream << ',';
+            }
+            stream << (*floats)[index];
+        }
+        stream << ']';
+    } else if (const auto* integers =
+                   std::get_if<std::vector<std::int64_t>>(&value.value))
+    {
+        stream << ":[";
+        for (std::size_t index = 0; index < integers->size(); ++index) {
+            if (index != 0) {
+                stream << ',';
+            }
+            stream << (*integers)[index];
+        }
+        stream << ']';
     }
     return stream.str();
 }
@@ -1529,9 +1551,19 @@ bool GraphSceneRuntime::ensure_execution_plan(
             continue;
         }
 
-        if (definition->operation == "identity") {
-            segment_nodes.push_back(node_id);
-            segment_has_orl = true;
+        if (definition->operation == "identity"
+            || definition->operation == "static_value")
+        {
+            if (contains_orl || definition->operation == "identity") {
+                const auto batch = consumer_batch(node_id);
+                if (batch.has_value() && !begin_batch(*batch)) {
+                    return false;
+                }
+                segment_nodes.push_back(node_id);
+                if (definition->operation == "identity") {
+                    segment_has_orl = true;
+                }
+            }
             continue;
         }
 

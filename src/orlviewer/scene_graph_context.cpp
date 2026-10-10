@@ -5,6 +5,7 @@
 #include <functional>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace ORL
 {
@@ -157,6 +158,36 @@ std::size_t SceneGraphContext::evaluation_signature(
             if (const auto* text = std::get_if<std::string>(&value.value)) {
                 signature ^= std::hash<std::string>{}(*text)
                     + (signature << 6) + (signature >> 2);
+            } else if (const auto* integer =
+                           std::get_if<std::int64_t>(&value.value))
+            {
+                signature ^= std::hash<std::int64_t>{}(*integer)
+                    + (signature << 6) + (signature >> 2);
+            } else if (const auto* floating =
+                           std::get_if<double>(&value.value))
+            {
+                signature ^= std::hash<double>{}(*floating)
+                    + (signature << 6) + (signature >> 2);
+            } else if (const auto* boolean =
+                           std::get_if<bool>(&value.value))
+            {
+                signature ^= std::hash<bool>{}(*boolean)
+                    + (signature << 6) + (signature >> 2);
+            } else if (const auto* floats =
+                           std::get_if<std::vector<double>>(&value.value))
+            {
+                for (const double lane : *floats) {
+                    signature ^= std::hash<double>{}(lane)
+                        + (signature << 6) + (signature >> 2);
+                }
+            } else if (const auto* integers =
+                           std::get_if<std::vector<std::int64_t>>(
+                               &value.value))
+            {
+                for (const std::int64_t lane : *integers) {
+                    signature ^= std::hash<std::int64_t>{}(lane)
+                        + (signature << 6) + (signature >> 2);
+                }
             }
         }
     }

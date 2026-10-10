@@ -4,6 +4,9 @@
 
 #include <orlgraph/orlgraph.hpp>
 
+#include <string>
+#include <vector>
+
 #include "orl_graph_exec.hpp"
 #include "orl_graph_lowering.h"
 #include "orlrig/abi.hpp"
@@ -837,6 +840,114 @@ TEST_CASE("graph specialization folds union handle is branch",
     const auto result = execution.evaluate();
     REQUIRE(result.has_value());
     REQUIRE(*result == 1);
+}
+
+TEST_CASE("static value nodes lower to aggregate constructors",
+    "[orlgraph][lowering][static_value]")
+{
+    NodeRegistry registry;
+    REQUIRE(orlrig::register_rig_node_definitions(registry));
+
+    NodeDefinition matrix_sink;
+    matrix_sink.id = StableId{"test.use_matrix"};
+    matrix_sink.qualified_name = "test.use_matrix";
+    matrix_sink.implementation.kind = ImplementationKind::OrlFunction;
+    matrix_sink.implementation.function = "use_matrix";
+    matrix_sink.inputs.push_back(Port{
+        StableId{"offset"}, "offset", PortDirection::Input,
+        PortCardinality::Scalar, LogicalType::matrix(), Domain::constant(),
+        Shape::scalar(), true, std::nullopt, {}, {}});
+    matrix_sink.outputs.push_back(Port{
+        StableId{"status"}, "status", PortDirection::Output,
+        PortCardinality::Scalar, LogicalType::int64(), Domain::constant(),
+        Shape::scalar(), false, std::nullopt, {}, {}});
+    REQUIRE(registry.register_definition(std::move(matrix_sink)));
+
+    NodeDefinition vector_sink;
+    vector_sink.id = StableId{"test.use_vector"};
+    vector_sink.qualified_name = "test.use_vector";
+    vector_sink.implementation.kind = ImplementationKind::OrlFunction;
+    vector_sink.implementation.function = "use_vector";
+    vector_sink.inputs.push_back(Port{
+        StableId{"offset"}, "offset", PortDirection::Input,
+        PortCardinality::Scalar, LogicalType::vector(), Domain::constant(),
+        Shape::scalar(), true, std::nullopt, {}, {}});
+    vector_sink.outputs.push_back(Port{
+        StableId{"status"}, "status", PortDirection::Output,
+        PortCardinality::Scalar, LogicalType::int64(), Domain::constant(),
+        Shape::scalar(), false, std::nullopt, {}, {}});
+    REQUIRE(registry.register_definition(std::move(vector_sink)));
+
+    GraphModule module;
+    module.module_id = "lowering.static_value";
+    REQUIRE(module.add_output(InterfacePort{
+        StableId{"status"}, "status", PortDirection::Output,
+        LogicalType::int64(), Domain::constant(), Shape::scalar(), true,
+        std::nullopt, false, "status", {}, {}}));
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"offset"}, StableId{"orlrig.input.matrix"}, "offset",
+        {{"value", ConstantValue{
+            LogicalType::matrix(),
+            std::vector<double>{
+                1.0, 0.0, 0.0, 2.0,
+                0.0, 1.0, 0.0, 3.0,
+                0.0, 0.0, 1.0, 4.0,
+                0.0, 0.0, 0.0, 1.0}}}},
+        {}, InlinePolicy::Default}));
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"use"}, StableId{"test.use_matrix"}, "use",
+        {}, {}, InlinePolicy::Default}));
+    REQUIRE(module.add_connection(Connection{
+        Endpoint::node_port(StableId{"offset"}, StableId{"value"}),
+        Endpoint::node_port(StableId{"use"}, StableId{"offset"})}));
+    REQUIRE(module.add_connection(Connection{
+        Endpoint::node_port(StableId{"use"}, StableId{"status"}),
+        Endpoint::graph_output(StableId{"status"})}));
+
+    const auto lowered = orlcomp::OrlGraphLowerer{}.lower(module, registry,
+        orlcomp::GraphLoweringOptions{
+            .entry_function = "static_matrix_graph",
+            .source_preamble = "int use_matrix(matrix offset) { return 1; }",
+            .emit_module_uses = false,
+        });
+    REQUIRE(lowered.ok);
+    REQUIRE(lowered.source.find(
+        "use_matrix(matrix(1, 0, 0, 2, 0, 1, 0, 3, 0, 0, 1, 4, 0, 0, 0, 1))")
+        != std::string::npos);
+
+    GraphModule vector_module;
+    vector_module.module_id = "lowering.static_vec3";
+    REQUIRE(vector_module.add_output(InterfacePort{
+        StableId{"status"}, "status", PortDirection::Output,
+        LogicalType::int64(), Domain::constant(), Shape::scalar(), true,
+        std::nullopt, false, "status", {}, {}}));
+    REQUIRE(vector_module.add_node(NodeInstance{
+        StableId{"offset"}, StableId{"orlrig.input.vec3"}, "offset",
+        {{"value", ConstantValue{
+            LogicalType::vector(),
+            std::vector<double>{1.25, -2.5, 3.75}}}},
+        {}, InlinePolicy::Default}));
+    REQUIRE(vector_module.add_node(NodeInstance{
+        StableId{"use"}, StableId{"test.use_vector"}, "use",
+        {}, {}, InlinePolicy::Default}));
+    REQUIRE(vector_module.add_connection(Connection{
+        Endpoint::node_port(StableId{"offset"}, StableId{"value"}),
+        Endpoint::node_port(StableId{"use"}, StableId{"offset"})}));
+    REQUIRE(vector_module.add_connection(Connection{
+        Endpoint::node_port(StableId{"use"}, StableId{"status"}),
+        Endpoint::graph_output(StableId{"status"})}));
+    const auto vector_lowered = orlcomp::OrlGraphLowerer{}.lower(
+        vector_module, registry,
+        orlcomp::GraphLoweringOptions{
+            .entry_function = "static_vector_graph",
+            .source_preamble =
+                "int use_vector(vector offset) { return 1; }",
+            .emit_module_uses = false,
+        });
+    REQUIRE(vector_lowered.ok);
+    REQUIRE(vector_lowered.source.find(
+        "use_vector(vector(1.25, -2.5, 3.75))")
+        != std::string::npos);
 }
 
 TEST_CASE("CUDA graph execution matches CPU when a device is available",
