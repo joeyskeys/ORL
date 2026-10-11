@@ -13,6 +13,8 @@ layout(std430, binding = 3) buffer HeadBuffer {
 struct ABufferNode {
     uint vertex_id;
     uint next;
+    float depth;
+    uint reserved;
 };
 
 layout(std430, binding = 4) buffer NodePool {
@@ -41,5 +43,6 @@ void main() {
     }
     const uint head_index = pixel.y * head_buffer.width + pixel.x;
     node_pool.nodes[node_index].vertex_id = joint_id;
+    node_pool.nodes[node_index].depth = gl_FragCoord.z;
     node_pool.nodes[node_index].next = atomicExchange(head_buffer.heads[head_index], node_index);
 }

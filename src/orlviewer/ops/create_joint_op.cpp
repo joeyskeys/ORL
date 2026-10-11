@@ -120,7 +120,7 @@ void CreateJointOp::place(double cursor_x, double cursor_y) {
         return;
     }
     last_in_chain = id;
-    selection.set(SelectionRef::joint(id));
+    selection.replace(SelectionRef::joint(id));
     if (const auto* created = components.find(id)) {
         std::cout << "Created '" << created->name << "'\n";
     }

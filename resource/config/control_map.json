@@ -283,6 +283,17 @@
       }
     },
     {
+      "op": "select",
+      "scope": "panel",
+      "panel": "viewport",
+      "input": {
+        "type": "mouse_button",
+        "button": "left",
+        "action": "press",
+        "mods": ["shift"]
+      }
+    },
+    {
       "op": "move",
       "scope": "panel",
       "panel": "viewport",

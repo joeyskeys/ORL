@@ -19,6 +19,7 @@
 #include "vk_ins/shader_module_pack.hpp"
 #include "vp/feature.hpp"
 #include "vp/joint_feature.hpp"
+#include "vp/picking.hpp"
 
 namespace ORL
 {
@@ -64,13 +65,18 @@ public:
         }
 
         if (pick_pending && last_render_serial >= pending_serial) {
-            std::vector<uint32_t> ids;
+            std::vector<vkkk::ABufferHit> raw_hits;
+            std::vector<GpuPickHit> hits;
             bool overflow = false;
-            if (context.read_abuffer_pixel(kABufferName, last_image_index, pending_x, pending_y,
-                    ids, overflow)
-                && hit_callback)
-            {
-                hit_callback(ids, overflow);
+            context.read_abuffer_pixel(
+                kABufferName, last_image_index, pending_x, pending_y,
+                raw_hits, overflow);
+            hits.reserve(raw_hits.size());
+            for (const auto& hit : raw_hits) {
+                hits.push_back(GpuPickHit{hit.vertex_id, hit.depth});
+            }
+            if (hit_callback) {
+                hit_callback(pending_request_id, hits, overflow);
             }
             pick_pending = false;
         }
@@ -83,7 +89,11 @@ public:
                 pending_x, pending_y))
         {
             pending_serial = frame.serial;
+            pending_request_id = requested_request_id;
             pick_pending = true;
+        }
+        else if (hit_callback) {
+            hit_callback(requested_request_id, {}, false);
         }
         want_pick = false;
     }
@@ -127,6 +137,10 @@ public:
                 joint_count = static_cast<std::uint32_t>(joints.size());
             }
         }
+        rendered_joint_ids = components.packed_joint_ids();
+        if (rendered_joint_ids.size() > joint_count) {
+            rendered_joint_ids.resize(joint_count);
+        }
 
         if (have_joints) {
             PointSizeUBO size = point_size;
@@ -152,17 +166,24 @@ public:
 
     bool available() const { return ready && enabled; }
 
-    bool request(const vkkk::InputEvent& event) {
+    std::uint64_t request(const vkkk::InputEvent& event) {
         if (!available()) {
-            return false;
+            return 0;
         }
         pick_event = event;
+        requested_request_id = ++next_request_id;
         want_pick = true;
-        return true;
+        return requested_request_id;
     }
 
-    void set_hit_callback(std::function<void(const std::vector<uint32_t>&, bool)> callback) {
+    void set_hit_callback(std::function<void(
+        std::uint64_t, const std::vector<GpuPickHit>&, bool)> callback) {
         hit_callback = std::move(callback);
+    }
+
+    ComponentId resolve_joint_index(std::uint32_t index) const {
+        return index < rendered_joint_ids.size()
+            ? rendered_joint_ids[index] : ComponentId{};
     }
 
     PointSizeUBO point_size{};
@@ -227,7 +248,9 @@ private:
     const ComponentManager& components;
     const vkkk::Camera& camera;
     std::filesystem::path shader_dir;
-    std::function<void(const std::vector<uint32_t>&, bool)> hit_callback;
+    std::function<void(
+        std::uint64_t, const std::vector<GpuPickHit>&, bool)> hit_callback;
+    std::vector<ComponentId> rendered_joint_ids;
     uint32_t nodes_per_pixel = 4;
     uint32_t pending_x = 0;
     uint32_t pending_y = 0;
@@ -235,6 +258,9 @@ private:
     uint64_t pending_serial = 0;
     uint64_t last_render_serial = 0;
     uint64_t current_serial = 0;
+    uint64_t next_request_id = 0;
+    uint64_t requested_request_id = 0;
+    uint64_t pending_request_id = 0;
     vkkk::InputEvent pick_event;
     bool want_pick = false;
     bool pick_pending = false;
