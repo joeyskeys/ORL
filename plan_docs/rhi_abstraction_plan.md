@@ -1,15 +1,39 @@
-# ORL thin graphics adapter for vkkk and mt
+# ORL statically selected thin graphics adapter for vkkk and mt
 
 ## Status and scope
 
-Status: proposed. This document is the design and migration plan only. The
-current change intentionally does not modify the viewer implementation.
+Status: implementation in progress. The static contract, configure-time
+selection, and first adapter targets are now being introduced. The legacy
+viewer feature graph is still vkkk/Vulkan-specific, so this document
+continues to distinguish the completed foundation from the remaining viewer
+migration work.
+
+The current implementation slice provides:
+
+- `orl_rhi_contracts`, a header-only static adapter concept with value
+  contracts, opaque mesh tokens, frame state, capabilities, and structured
+  status results;
+- `ORL_RHI_BACKEND=AUTO|VKKK|MT`, resolved by CMake into one generated
+  configuration header and one `SelectedAdapter` alias;
+- an `orl_rhi_vkkk` adapter that owns a vkkk context, fixed-color pipeline,
+  indexed mesh resources, frame lifecycle, clear pass, resize, and draw
+  submission;
+- an `orl_rhi_mt` adapter that owns an offscreen Metal surface, command
+  buffers, clear pass, and host-visible indexed mesh buffers;
+- a backend-independent compile/conformance probe.
+
+The mt slice deliberately reports indexed draw submission as unsupported until
+its logical MSL pipeline registration is added. It still validates the
+device/surface/resource ownership boundary; it does not claim mesh rendering
+parity yet. The existing interactive viewer remains enabled only for the VKKK
+configuration while its native feature graph is migrated to the selected
+adapter in later phases.
 
 The goal is to let `orl_viewer` use one small set of ORL-owned graphics calls
 while keeping graphics-resource ownership inside the existing libraries:
 
 ```text
-orl_viewer
+orl_viewer<SelectedAdapter>
     |
     v
 ORL thin RHI/adapter contract
@@ -22,6 +46,9 @@ vkkk resources/scene       mt resources/scene
     |                        |
   Vulkan                   Metal
 ```
+
+`SelectedAdapter` is resolved while configuring and compiling ORL. The final
+viewer contains one concrete adapter, not a runtime choice between vkkk and mt.
 
 The first supported configurations should be:
 
@@ -38,6 +65,31 @@ The word "backend" is relative to ORL: vkkk and mt are backend integrations
 for the viewer even though they are themselves wrappers over Vulkan and Metal.
 The adapter must preserve useful native capabilities instead of reducing both
 libraries to an accidental lowest common denominator.
+
+### Compile-time backend policy
+
+Backend selection is a build property, not a runtime setting:
+
+1. CMake resolves `ORL_RHI_BACKEND=AUTO` to `VKKK` or `MT` from the target
+   platform.
+2. CMake generates one selected-backend configuration header or target alias.
+3. `orl_viewer` is compiled against the concrete selected adapter through a
+   type alias or a class/template parameter.
+4. Only the selected adapter sources, native include paths, libraries, and
+   shader assets enter the build graph.
+
+The common RHI contract must use static dispatch. It should use identical
+concrete method surfaces, concepts, traits, or compile-time aliases rather
+than a virtual `IRhiBackend` base. It must not use a runtime backend enum,
+backend registry, plugin loader, `std::variant<VkkkAdapter, MtAdapter>`, or a
+runtime factory that links both implementations.
+
+Static selection removes the unselected backend and runtime dispatcher from
+the final binary. It does not remove the code required by the selected
+adapter or by the selected vkkk/mt library. Runtime capability checks are
+still allowed for features that depend on the actual GPU or OS; those checks
+choose a path inside the already-selected backend and never switch to the
+other graphics library.
 
 ## 1. Current boundary and constraints
 
@@ -92,6 +144,8 @@ path.
    graphics concepts merely to make the two libraries look identical.
 8. Enable adapter-level and offscreen tests without requiring a window for
    every viewer behavior.
+9. Make backend dispatch compile-time and ensure the unselected backend is not
+   compiled or linked into the viewer.
 
 ### Non-goals for the first implementation
 
@@ -101,6 +155,8 @@ path.
   `Viewport` implementation that duplicates vkkk/mt ownership.
 - Do not expose a second generic command-encoder or resource-lifetime system
   in the thin adapter.
+- Do not add runtime backend selection, virtual backend dispatch, or a
+  dual-backend binary. Changing backend requires a separate configure/build.
 - Do not rewrite the ORL compiler, graph IR, component store, or rigging
   algorithms as part of the graphics migration.
 - Do not port CUDA execution to Metal under the name of RHI work.
@@ -123,6 +179,11 @@ The important design rule is ownership:
   camera/navigation state, and viewer workflow;
 - the RHI only translates the viewer's required calls between those owners.
 
+The dispatch boundary is compile-time. `orl_viewer_core` should be written
+against `SelectedAdapter` or be instantiated with the selected adapter type.
+The adapter contract is a common static method surface; it is not a base class
+whose methods are called through a vtable.
+
 Use separate targets/namespaces with one-way dependencies:
 
 ```text
@@ -142,6 +203,9 @@ The exact target names can change, but these rules must remain:
 - RHI headers contain only small value types, opaque tokens, call interfaces,
   capability records, and structured results. They do not contain a second
   graphics-resource class hierarchy.
+- RHI calls are statically dispatched through the selected concrete adapter.
+  A common header may select one implementation with a generated configuration
+  header, but it must not include both implementations in the same target.
 - Adapter implementations may include vkkk, Vulkan, mt, Metal, Swift
   generated headers, and host libraries internally.
 - Viewer domain code may include RHI headers and ORL domain headers, but not
@@ -166,6 +230,12 @@ These are calls and opaque tokens, not ORL-owned replacements for vkkk or mt
 objects. A token may identify an adapter-owned scene object, mesh, material,
 pipeline, or readback request, but the adapter decides how it is allocated,
 stored, updated, synchronized, and destroyed.
+
+The call surface should be usable by a class template or concrete selected
+adapter without virtual dispatch. Backend-specific operations may be exposed
+through statically selected extension traits or `if constexpr` paths. Runtime
+capability values may still reject an operation or select a fallback inside
+the selected adapter.
 
 Do not initially define generic ORL `Buffer`, `Texture`, `Pipeline`,
 `CommandEncoder`, `Scene`, or `Viewport` classes. If a viewer operation needs
@@ -265,6 +335,11 @@ capability-gated and must not enlarge the common contract unless the viewer
 has a demonstrated need.
 
 ## 4. Backend adapter responsibilities
+
+`VkkkAdapter` and `MtAdapter` are separate concrete implementations of the
+same static contract. They are not subclasses of a runtime-polymorphic RHI
+interface. The selected target provides the only adapter type visible to the
+viewer build.
 
 ### 4.1 vkkk/Vulkan backend
 
@@ -435,11 +510,15 @@ ORL_RHI_BACKEND = AUTO | VKKK | MT
 Recommended selection rules:
 
 - `AUTO` chooses `MT` on Apple platforms and `VKKK` elsewhere.
+- CMake resolves `AUTO` to one canonical value during configuration; there is
+  no `AUTO` branch in the final executable.
 - An explicit unavailable backend fails during configuration with an
   actionable diagnostic.
 - `MT` is accepted only on supported macOS/toolchain configurations.
 - `VKKK` is not added to the build when `MT` is selected.
 - `MT` is not required by non-macOS builds.
+- Switching between vkkk and mt requires reconfiguring the build directory.
+  The running viewer cannot switch backends.
 
 Use an installed mt package as the normal dependency:
 
@@ -456,8 +535,8 @@ policy rather than an absolute path.
 The build should eventually produce:
 
 - `orl_rhi_contracts` as a small header-only/value-contract target;
-- `orl_rhi_vkkk` as an adapter over vkkk, only when selected;
-- `orl_rhi_mt` as an adapter over mt, only when selected;
+- one selected adapter target, either `orl_rhi_vkkk` over vkkk or
+  `orl_rhi_mt` over mt;
 - `orl_viewer_core` for viewer/domain code;
 - `orl_viewer` as the platform executable and host composition target.
 
@@ -465,6 +544,36 @@ The build should eventually produce:
 implement a scene manager, or own a command encoder. Keep resource/shader
 installation and compile definitions backend-specific. Only the selected
 adapter should receive its native include paths and link libraries.
+
+The CMake target graph must enforce static selection:
+
+1. Resolve the backend and generate `orlviewer/rhi/rhi_config.hpp` with the selected
+   backend tag and selected-adapter alias.
+2. Add only the selected adapter's source files with `target_sources`.
+3. Link only the selected native target and its required runtime libraries.
+4. Exclude the other adapter's source files, include directories, generated
+   headers, shader assets, and link dependencies.
+5. Expose one `orl_rhi_selected` target alias so viewer CMake does not need
+   runtime or platform branching.
+
+The configuration header may contain a compile-time selection such as:
+
+```cpp
+namespace ORL::Rhi {
+using SelectedAdapter = backend::MtAdapter; // generated for this build
+}
+```
+
+The vkkk build generates the corresponding vkkk alias instead. The actual
+adapter type must be included only by the selected target. Do not implement
+the alias as a conditional owning both backend types.
+
+`orl_rhi_contracts` should remain header-only and contain no runtime service
+object. When a call can be expressed as a small inline/static operation, the
+compiler may eliminate the abstraction completely. The selected adapter still
+contributes the translation code required to call vkkk or mt; the goal is to
+avoid an additional generic dispatcher and all unselected backend code, not to
+pretend that the selected integration has zero implementation cost.
 
 ## 7. Implementation phases
 
@@ -478,26 +587,31 @@ adapter should receive its native include paths and link libraries.
    - ORL domain or host behavior that should not enter RHI.
 3. Decide the small result/error/capability and coordinate contracts. Avoid
    designing generic resource classes before a call site requires one.
-4. Build a minimal C++ consumer against the installed mt package on macOS.
-5. Confirm a vkkk adapter and an mt adapter can both provide a frame and
+4. Define the static adapter contract and generated selected-adapter alias.
+   Verify that viewer code can compile against either concrete type without a
+   virtual backend base or a dual-backend variant.
+5. Build a minimal C++ consumer against the installed mt package on macOS.
+6. Confirm a vkkk adapter and an mt adapter can both provide a frame and
    display a test object using their native resource/scene APIs.
-6. Record unresolved host, shader, and compute interop decisions in this
+7. Record unresolved host, shader, and compute interop decisions in this
    document rather than hiding them in backend adapters.
 
 **Exit condition:** the proposed thin contract is derived from viewer calls,
 does not duplicate a graphics resource model, and both dependencies are
-buildable through explicit configuration.
+buildable through explicit configuration with exactly one selected adapter.
 
 ### Phase 1: thin contract and vkkk adapter
 
 1. Add the small ORL call contract, opaque adapter tokens, errors,
    capabilities, frame state, and backend-neutral input values.
-2. Wrap the current vkkk context/window/frame lifecycle without moving vkkk
+2. Add the generated selected-adapter alias and instantiate viewer code with
+   the concrete vkkk adapter; do not add a virtual backend interface.
+3. Wrap the current vkkk context/window/frame lifecycle without moving vkkk
    resource ownership into ORL.
-3. Route a clear pass and one mesh feature through the adapter.
-4. Add a mock/offscreen contract test only for call ordering/results where
+4. Route a clear pass and one mesh feature through the adapter.
+5. Add a mock/offscreen contract test only for call ordering/results where
    practical; keep resource behavior tested by vkkk.
-5. Keep all existing vkkk behavior working before broad feature migration.
+6. Keep all existing vkkk behavior working before broad feature migration.
 
 **Exit condition:** the viewer can start and render the initial scene mesh via
 ORL calls while vkkk remains the owner of the actual scene and GPU resources.
@@ -522,13 +636,15 @@ introduced.
 
 1. Link the mt package and generated C++ header through a dedicated backend
    adapter target.
-2. Translate the thin lifecycle and scene-display calls to mt's
+2. Configure a separate build with `SelectedAdapter=MtAdapter`; do not link
+   the vkkk adapter or its Vulkan dependencies.
+3. Translate the thin lifecycle and scene-display calls to mt's
    `Device`/`CommandQueue`/surface/scene/resource APIs.
-3. Render a clear, a test mesh, and a depth-tested scene object using mt-owned
+4. Render a clear, a test mesh, and a depth-tested scene object using mt-owned
    resources.
-4. Add resize, drawable-loss, completion/error, and adapter-lifetime tests;
+5. Add resize, drawable-loss, completion/error, and adapter-lifetime tests;
    rely on mt for native resource-lifetime behavior.
-5. Establish the macOS host/input policy before porting the full editor UI.
+6. Establish the macOS host/input policy before porting the full editor UI.
 
 **Exit condition:** a macOS build opens a Metal-backed viewport and renders a
 scene through ORL calls and mt-owned resources without any vkkk/Vulkan
@@ -568,9 +684,11 @@ documented capability-dependent fallbacks.
 3. Run mt Swift/C++ package and Metal-device tests on macOS.
 4. Add a capability matrix covering device, shader, resource, picking, and
    host integration paths.
-5. Remove compatibility shims after all viewer call sites use the thin
+5. Build each backend in a separate configuration and verify that the
+   unselected adapter target and native dependency are absent.
+6. Remove compatibility shims after all viewer call sites use the thin
    adapter contract.
-6. Update `docs/orlviewer.md` and build documentation to describe the final
+7. Update `docs/orlviewer.md` and build documentation to describe the final
    ownership and backend model.
 
 ## 8. Verification requirements
@@ -591,6 +709,21 @@ Test actual buffer, texture, pipeline, scene, cache, synchronization, and
 resource-lifetime behavior through the vkkk and mt native test suites and
 adapter integration tests. Do not recreate those resource tests in an ORL
 resource implementation that does not own the resources.
+
+### Static dispatch and binary tests
+
+Verify:
+
+- `SelectedAdapter` resolves to exactly one concrete type for each configure;
+- viewer code compiles against both concrete adapters in separate builds;
+- no virtual backend base, runtime backend registry, dual-backend variant, or
+  runtime backend factory is required;
+- the vkkk build does not link mt, Metal, or the Swift runtime;
+- the mt build does not link vkkk or Vulkan;
+- the unselected adapter sources and native dependencies are absent from the
+  generated build graph;
+- runtime capability checks only select paths inside the selected backend and
+  never change the selected library.
 
 ### Viewer behavior tests
 
@@ -616,6 +749,9 @@ The final build matrix should include:
 - explicit unavailable-backend configuration failure;
 - Debug and Release where the mt toolchain supports both;
 - the existing ORL graph/rig/compiler test targets independent of a window.
+
+Each backend is a separate configure/build job. The matrix is not a
+requirement to ship one executable containing both graphics libraries.
 
 ## 9. Risks and decisions to resolve early
 
@@ -653,15 +789,25 @@ it becomes a second graphics library or a second viewer. Keep the contract
 call-oriented and viewer-focused: ORL owns logical workflow, while vkkk and mt
 own actual graphics objects and native scheduling.
 
+### Static selection trade-off
+
+Compile-time selection prevents runtime backend switching and means a backend
+change requires a new configure/build. This is intentional. It keeps the
+final binary small and predictable, while runtime GPU capability checks still
+handle differences between Metal devices or Vulkan devices within the selected
+backend.
+
 ## 10. First implementation milestone
 
 The first code milestone should be deliberately small:
 
-1. `RhiAdapter`, `RhiFrameState`, `RhiCapabilities`, opaque display tokens,
-   logical shader IDs, and backend-neutral input/event values;
-2. vkkk adapter for clear + indexed mesh + resize using vkkk-owned resources;
-3. mt adapter for offscreen + AppKit/MTKView clear + indexed mesh + resize
-   using mt-owned resources;
+1. `RhiAdapter`, `RhiFrameState`, `RhiCapabilities`, `SelectedAdapter`, opaque
+   display tokens, logical shader IDs, and backend-neutral input/event values;
+2. a vkkk build of the static contract for clear + indexed mesh + resize using
+   vkkk-owned resources;
+3. a separate mt build of the static contract for offscreen clear, resize,
+   and mt-owned indexed mesh buffer upload; add indexed draw/pipeline
+   registration before declaring the Metal vertical slice complete;
 4. one `SceneMeshFeature` implemented through thin adapter calls;
 5. one cross-backend lifecycle/display/depth conformance test;
 6. no ORL scene/resource manager, solver, CUDA, picking, or full UI rewrite
@@ -677,6 +823,8 @@ The RHI migration is complete when:
 
 - the ORL adapter contract owns no graphics resources, scene manager, shader
   compiler, pipeline cache, or native command encoder;
+- backend selection resolves to one concrete adapter at configure time, with no
+  runtime backend dispatcher or dual-backend binary;
 - vkkk owns the Vulkan graphics objects and mt owns the Metal graphics objects,
   including their resource lifetime and native caches;
 - viewer/domain headers contain no vkkk, Vulkan, Metal, Swift, Qt, or GLFW

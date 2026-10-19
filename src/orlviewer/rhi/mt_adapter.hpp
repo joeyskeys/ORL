@@ -1,0 +1,41 @@
+#pragma once
+
+#include <memory>
+
+#include "adapter.hpp"
+
+namespace ORL::Rhi {
+
+class MtAdapter final {
+public:
+    MtAdapter();
+    ~MtAdapter();
+
+    MtAdapter(const MtAdapter&) = delete;
+    MtAdapter& operator=(const MtAdapter&) = delete;
+    MtAdapter(MtAdapter&&) noexcept;
+    MtAdapter& operator=(MtAdapter&&) noexcept;
+
+    static constexpr std::string_view backend_name() noexcept {
+        return "mt";
+    }
+
+    Status initialize(const AdapterConfig& config);
+    Capabilities capabilities() const noexcept;
+    Status begin_frame(FrameState& frame);
+    Status resize(Extent2D extent);
+    Status upload_indexed_mesh(
+        MeshToken& token,
+        const IndexedMeshUpload& upload);
+    Status draw_indexed(MeshToken mesh, std::uint32_t index_count);
+    Status end_frame(FrameState& frame, bool present);
+    void wait_idle() noexcept;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+static_assert(StaticAdapter<MtAdapter>);
+
+} // namespace ORL::Rhi
