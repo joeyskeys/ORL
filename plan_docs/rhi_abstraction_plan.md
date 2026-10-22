@@ -26,12 +26,40 @@ The current implementation slice provides:
   camera state, and shutdown. `ORL::ViewportHost` (`vp/viewport_host.hpp`)
   replaces `vkkk::vp::Viewport` and drives frames through adapter calls.
 
-Viewer features still record native vkkk commands. They are attached to
-`ViewportHost` and recorded through `VkkkPassHooks` (`rhi/vkkk_native.hpp`),
-a vkkk-only bridge outside the `StaticAdapter` contract, in the same
-Picking -> Scene -> ScreenOverlay order as before. Operations and Qt panels
-receive the adapter-owned native window/context from the same bridge. Phase 2
-removes this bridge feature by feature.
+Viewport features are now `RhiFeature`s that only call the selected adapter.
+`rhi/rhi_display.hpp` defines the display families and composes them into
+`ViewerDisplayAdapter`. Each family is a `prepare_*` call made from attach and
+a `draw_*` call made while a frame is active:
+
+| Feature | Adapter family |
+|---|---|
+| `SceneMeshFeature` | `prepare_scene_meshes` / `draw_scene_meshes` (Phong, x-ray, highlight wireframe) |
+| `JointFeature` | `prepare_joints` / `upload_device_joints` / `draw_joints` |
+| `ControllerFeature` | `register_shape` + `prepare_controllers` / `draw_controller` |
+| `LocatorFeature` | `register_shape` + `prepare_locators` / `draw_locators` |
+| `OrthoGridFeature` | `prepare_ortho_grid` / `draw_ortho_grid` |
+| `TransformGuideFeature` | `register_shape` + `prepare_overlay_lines` / `draw_overlay_line` |
+| `RuntimeHudFeature` | `prepare_status_text` / `draw_status_text` (Qt status bar or ImGui HUD) |
+| `WorldGridFeature`, `FrameAxisFeature` | `prepare_world_grid` / `draw_world_grid`, `prepare_frame_axis` / `draw_frame_axis` |
+| Mesh, joint, and rig picking | `prepare_pick_layer`, `map_cursor`, `draw_*_pick`, `read_pick` |
+| `MeshCsrFeature`, `AutoWeightFeature` | `prepare_mesh_adjacency` / `build_mesh_adjacency` |
+
+Features keep the semantic logic: what to draw, colors, selection, preview
+joints, pick request state (`vp/picking.hpp`), and pick token resolution. The
+vkkk adapter owns the shaders, pipelines, buffers, A-buffers, and the hosted
+vkkk grid, frame-axis, and HUD helpers. It queues each draw as a command that
+`end_frame` replays inside the adapter-owned picking, scene, and overlay
+passes, in submission order. The mt adapter reports these families as
+unsupported until its MSL pipelines exist. Shared rig shapes are registered
+by name (`vp/rig_shapes.hpp`), so display and picking reuse one copy.
+
+`SolverFeature` and `DeformerFeature` still record native vkkk work.
+`GraphSceneRuntime` deforms adapter-owned meshes through vkkk/CUDA interop,
+which belongs to Phase 5. They run through `VkkkPassHooks`
+(`rhi/vkkk_native.hpp`), a vkkk-only bridge outside the `StaticAdapter`
+contract, which `ViewportHost` installs only for phases that contain native
+features. Operations and Qt panels still receive the adapter-owned native
+window and context from the same bridge.
 
 The mt slice deliberately reports indexed draw submission as unsupported until
 its logical MSL pipeline registration is added. It still validates the
