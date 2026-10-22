@@ -4,6 +4,7 @@
 // translation units; never included by viewer code.
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -20,6 +21,7 @@
 
 #include "built_in_shader/common.h"
 #include "concepts/camera.h"
+#include "concepts/point.h"
 #include "vp/frame_axis.hpp"
 #include "vp/grid.hpp"
 #if !ORL_USE_QT6
@@ -136,6 +138,19 @@ inline float point_size_for(const vkkk::Context& context, float requested) {
     return std::clamp(requested, context.point_size_range[0], context.point_size_range[1]);
 }
 
+// A single-vertex point set; shaders that pull records from an SSBO draw it
+// once per record.
+inline bool load_dummy_points(vkkk::Context& context, const std::string& name) {
+    if (context.points.contains(name)) {
+        return true;
+    }
+    const std::array<float, 3> vertex{0.0f, 0.0f, 0.0f};
+    vkkk::Points points({vkkk::VERTEX});
+    points.load(1, reinterpret_cast<const char*>(vertex.data()),
+        static_cast<std::uint32_t>(vertex.size() * sizeof(float)));
+    return context.load_points(name, points);
+}
+
 inline glm::mat4 to_glm(const Mat4& value) {
     glm::mat4 result;
     static_assert(sizeof(result) == sizeof(value));
@@ -158,6 +173,20 @@ struct ControllerState {
     bool prepared = false;
     bool lines_ready = false;
     bool poly_ready = false;
+};
+
+struct PickLayerState {
+    bool prepared = false;
+    std::uint32_t nodes_per_pixel = 0;
+    // Written by the replayed picking command once its pass is recorded.
+    std::optional<std::uint64_t> rendered_serial;
+    std::uint32_t rendered_image_index = 0;
+    // Mesh layer: instance capacity of the pick SSBO.
+    std::size_t instance_capacity = 0;
+    // Joint layer.
+    std::size_t joint_stride = 0;
+    std::optional<std::uint64_t> device_upload_serial;
+    std::uint32_t device_joint_count = 0;
 };
 
 struct JointState {
@@ -194,6 +223,7 @@ struct VkkkAdapter::Impl {
     vkkk_detail::SceneMeshState scene_meshes;
     vkkk_detail::JointState joints;
     vkkk_detail::ControllerState controllers;
+    std::array<vkkk_detail::PickLayerState, 3> pick_layers{};
     bool locators_prepared = false;
     bool locators_ready = false;
     bool ortho_grid_prepared = false;

@@ -20,6 +20,7 @@
 namespace ORL::Rhi {
 namespace {
 
+using vkkk_detail::load_dummy_points;
 using vkkk_detail::Pass;
 using vkkk_detail::PipelineDesc;
 using vkkk_detail::to_glm;
@@ -137,17 +138,6 @@ bool load_dummy_triangle(vkkk::Context& context, const std::string& name) {
     mesh.load(3, reinterpret_cast<const char*>(vertices), sizeof(vertices),
         1, reinterpret_cast<const char*>(indices), sizeof(indices));
     return context.load_mesh(name, mesh);
-}
-
-bool load_dummy_points(vkkk::Context& context, const std::string& name) {
-    if (context.points.contains(name)) {
-        return true;
-    }
-    const std::array<float, 3> vertex{0.0f, 0.0f, 0.0f};
-    vkkk::Points points({vkkk::VERTEX});
-    points.load(1, reinterpret_cast<const char*>(vertex.data()),
-        static_cast<std::uint32_t>(vertex.size() * sizeof(float)));
-    return context.load_points(name, points);
 }
 
 bool load_dummy_lines(vkkk::Context& context, const std::string& name) {

@@ -30,6 +30,7 @@ if(ORL_RHI_BACKEND_RESOLVED STREQUAL "VKKK")
         vkkk_adapter_impl.hpp
         vkkk_display.cpp
         vkkk_native.hpp
+        vkkk_picking.cpp
     )
     target_include_directories(orl_rhi_vkkk
         PRIVATE

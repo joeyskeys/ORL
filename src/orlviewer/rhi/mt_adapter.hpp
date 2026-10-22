@@ -58,6 +58,14 @@ public:
     Status draw_world_grid();
     Status prepare_frame_axis(const FrameAxisSetup& setup);
     Status draw_frame_axis();
+    Status prepare_pick_layer(const PickLayerSetup& setup);
+    bool map_cursor(double x, double y, std::uint32_t& px, std::uint32_t& py) const;
+    Status draw_mesh_pick(std::span<const MeshPickInstance> instances);
+    Status upload_device_pick_joints(DeviceBuffer device, std::uint32_t count);
+    Status draw_joint_pick(const JointPickDraw& draw);
+    Status draw_rig_pick(const RigPickDraw& draw);
+    Status read_pick(PickLayer layer, std::uint64_t min_serial,
+        std::uint32_t x, std::uint32_t y, PickReadback& readback);
 
 private:
     struct Impl;

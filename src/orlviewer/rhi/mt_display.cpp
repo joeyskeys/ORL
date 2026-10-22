@@ -92,4 +92,34 @@ Status MtAdapter::draw_frame_axis() {
     return unsupported("draw_frame_axis");
 }
 
+Status MtAdapter::prepare_pick_layer(const PickLayerSetup&) {
+    return unsupported("prepare_pick_layer");
+}
+
+bool MtAdapter::map_cursor(double, double, std::uint32_t&, std::uint32_t&) const {
+    return false;
+}
+
+Status MtAdapter::draw_mesh_pick(std::span<const MeshPickInstance>) {
+    return unsupported("draw_mesh_pick");
+}
+
+Status MtAdapter::upload_device_pick_joints(DeviceBuffer, std::uint32_t) {
+    return unsupported("upload_device_pick_joints");
+}
+
+Status MtAdapter::draw_joint_pick(const JointPickDraw&) {
+    return unsupported("draw_joint_pick");
+}
+
+Status MtAdapter::draw_rig_pick(const RigPickDraw&) {
+    return unsupported("draw_rig_pick");
+}
+
+Status MtAdapter::read_pick(PickLayer, std::uint64_t, std::uint32_t, std::uint32_t,
+    PickReadback&)
+{
+    return unsupported("read_pick");
+}
+
 } // namespace ORL::Rhi

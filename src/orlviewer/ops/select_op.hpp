@@ -104,15 +104,12 @@ public:
         pending_view_ = camera.ubo_data.view;
         pending_proj_ = camera.ubo_data.proj;
         ++transaction_id;
-        const auto pick_event = vkkk::mouse_button_event(
-            vkkk::MouseButton::Left, vkkk::InputAction::Press,
-            event.x, event.y, event.mods);
         expected_joint_request = gpu_picking != nullptr
-            ? gpu_picking->request(pick_event) : 0;
+            ? gpu_picking->request(event.x, event.y) : 0;
         expected_mesh_request = mesh_picking != nullptr
-            ? mesh_picking->request(pick_event) : 0;
+            ? mesh_picking->request(event.x, event.y) : 0;
         expected_rig_request = rig_picking != nullptr
-            ? rig_picking->request(pick_event) : 0;
+            ? rig_picking->request(event.x, event.y) : 0;
         awaiting_joint = expected_joint_request != 0;
         awaiting_mesh = expected_mesh_request != 0;
         awaiting_rig = expected_rig_request != 0;

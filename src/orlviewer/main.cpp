@@ -365,18 +365,15 @@ int main(int argc, char** argv) {
     ORL::SelectOp select_op(
         selection, components, scene, camera, &window_backend, create_joint);
     const auto joint_pick_handle = viewport.add_feature<ORL::JointPickingFeature>(
-        scene_graph, components, camera,
-        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+        scene_graph, components);
     if (auto* gpu_pick = viewport.find_feature(joint_pick_handle)) {
         select_op.set_gpu_picking(*gpu_pick);
     }
-    const auto mesh_pick_handle = viewport.add_feature<ORL::MeshPickingFeature>(
-        scene, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    const auto mesh_pick_handle = viewport.add_feature<ORL::MeshPickingFeature>(scene);
     if (auto* mesh_pick = viewport.find_feature(mesh_pick_handle)) {
         select_op.set_mesh_picking(*mesh_pick);
     }
-    const auto rig_pick_handle = viewport.add_feature<ORL::RigPickingFeature>(
-        components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    const auto rig_pick_handle = viewport.add_feature<ORL::RigPickingFeature>(components);
     if (auto* rig_pick = viewport.find_feature(rig_pick_handle)) {
         select_op.set_rig_picking(*rig_pick);
     }

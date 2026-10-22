@@ -154,6 +154,66 @@ struct FrameAxisSetup {
     std::string font_path;
 };
 
+// GPU picking writes IDs into per-layer overlap-safe A-buffers so one pixel
+// can report every hit beneath it. Layers render in the picking pass before
+// the scene and are read back on a later frame.
+enum class PickLayer : std::uint8_t {
+    mesh,
+    joint,
+    rig,
+};
+
+struct PickLayerSetup {
+    PickLayer layer = PickLayer::mesh;
+    std::uint32_t nodes_per_pixel = 8;
+    // Joint layer only: bytes per packed joint record.
+    std::size_t joint_stride = 0;
+};
+
+struct PickHit {
+    std::uint32_t id = 0;
+    float depth = 0.0f;
+};
+
+struct PickReadback {
+    // False until the layer has rendered a frame at or after the requested serial.
+    bool rendered = false;
+    std::vector<PickHit> hits;
+    bool overflow = false;
+};
+
+struct MeshPickInstance {
+    std::string mesh;
+    Mat4 model = identity_mat4();
+    std::uint32_t object_id = 0;
+};
+
+struct JointPickDraw {
+    // Host joints; ignored when use_device_joints draws the last device upload.
+    std::span<const std::byte> joints{};
+    std::uint32_t joint_count = 0;
+    bool use_device_joints = false;
+    float point_size = 10.0f;
+};
+
+struct RigPickShape {
+    std::string shape;
+    Mat4 model = identity_mat4();
+    std::uint32_t id = 0;
+};
+
+struct RigPickLocator {
+    Mat4 model = identity_mat4();
+    std::uint32_t id = 0;
+};
+
+struct RigPickDraw {
+    std::span<const RigPickShape> controllers{};
+    // Line shape instanced once per locator.
+    std::string locator_shape;
+    std::span<const RigPickLocator> locators{};
+};
+
 template <typename Adapter>
 concept ShapeRegistryAdapter = requires(
     Adapter& adapter,
@@ -247,6 +307,33 @@ concept ReferenceDisplayAdapter = requires(
     { adapter.draw_frame_axis() } -> std::same_as<Status>;
 };
 
+// prepare_pick_layer is idempotent and resizes the layer's A-buffer to the
+// current drawable, so callers repeat it after a resize. map_cursor converts
+// window cursor coordinates to drawable pixels.
+template <typename Adapter>
+concept PickingAdapter = requires(
+    Adapter& adapter,
+    const Adapter& const_adapter,
+    const PickLayerSetup& setup,
+    double cursor,
+    std::uint32_t& pixel,
+    std::span<const MeshPickInstance> meshes,
+    DeviceBuffer device,
+    std::uint32_t count,
+    const JointPickDraw& joints,
+    const RigPickDraw& rig,
+    std::uint64_t serial,
+    PickReadback& readback)
+{
+    { adapter.prepare_pick_layer(setup) } -> std::same_as<Status>;
+    { const_adapter.map_cursor(cursor, cursor, pixel, pixel) } -> std::same_as<bool>;
+    { adapter.draw_mesh_pick(meshes) } -> std::same_as<Status>;
+    { adapter.upload_device_pick_joints(device, count) } -> std::same_as<Status>;
+    { adapter.draw_joint_pick(joints) } -> std::same_as<Status>;
+    { adapter.draw_rig_pick(rig) } -> std::same_as<Status>;
+    { adapter.read_pick(PickLayer{}, serial, pixel, pixel, readback) } -> std::same_as<Status>;
+};
+
 template <typename Adapter>
 concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && ShapeRegistryAdapter<Adapter>
@@ -257,6 +344,7 @@ concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && OrthoGridDisplayAdapter<Adapter>
     && OverlayLineDisplayAdapter<Adapter>
     && StatusTextDisplayAdapter<Adapter>
-    && ReferenceDisplayAdapter<Adapter>;
+    && ReferenceDisplayAdapter<Adapter>
+    && PickingAdapter<Adapter>;
 
 } // namespace ORL::Rhi
