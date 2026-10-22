@@ -68,4 +68,12 @@ Status MtAdapter::draw_overlay_line(const ShapeInstanceDraw&) {
     return unsupported("draw_overlay_line");
 }
 
+Status MtAdapter::prepare_status_text() {
+    return unsupported("prepare_status_text");
+}
+
+Status MtAdapter::draw_status_text(std::string_view) {
+    return unsupported("draw_status_text");
+}
+
 } // namespace ORL::Rhi

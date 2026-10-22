@@ -20,6 +20,9 @@
 
 #include "built_in_shader/common.h"
 #include "concepts/camera.h"
+#if !ORL_USE_QT6
+#include "gui/gui.h"
+#endif
 #include "vk_ins/shader_module_pack.hpp"
 #include "rhi_display.hpp"
 #include "vkkk_native.hpp"
@@ -196,6 +199,10 @@ struct VkkkAdapter::Impl {
     bool overlay_lines_prepared = false;
     bool overlay_lines_ready = false;
     bool overlay_line_width_dynamic = false;
+    bool status_text_prepared = false;
+#if !ORL_USE_QT6
+    std::unique_ptr<vkkk::ImGuiHud> hud;
+#endif
     std::uint64_t next_mesh_token = 1;
     Capabilities caps{
         .windowed = true,
@@ -215,6 +222,20 @@ struct VkkkAdapter::Impl {
     ~Impl();
 
     Status create_pipeline();
+
+    // The HUD holds Vulkan and window-system state, so it goes before the context.
+    void release_hud() noexcept {
+#if !ORL_USE_QT6
+        if (hud != nullptr) {
+            try {
+                hud->shutdown();
+            }
+            catch (...) {
+            }
+            hud.reset();
+        }
+#endif
+    }
 
     std::filesystem::path shader_path(std::string_view file) const {
         return std::filesystem::path{config.shader_directory} / std::string{file};

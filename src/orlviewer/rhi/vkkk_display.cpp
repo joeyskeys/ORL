@@ -13,6 +13,10 @@
 #include "concepts/point.h"
 #include "vkkk_adapter_impl.hpp"
 
+#if !ORL_USE_QT6
+#include <imgui.h>
+#endif
+
 namespace ORL::Rhi {
 namespace {
 
@@ -773,6 +777,55 @@ Status VkkkAdapter::draw_overlay_line(const ShapeInstanceDraw& draw) {
                 context.draw_lines(*cmd, shape);
             }
         });
+    return Status::success();
+}
+
+Status VkkkAdapter::prepare_status_text() {
+    if (auto status = impl_->require_context("prepare_status_text"); !status) {
+        return status;
+    }
+    impl_->status_text_prepared = true;
+#if !ORL_USE_QT6
+    if (impl_->hud == nullptr) {
+        auto hud = std::make_unique<vkkk::ImGuiHud>();
+        if (!hud->init(impl_->context.get())) {
+            return Status::failure(StatusCode::unsupported,
+                "the ImGui status HUD could not be initialized");
+        }
+        impl_->hud = std::move(hud);
+    }
+#endif
+    return Status::success();
+}
+
+Status VkkkAdapter::draw_status_text(std::string_view text) {
+    if (auto status = impl_->require_frame("draw_status_text"); !status) {
+        return status;
+    }
+    if (!impl_->status_text_prepared) {
+        return Status::failure(StatusCode::not_initialized,
+            "draw_status_text requires prepare_status_text");
+    }
+#if ORL_USE_QT6
+    impl_->window->set_status(std::string{text});
+#else
+    if (impl_->hud == nullptr) {
+        return Status::success();
+    }
+    impl_->queue(Pass::overlay,
+        [hud = impl_->hud.get(), text = std::string{text}](
+            vk::raii::CommandBuffer& cmd, std::uint32_t) {
+            hud->begin_frame();
+            ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_Always);
+            ImGui::SetNextWindowBgAlpha(0.7f);
+            ImGui::Begin("Compute device", nullptr,
+                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize
+                    | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
+            ImGui::TextUnformatted(text.c_str());
+            ImGui::End();
+            hud->render(static_cast<VkCommandBuffer>(*cmd));
+        });
+#endif
     return Status::success();
 }
 

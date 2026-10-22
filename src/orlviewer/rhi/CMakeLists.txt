@@ -48,6 +48,9 @@ if(ORL_RHI_BACKEND_RESOLVED STREQUAL "VKKK")
         target_compile_definitions(orl_rhi_vkkk PUBLIC ORL_USE_QT6=1)
     else()
         target_compile_definitions(orl_rhi_vkkk PUBLIC ORL_USE_QT6=0)
+        # The GLFW build draws the status HUD with vkkk's ImGui integration.
+        target_include_directories(orl_rhi_vkkk PRIVATE
+            "${CMAKE_SOURCE_DIR}/thirdparty/vkkk/thirdparty/imgui")
     endif()
     add_library(orl_rhi_selected ALIAS orl_rhi_vkkk)
 elseif(ORL_RHI_BACKEND_RESOLVED STREQUAL "MT")

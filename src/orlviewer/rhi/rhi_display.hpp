@@ -207,6 +207,15 @@ concept OverlayLineDisplayAdapter = requires(
     { adapter.draw_overlay_line(draw) } -> std::same_as<Status>;
 };
 
+// A one-line runtime status (device, evaluation mode). The adapter shows it
+// where its window system puts status: a status bar or an overlay HUD.
+template <typename Adapter>
+concept StatusTextDisplayAdapter = requires(Adapter& adapter, std::string_view text)
+{
+    { adapter.prepare_status_text() } -> std::same_as<Status>;
+    { adapter.draw_status_text(text) } -> std::same_as<Status>;
+};
+
 template <typename Adapter>
 concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && ShapeRegistryAdapter<Adapter>
@@ -215,6 +224,7 @@ concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && ControllerDisplayAdapter<Adapter>
     && LocatorDisplayAdapter<Adapter>
     && OrthoGridDisplayAdapter<Adapter>
-    && OverlayLineDisplayAdapter<Adapter>;
+    && OverlayLineDisplayAdapter<Adapter>
+    && StatusTextDisplayAdapter<Adapter>;
 
 } // namespace ORL::Rhi

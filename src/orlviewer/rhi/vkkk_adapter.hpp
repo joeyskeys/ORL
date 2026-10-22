@@ -51,6 +51,8 @@ public:
     Status draw_ortho_grid(const OrthoGridDraw& draw);
     Status prepare_overlay_lines();
     Status draw_overlay_line(const ShapeInstanceDraw& draw);
+    Status prepare_status_text();
+    Status draw_status_text(std::string_view text);
 
 private:
     friend struct VkkkNative;

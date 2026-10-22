@@ -22,6 +22,7 @@ constexpr const char* kCameraBlockName = "CameraUBO";
 } // namespace
 
 VkkkAdapter::Impl::~Impl() {
+    release_hud();
     if (context != nullptr) {
         try {
             context->wait_idle();
@@ -436,6 +437,7 @@ Status VkkkAdapter::shutdown() {
     impl_->pass_hooks = {};
     try {
         impl_->context->wait_idle();
+        impl_->release_hud();
         if (!impl_->config.pipeline_cache_path.empty()
             && !impl_->context->save_pipeline_cache(
                 std::filesystem::path{impl_->config.pipeline_cache_path}))
