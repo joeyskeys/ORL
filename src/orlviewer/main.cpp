@@ -342,8 +342,7 @@ int main(int argc, char** argv) {
     ORL::CameraNavigator navigator(camera, world_frame, viewport_frame.right_handed);
     navigator.update_ubo();
     bool show_grid = true;
-    const auto ortho_grid_handle = viewport.add_feature<ORL::OrthoGridFeature>(
-        navigator, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    const auto ortho_grid_handle = viewport.add_feature<ORL::OrthoGridFeature>(navigator);
     ORL::LoadModelOp load_model(scene, context, &window_backend, world_frame);
     ORL::ClearSceneOp clear_scene(scene, context, components, selection, weight_id, deformer_id);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, &window_backend, selection);

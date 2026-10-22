@@ -191,6 +191,8 @@ struct VkkkAdapter::Impl {
     vkkk_detail::ControllerState controllers;
     bool locators_prepared = false;
     bool locators_ready = false;
+    bool ortho_grid_prepared = false;
+    bool ortho_grid_ready = false;
     std::uint64_t next_mesh_token = 1;
     Capabilities caps{
         .windowed = true,

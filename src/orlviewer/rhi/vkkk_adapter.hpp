@@ -47,6 +47,8 @@ public:
     Status draw_controller(const ShapeInstanceDraw& draw);
     Status prepare_locators();
     Status draw_locators(std::string_view shape, std::span<const LocatorInstance> instances);
+    Status prepare_ortho_grid();
+    Status draw_ortho_grid(const OrthoGridDraw& draw);
 
 private:
     friend struct VkkkNative;

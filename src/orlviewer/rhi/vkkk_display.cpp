@@ -105,6 +105,35 @@ constexpr const char* kLocatorsBlock = "Locators";
 // Matches the std430 Locators record in locator.vert.
 static_assert(sizeof(LocatorInstance) == sizeof(float) * 20);
 
+// --- Ortho grid -------------------------------------------------------------
+
+constexpr const char* kOrthoGridPipeline = "orl_ortho_grid";
+constexpr const char* kOrthoGridBlock = "OrthoGridUBO";
+constexpr const char* kOrthoGridTriangle = "orl_ortho_grid_tri";
+
+struct OrthoGridUBO {
+    glm::vec4 origin_px_ppu{0.0f};
+    glm::vec4 viewport_cell{0.0f, 0.0f, 1.0f, 1.0f};
+    glm::vec4 line_color{0.22f, 0.22f, 0.22f, 1.0f};
+    glm::vec4 axis_color{0.08f, 0.08f, 0.08f, 2.0f};
+};
+
+bool load_dummy_triangle(vkkk::Context& context, const std::string& name) {
+    if (context.meshes.contains(name)) {
+        return true;
+    }
+    constexpr float vertices[] = {
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+    };
+    constexpr std::uint32_t indices[] = {0, 1, 2};
+    vkkk::Mesh mesh({vkkk::VERTEX});
+    mesh.load(3, reinterpret_cast<const char*>(vertices), sizeof(vertices),
+        1, reinterpret_cast<const char*>(indices), sizeof(indices));
+    return context.load_mesh(name, mesh);
+}
+
 bool load_dummy_points(vkkk::Context& context, const std::string& name) {
     if (context.points.contains(name)) {
         return true;
@@ -628,6 +657,55 @@ Status VkkkAdapter::draw_locators(std::string_view shape,
                 static_cast<std::uint32_t>(records.size() * sizeof(LocatorInstance)));
             if (context.bind(*cmd, kLocatorPipeline, image_index)) {
                 context.draw_lines(*cmd, shape, 0, static_cast<std::uint32_t>(records.size()));
+            }
+        });
+    return Status::success();
+}
+
+Status VkkkAdapter::prepare_ortho_grid() {
+    if (auto status = impl_->require_context("prepare_ortho_grid"); !status) {
+        return status;
+    }
+    auto& context = *impl_->context;
+    PipelineDesc desc;
+    desc.name = kOrthoGridPipeline;
+    desc.vertex.path = impl_->shader_path("ortho_grid.vert");
+    desc.fragment.path = impl_->shader_path("ortho_grid.frag");
+    desc.depth_test = false;
+    desc.depth_write = false;
+    impl_->ortho_grid_ready = vkkk_detail::create_pipeline(context, desc)
+        && load_dummy_triangle(context, kOrthoGridTriangle);
+    impl_->ortho_grid_prepared = true;
+    if (!impl_->ortho_grid_ready) {
+        return Status::failure(StatusCode::resource_failure,
+            "screen-space grid pipeline is unavailable");
+    }
+    return Status::success();
+}
+
+Status VkkkAdapter::draw_ortho_grid(const OrthoGridDraw& draw) {
+    if (auto status = impl_->require_frame("draw_ortho_grid"); !status) {
+        return status;
+    }
+    if (!impl_->ortho_grid_prepared) {
+        return Status::failure(StatusCode::not_initialized,
+            "draw_ortho_grid requires prepare_ortho_grid");
+    }
+    if (!impl_->ortho_grid_ready) {
+        return Status::success();
+    }
+    const OrthoGridUBO ubo{
+        to_glm(draw.origin_px_ppu),
+        to_glm(draw.viewport_cell),
+        to_glm(draw.line_color),
+        to_glm(draw.axis_color),
+    };
+    impl_->queue(Pass::scene,
+        [impl = impl_.get(), ubo](vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
+            auto& context = *impl->context;
+            context.sync_ubo(kOrthoGridPipeline, kOrthoGridBlock, &ubo, image_index);
+            if (context.bind(*cmd, kOrthoGridPipeline, image_index)) {
+                context.draw(*cmd, kOrthoGridPipeline, kOrthoGridTriangle, 1);
             }
         });
     return Status::success();

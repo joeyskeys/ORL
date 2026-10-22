@@ -52,4 +52,12 @@ Status MtAdapter::draw_locators(std::string_view, std::span<const LocatorInstanc
     return unsupported("draw_locators");
 }
 
+Status MtAdapter::prepare_ortho_grid() {
+    return unsupported("prepare_ortho_grid");
+}
+
+Status MtAdapter::draw_ortho_grid(const OrthoGridDraw&) {
+    return unsupported("draw_ortho_grid");
+}
+
 } // namespace ORL::Rhi

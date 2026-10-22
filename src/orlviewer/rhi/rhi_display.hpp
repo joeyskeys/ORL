@@ -124,6 +124,18 @@ struct LocatorInstance {
     Vec4 color{0.95f, 0.78f, 0.28f, 1.0f};
 };
 
+// Screen-space grid for orthographic views, drawn without depth test before
+// the rest of the scene. Fields mirror the backend uniform block.
+struct OrthoGridDraw {
+    // Projected world origin in pixels (xy) and pixels per world unit (zw).
+    Vec4 origin_px_ppu{0.0f, 0.0f, 0.0f, 0.0f};
+    // Viewport size in pixels (xy) and world-space cell size (z).
+    Vec4 viewport_cell{0.0f, 0.0f, 1.0f, 1.0f};
+    Vec4 line_color{0.22f, 0.22f, 0.22f, 1.0f};
+    // Axis color (rgb) and axis line width in pixels (a).
+    Vec4 axis_color{0.08f, 0.08f, 0.08f, 2.0f};
+};
+
 template <typename Adapter>
 concept ShapeRegistryAdapter = requires(
     Adapter& adapter,
@@ -178,11 +190,19 @@ concept LocatorDisplayAdapter = requires(
 };
 
 template <typename Adapter>
+concept OrthoGridDisplayAdapter = requires(Adapter& adapter, const OrthoGridDraw& draw)
+{
+    { adapter.prepare_ortho_grid() } -> std::same_as<Status>;
+    { adapter.draw_ortho_grid(draw) } -> std::same_as<Status>;
+};
+
+template <typename Adapter>
 concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && ShapeRegistryAdapter<Adapter>
     && SceneMeshDisplayAdapter<Adapter>
     && JointDisplayAdapter<Adapter>
     && ControllerDisplayAdapter<Adapter>
-    && LocatorDisplayAdapter<Adapter>;
+    && LocatorDisplayAdapter<Adapter>
+    && OrthoGridDisplayAdapter<Adapter>;
 
 } // namespace ORL::Rhi
