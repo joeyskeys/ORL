@@ -71,6 +71,7 @@ struct MtAdapter::Impl {
     };
     bool initialized = false;
     AdapterConfig config{};
+    CameraState camera{};
 };
 
 MtAdapter::MtAdapter()
@@ -127,6 +128,17 @@ Capabilities MtAdapter::capabilities() const noexcept {
     return impl_->caps;
 }
 
+void MtAdapter::poll_events() {}
+
+bool MtAdapter::should_close() const {
+    return false;
+}
+
+Status MtAdapter::set_camera(const CameraState& camera) {
+    impl_->camera = camera;
+    return Status::success();
+}
+
 Status MtAdapter::begin_frame(FrameState& frame) {
     if (!impl_->initialized || !impl_->surface || !impl_->queue) {
         return mt_failure(
@@ -162,10 +174,11 @@ Status MtAdapter::begin_frame(FrameState& frame) {
     frame.extent = {extent.getWidth(), extent.getHeight()};
     frame.drawable = true;
     auto clear_color = impl_->active_render_pass->getClearColor();
-    clear_color.setRed(0.035);
-    clear_color.setGreen(0.045);
-    clear_color.setBlue(0.065);
-    clear_color.setAlpha(1.0);
+    const auto& clear = impl_->config.clear_color;
+    clear_color.setRed(clear[0]);
+    clear_color.setGreen(clear[1]);
+    clear_color.setBlue(clear[2]);
+    clear_color.setAlpha(clear[3]);
     impl_->active_render_pass->setClearColor(clear_color);
     return Status::success();
 }
@@ -325,6 +338,21 @@ void MtAdapter::wait_idle() noexcept {
             impl_->active_command_buffer->waitUntilCompleted();
         }
     }
+}
+
+Status MtAdapter::shutdown() {
+    if (!impl_->initialized) {
+        return mt_failure(
+            StatusCode::not_initialized,
+            "mt RHI adapter has not been initialized");
+    }
+    if (impl_->active_command_buffer) {
+        return mt_failure(
+            StatusCode::invalid_argument,
+            "mt shutdown cannot run during an active frame");
+    }
+    wait_idle();
+    return Status::success();
 }
 
 } // namespace ORL::Rhi

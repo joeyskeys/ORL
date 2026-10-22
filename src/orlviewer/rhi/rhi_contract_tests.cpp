@@ -30,6 +30,19 @@ public:
         };
     }
 
+    void poll_events() {
+        ++polls;
+    }
+
+    bool should_close() const {
+        return polls >= 2;
+    }
+
+    ORL::Rhi::Status set_camera(const ORL::Rhi::CameraState& state) {
+        camera = state;
+        return ORL::Rhi::Status::success();
+    }
+
     ORL::Rhi::Status begin_frame(ORL::Rhi::FrameState& frame) {
         if (!initialized || active) {
             return ORL::Rhi::Status::failure(
@@ -99,10 +112,23 @@ public:
         active = false;
     }
 
+    ORL::Rhi::Status shutdown() {
+        if (!initialized || active) {
+            return ORL::Rhi::Status::failure(
+                ORL::Rhi::StatusCode::invalid_argument,
+                "invalid mock shutdown");
+        }
+        initialized = false;
+        return ORL::Rhi::Status::success();
+    }
+
+    ORL::Rhi::CameraState camera{};
+
 private:
     bool initialized = false;
     bool active = false;
     bool drew = false;
+    int polls = 0;
     std::uint64_t serial = 0;
 };
 
@@ -130,13 +156,31 @@ int main() {
     };
 
     ORL::Rhi::MeshToken mesh;
-    ORL::Rhi::FrameState frame;
-    if (!adapter.upload_indexed_mesh(mesh, upload)
-        || !adapter.begin_frame(frame)
-        || !adapter.draw_indexed(mesh, 3)
-        || !adapter.end_frame(frame, false))
-    {
+    if (!adapter.upload_indexed_mesh(mesh, upload)) {
         return 2;
+    }
+
+    ORL::Rhi::CameraState camera;
+    camera.view[0] = camera.view[5] = camera.view[10] = camera.view[15] = 1.0f;
+    camera.projection = camera.view;
+    int frames = 0;
+    while (!adapter.should_close()) {
+        adapter.poll_events();
+        ORL::Rhi::FrameState frame;
+        if (!adapter.set_camera(camera)
+            || !adapter.begin_frame(frame)
+            || !adapter.draw_indexed(mesh, 3)
+            || !adapter.end_frame(frame, false))
+        {
+            return 3;
+        }
+        ++frames;
+    }
+    if (frames != 2 || adapter.camera.view != camera.view) {
+        return 4;
+    }
+    if (!adapter.shutdown() || adapter.shutdown()) {
+        return 5;
     }
     return 0;
 }

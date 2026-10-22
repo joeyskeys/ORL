@@ -1,5 +1,6 @@
 #include "vkkk_adapter.hpp"
 
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -12,14 +13,8 @@
 #include "built_in_shader/fixed_color.h"
 #include "concepts/camera.h"
 #include "concepts/mesh.h"
-#include "vk_ins/context.hpp"
 #include "vk_ins/shader_module_pack.hpp"
-
-#if ORL_USE_QT6
-#include "gui/qt_backend.hpp"
-#else
-#include "gui/glfw_backend.hpp"
-#endif
+#include "vkkk_native.hpp"
 
 namespace ORL::Rhi {
 namespace {
@@ -40,11 +35,12 @@ struct VkkkAdapter::Impl {
         std::uint32_t index_count = 0;
     };
 
-    std::unique_ptr<vkkk::WindowBackend> window;
+    std::unique_ptr<VkkkWindow> window;
     std::unique_ptr<vkkk::Context> context;
     std::optional<vkkk::Context::Frame> active_frame;
     std::unordered_map<std::uint64_t, MeshRecord> meshes;
     std::vector<std::pair<MeshToken, std::uint32_t>> pending_draws;
+    VkkkPassHooks pass_hooks;
     std::uint64_t next_mesh_token = 1;
     Capabilities caps{
         .windowed = true,
@@ -57,6 +53,7 @@ struct VkkkAdapter::Impl {
     };
     bool initialized = false;
     bool pipeline_ready = false;
+    bool shut_down = false;
     AdapterConfig config{};
     vkkk::CameraUBO camera_ubo{};
 
@@ -172,15 +169,15 @@ Status VkkkAdapter::initialize(const AdapterConfig& config) {
     try {
         impl_->config = config;
 #if ORL_USE_QT6
-        impl_->window = std::make_unique<vkkk::QtBackend>(
+        impl_->window = std::make_unique<VkkkWindow>(
             static_cast<int>(config.initial_extent.width),
             static_cast<int>(config.initial_extent.height),
-            config.application_name.c_str());
+            config.window_title.c_str());
 #else
-        impl_->window = std::make_unique<vkkk::GlfwBackend>(
+        impl_->window = std::make_unique<VkkkWindow>(
             static_cast<int>(config.initial_extent.width),
             static_cast<int>(config.initial_extent.height),
-            config.application_name.c_str(),
+            config.window_title.c_str(),
             true);
 #endif
         impl_->context = std::make_unique<vkkk::Context>();
@@ -198,7 +195,7 @@ Status VkkkAdapter::initialize(const AdapterConfig& config) {
             *impl_->window,
             config.application_name.c_str(),
             VK_MAKE_VERSION(0, 1, 0),
-            "ORL RHI",
+            config.window_title.c_str(),
             vk::ApiVersion13,
             config.validation,
             {},
@@ -220,6 +217,24 @@ Capabilities VkkkAdapter::capabilities() const noexcept {
     return impl_->caps;
 }
 
+void VkkkAdapter::poll_events() {
+    if (impl_->window != nullptr) {
+        impl_->window->poll_events();
+    }
+}
+
+bool VkkkAdapter::should_close() const {
+    return impl_->window == nullptr || impl_->window->should_close();
+}
+
+Status VkkkAdapter::set_camera(const CameraState& camera) {
+    static_assert(sizeof(glm::mat4) == sizeof(camera.view));
+    std::memcpy(&impl_->camera_ubo.view, camera.view.data(), sizeof(glm::mat4));
+    std::memcpy(
+        &impl_->camera_ubo.proj, camera.projection.data(), sizeof(glm::mat4));
+    return Status::success();
+}
+
 Status VkkkAdapter::begin_frame(FrameState& frame) {
     if (!impl_->initialized || impl_->context == nullptr) {
         return Status::failure(
@@ -233,7 +248,6 @@ Status VkkkAdapter::begin_frame(FrameState& frame) {
     }
 
     try {
-        impl_->window->poll_events();
         impl_->active_frame.emplace();
         if (!impl_->context->begin_frame(*impl_->active_frame)) {
             impl_->active_frame.reset();
@@ -383,18 +397,26 @@ Status VkkkAdapter::end_frame(FrameState& frame, bool present) {
             native_frame,
             [this, present](vk::raii::CommandBuffer& command_buffer,
                             std::uint32_t image_index) {
+                const auto& hooks = impl_->pass_hooks;
+                if (hooks.before_scene) {
+                    hooks.before_scene(command_buffer, image_index);
+                }
+
                 vkkk::PassDesc pass;
-                pass.present = present;
-                pass.colors[0].clear = {0.035f, 0.045f, 0.065f, 1.0f};
+                pass.present = present && !hooks.overlay;
+                const auto& clear = impl_->config.clear_color;
+                pass.colors[0].clear = {clear[0], clear[1], clear[2], clear[3]};
                 impl_->context->begin_pass(
                     command_buffer,
                     image_index,
                     pass);
-                impl_->context->sync_ubo(
-                    kPipelineName,
-                    kCameraBlockName,
-                    &impl_->camera_ubo,
-                    image_index);
+                if (!impl_->pending_draws.empty()) {
+                    impl_->context->sync_ubo(
+                        kPipelineName,
+                        kCameraBlockName,
+                        &impl_->camera_ubo,
+                        image_index);
+                }
                 vkkk::FixedColorInstanceAttrs instance;
                 for (const auto& [token, index_count] : impl_->pending_draws) {
                     const auto found = impl_->meshes.find(token.value);
@@ -408,12 +430,12 @@ Status VkkkAdapter::end_frame(FrameState& frame, bool present) {
                         image_index,
                         sizeof(instance));
                     if (impl_->context->bind(
-                            command_buffer,
+                            *command_buffer,
                             kPipelineName,
                             image_index))
                     {
                         impl_->context->draw(
-                            command_buffer,
+                            *command_buffer,
                             kPipelineName,
                             found->second.name,
                             1,
@@ -421,10 +443,29 @@ Status VkkkAdapter::end_frame(FrameState& frame, bool present) {
                             index_count);
                     }
                 }
+                if (hooks.scene) {
+                    hooks.scene(command_buffer, image_index);
+                }
                 impl_->context->end_pass(
                     command_buffer,
                     image_index,
                     pass);
+
+                if (hooks.overlay) {
+                    vkkk::PassDesc overlay_pass;
+                    overlay_pass.colors.front().load = vkkk::PassLoadOp::Load;
+                    overlay_pass.depth_index = vkkk::kNoDepth;
+                    overlay_pass.present = present;
+                    impl_->context->begin_pass(
+                        command_buffer,
+                        image_index,
+                        overlay_pass);
+                    hooks.overlay(command_buffer, image_index);
+                    impl_->context->end_pass(
+                        command_buffer,
+                        image_index,
+                        overlay_pass);
+                }
             });
         impl_->context->end_frame(native_frame);
         impl_->pending_draws.clear();
@@ -447,6 +488,64 @@ void VkkkAdapter::wait_idle() noexcept {
         catch (...) {
         }
     }
+}
+
+Status VkkkAdapter::shutdown() {
+    if (!impl_->initialized || impl_->context == nullptr) {
+        return Status::failure(
+            StatusCode::not_initialized,
+            "vkkk RHI adapter has not been initialized");
+    }
+    if (impl_->shut_down) {
+        return Status::success();
+    }
+    if (impl_->active_frame.has_value()) {
+        return Status::failure(
+            StatusCode::invalid_argument,
+            "vkkk shutdown cannot run during an active frame");
+    }
+
+    impl_->shut_down = true;
+    impl_->pass_hooks = {};
+    try {
+        impl_->context->wait_idle();
+        if (!impl_->config.pipeline_cache_path.empty()
+            && !impl_->context->save_pipeline_cache(
+                std::filesystem::path{impl_->config.pipeline_cache_path}))
+        {
+            return Status::failure(
+                StatusCode::resource_failure,
+                "vkkk could not save the pipeline cache to "
+                    + impl_->config.pipeline_cache_path);
+        }
+        return Status::success();
+    }
+    catch (const std::exception& error) {
+        return exception_status(StatusCode::device_failure, error);
+    }
+}
+
+VkkkWindow& VkkkNative::window(VkkkAdapter& adapter) {
+    if (adapter.impl_->window == nullptr) {
+        throw std::logic_error("vkkk RHI adapter has no window before initialize");
+    }
+    return *adapter.impl_->window;
+}
+
+vkkk::Context& VkkkNative::context(VkkkAdapter& adapter) {
+    if (adapter.impl_->context == nullptr) {
+        throw std::logic_error("vkkk RHI adapter has no context before initialize");
+    }
+    return *adapter.impl_->context;
+}
+
+const vkkk::Context::Frame* VkkkNative::active_frame(const VkkkAdapter& adapter) {
+    const auto& frame = adapter.impl_->active_frame;
+    return frame.has_value() ? &*frame : nullptr;
+}
+
+void VkkkNative::set_pass_hooks(VkkkAdapter& adapter, VkkkPassHooks hooks) {
+    adapter.impl_->pass_hooks = std::move(hooks);
 }
 
 } // namespace ORL::Rhi

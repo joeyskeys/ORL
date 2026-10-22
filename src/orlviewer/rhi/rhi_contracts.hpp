@@ -65,8 +65,11 @@ struct AdapterConfig {
     bool validation = true;
     bool force_shader_recompile = false;
     std::string application_name = "ORL";
+    std::string window_title = "ORL";
     std::string shader_cache_directory;
+    // Loaded at initialize and written back by shutdown when non-empty.
     std::string pipeline_cache_path;
+    std::array<float, 4> clear_color{0.035f, 0.045f, 0.065f, 1.0f};
 };
 
 struct FrameState {
@@ -111,6 +114,7 @@ concept StaticAdapter = requires(
     Adapter& adapter,
     const Adapter& const_adapter,
     const AdapterConfig& config,
+    const CameraState& camera,
     FrameState& frame,
     const IndexedMeshUpload& upload,
     MeshToken& token,
@@ -120,12 +124,18 @@ concept StaticAdapter = requires(
     { Adapter::backend_name() } -> std::same_as<std::string_view>;
     { adapter.initialize(config) } -> std::same_as<Status>;
     { const_adapter.capabilities() } -> std::same_as<Capabilities>;
+    // Host window lifecycle. Offscreen adapters never request a close.
+    { adapter.poll_events() } -> std::same_as<void>;
+    { const_adapter.should_close() } -> std::same_as<bool>;
+    { adapter.set_camera(camera) } -> std::same_as<Status>;
     { adapter.begin_frame(frame) } -> std::same_as<Status>;
     { adapter.resize(extent) } -> std::same_as<Status>;
     { adapter.upload_indexed_mesh(token, upload) } -> std::same_as<Status>;
     { adapter.draw_indexed(mesh, std::uint32_t{}) } -> std::same_as<Status>;
     { adapter.end_frame(frame, bool{}) } -> std::same_as<Status>;
     { adapter.wait_idle() } noexcept;
+    // Drains the device and persists native caches; call once before exit.
+    { adapter.shutdown() } -> std::same_as<Status>;
 };
 
 } // namespace ORL::Rhi

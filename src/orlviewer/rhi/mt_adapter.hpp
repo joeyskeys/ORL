@@ -22,6 +22,9 @@ public:
 
     Status initialize(const AdapterConfig& config);
     Capabilities capabilities() const noexcept;
+    void poll_events();
+    bool should_close() const;
+    Status set_camera(const CameraState& camera);
     Status begin_frame(FrameState& frame);
     Status resize(Extent2D extent);
     Status upload_indexed_mesh(
@@ -30,6 +33,7 @@ public:
     Status draw_indexed(MeshToken mesh, std::uint32_t index_count);
     Status end_frame(FrameState& frame, bool present);
     void wait_idle() noexcept;
+    Status shutdown();
 
 private:
     struct Impl;

@@ -27,10 +27,13 @@ if(ORL_RHI_BACKEND_RESOLVED STREQUAL "VKKK")
     add_library(orl_rhi_vkkk STATIC
         vkkk_adapter.cpp
         vkkk_adapter.hpp
+        vkkk_native.hpp
     )
     target_include_directories(orl_rhi_vkkk
         PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}"
+        # vkkk_native.hpp exposes vkkk types to the legacy viewer features.
+        PUBLIC
             "${CMAKE_SOURCE_DIR}/thirdparty/vkkk/src"
     )
     target_link_libraries(orl_rhi_vkkk
@@ -40,9 +43,9 @@ if(ORL_RHI_BACKEND_RESOLVED STREQUAL "VKKK")
     )
     target_compile_features(orl_rhi_vkkk PUBLIC cxx_std_20)
     if(ORL_USE_QT6)
-        target_compile_definitions(orl_rhi_vkkk PRIVATE ORL_USE_QT6=1)
+        target_compile_definitions(orl_rhi_vkkk PUBLIC ORL_USE_QT6=1)
     else()
-        target_compile_definitions(orl_rhi_vkkk PRIVATE ORL_USE_QT6=0)
+        target_compile_definitions(orl_rhi_vkkk PUBLIC ORL_USE_QT6=0)
     endif()
     add_library(orl_rhi_selected ALIAS orl_rhi_vkkk)
 elseif(ORL_RHI_BACKEND_RESOLVED STREQUAL "MT")
