@@ -122,4 +122,12 @@ Status MtAdapter::read_pick(PickLayer, std::uint64_t, std::uint32_t, std::uint32
     return unsupported("read_pick");
 }
 
+Status MtAdapter::prepare_mesh_adjacency() {
+    return unsupported("prepare_mesh_adjacency");
+}
+
+Status MtAdapter::build_mesh_adjacency(const MeshAdjacencyInput&, MeshAdjacency&) {
+    return unsupported("build_mesh_adjacency");
+}
+
 } // namespace ORL::Rhi

@@ -7,15 +7,15 @@
 #include "component_manager.hpp"
 #include "../../orlexec/orlrig/runners.hpp"
 #include "selection.hpp"
-#include "vp/feature.hpp"
 #include "vp/mesh_csr_feature.hpp"
+#include "vp/rhi_feature.hpp"
 
 namespace ORL
 {
 
 // Runs an ORL stdlib auto-weight entry against the scene mesh and joints,
 // writing into a Weight component. Default is Maya Closest Distance.
-class AutoWeightFeature final : public vkkk::vp::ViewportFeature<vkkk::vp::ViewportPhase::Scene> {
+class AutoWeightFeature final : public RhiFeature {
 public:
     AutoWeightFeature(vkkk::Scene& scene, ComponentManager& components, ComponentId weight_id,
         const Selection& selection);
@@ -28,10 +28,10 @@ public:
 
     void request();
     void cancel_request() { pending = false; }
-    void on_update(vkkk::Context& context, const vkkk::Context::Frame&);
+    void on_update(ViewerAdapter& adapter, const Rhi::FrameState&);
 
 private:
-    bool run(vkkk::Context& context);
+    bool run(ViewerAdapter& adapter);
 
     vkkk::Scene& scene;
     ComponentManager& components;

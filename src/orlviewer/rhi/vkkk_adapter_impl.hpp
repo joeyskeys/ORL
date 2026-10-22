@@ -232,6 +232,7 @@ struct VkkkAdapter::Impl {
     bool overlay_lines_ready = false;
     bool overlay_line_width_dynamic = false;
     bool status_text_prepared = false;
+    bool mesh_adjacency_ready = false;
 #if !ORL_USE_QT6
     std::unique_ptr<vkkk::ImGuiHud> hud;
 #endif

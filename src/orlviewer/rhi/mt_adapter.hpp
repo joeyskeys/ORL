@@ -66,6 +66,8 @@ public:
     Status draw_rig_pick(const RigPickDraw& draw);
     Status read_pick(PickLayer layer, std::uint64_t min_serial,
         std::uint32_t x, std::uint32_t y, PickReadback& readback);
+    Status prepare_mesh_adjacency();
+    Status build_mesh_adjacency(const MeshAdjacencyInput& input, MeshAdjacency& output);
 
 private:
     struct Impl;

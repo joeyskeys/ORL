@@ -322,8 +322,7 @@ int main(int argc, char** argv) {
     const auto grid_handle = viewport.add_feature<ORL::WorldGridFeature>();
     const auto mesh_handle = viewport.add_feature<ORL::SceneMeshFeature>(
         scene, viewport_frame.right_handed, selection);
-    const auto csr_handle = viewport.add_feature<ORL::MeshCsrFeature>(
-        scene, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    const auto csr_handle = viewport.add_feature<ORL::MeshCsrFeature>(scene);
     const auto auto_weight_handle = viewport.add_feature<ORL::AutoWeightFeature>(
         scene, components, weight_id, selection);
     if (auto* auto_weight = viewport.find_feature(auto_weight_handle)) {
