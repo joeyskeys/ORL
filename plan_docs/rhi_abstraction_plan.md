@@ -20,7 +20,18 @@ The current implementation slice provides:
   submission;
 - an `orl_rhi_mt` adapter that owns an offscreen Metal surface, command
   buffers, clear pass, and host-visible indexed mesh buffers;
-- a backend-independent compile/conformance probe.
+- a backend-independent compile/conformance probe;
+- `orl_viewer` wired onto `SelectedAdapter`: the adapter owns the window,
+  `vkkk::Context`, shader/pipeline caches, frame lifecycle, cleared scene pass,
+  camera state, and shutdown. `ORL::ViewportHost` (`vp/viewport_host.hpp`)
+  replaces `vkkk::vp::Viewport` and drives frames through adapter calls.
+
+Viewer features still record native vkkk commands. They are attached to
+`ViewportHost` and recorded through `VkkkPassHooks` (`rhi/vkkk_native.hpp`),
+a vkkk-only bridge outside the `StaticAdapter` contract, in the same
+Picking -> Scene -> ScreenOverlay order as before. Operations and Qt panels
+receive the adapter-owned native window/context from the same bridge. Phase 2
+removes this bridge feature by feature.
 
 The mt slice deliberately reports indexed draw submission as unsupported until
 its logical MSL pipeline registration is added. It still validates the

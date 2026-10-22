@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -21,16 +22,15 @@
 #include "selection.hpp"
 #include "scene_graph_context.hpp"
 #include "orlrig/graph_resources.hpp"
+#include "orlviewer/rhi/selected_adapter.hpp"
+#include "orlviewer/rhi/vkkk_native.hpp"
 #if ORL_USE_QT6
-#include "gui/qt_backend.hpp"
 #include <QApplication>
 #include <QFile>
 #include <QStyleFactory>
 #include "qt/node_color_theme.hpp"
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
-#else
-#include "gui/glfw_backend.hpp"
 #endif
 #include "ops/camera_switch_op.hpp"
 #include "ops/clear_scene_op.hpp"
@@ -64,7 +64,7 @@
 #include "vp/runtime_hud_feature.hpp"
 #include "vp/scene_mesh_feature.hpp"
 #include "vp/transform_guide_feature.hpp"
-#include "vp/viewport.hpp"
+#include "vp/viewport_host.hpp"
 
 namespace {
 
@@ -131,6 +131,15 @@ vkkk::vp::CoordinateSystem make_coordinate_system(const ViewportFrame& viewport_
     };
 }
 
+ORL::Rhi::CameraState make_camera_state(const vkkk::Camera& camera) {
+    ORL::Rhi::CameraState state;
+    static_assert(sizeof(state.view) == sizeof(camera.ubo_data.view));
+    std::memcpy(state.view.data(), &camera.ubo_data.view, sizeof(state.view));
+    std::memcpy(
+        state.projection.data(), &camera.ubo_data.proj, sizeof(state.projection));
+    return state;
+}
+
 struct StartupOptions {
     bool force_recompile = false;
 };
@@ -186,23 +195,28 @@ int main(int argc, char** argv) {
 #if ORL_USE_QT6
     QApplication application(argc, argv);
     setup_qt_theme(application);
-    vkkk::QtBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport");
-#else
-    vkkk::GlfwBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport", true);
 #endif
-    vkkk::Context context;
-    context.set_shader_cache(
-        spirv_cache_directory, startup.force_recompile);
-    context.set_pipeline_cache_path(
-        pipeline_cache_path, startup.force_recompile);
-    context.init(window_backend,
-                 "ORL",
-                 VK_MAKE_VERSION(0, 1, 0),
-                 "ORL Viewport",
-                 vk::ApiVersion13,
-                 true,
-                 {},
-                 {});
+    ORL::Rhi::AdapterConfig adapter_config;
+    adapter_config.initial_extent = {kViewportWidth, kViewportHeight};
+    adapter_config.validation = true;
+    adapter_config.force_shader_recompile = startup.force_recompile;
+    adapter_config.application_name = "ORL";
+    adapter_config.window_title = "ORL Viewport";
+    adapter_config.shader_cache_directory = spirv_cache_directory.string();
+    adapter_config.pipeline_cache_path = pipeline_cache_path.string();
+    adapter_config.clear_color = {0.38f, 0.38f, 0.38f, 1.0f};
+
+    ORL::Rhi::SelectedAdapter adapter;
+    if (const auto status = adapter.initialize(adapter_config); !status) {
+        std::cerr << "Failed to initialize the "
+                  << ORL::Rhi::SelectedAdapter::backend_name()
+                  << " RHI adapter: " << status.message << '\n';
+        return 1;
+    }
+    // Legacy vkkk features and operations still consume the adapter-owned
+    // native window and context until they move onto adapter calls.
+    auto& window_backend = ORL::Rhi::VkkkNative::window(adapter);
+    auto& context = ORL::Rhi::VkkkNative::context(adapter);
 
     // Viewport world follows the provided ORL Frame. frame_dx is left-handed:
     // +X right, +Y up, +Z out (DirectX-style).
@@ -279,7 +293,7 @@ int main(int argc, char** argv) {
     window_backend.set_right_dock_ratio(0.30);
 #endif
 
-    using Viewport = vkkk::vp::Viewport<
+    using Viewport = ORL::ViewportHost<
         vkkk::vp::GridFeature,
         ORL::OrthoGridFeature,
         ORL::SceneMeshFeature,
@@ -296,7 +310,7 @@ int main(int argc, char** argv) {
         vkkk::vp::FrameAxisFeature,
         ORL::RuntimeHudFeature,
         ORL::TransformGuideFeature>;
-    Viewport viewport(context);
+    Viewport viewport(adapter);
     const std::filesystem::path font_path =
         std::filesystem::path{ORL_VKKK_SOURCE_DIR} / "resource/font/Roboto-Light.ttf";
     const auto grid_handle = viewport.add_feature<vkkk::vp::GridFeature>(camera);
@@ -668,8 +682,9 @@ int main(int argc, char** argv) {
     }
     controls.attach(window_backend);
 
-    while (!window_backend.should_close()) {
-        window_backend.poll_events();
+    int exit_code = 0;
+    while (!adapter.should_close()) {
+        adapter.poll_events();
         controls.poll();
 
 #if ORL_USE_QT6
@@ -688,15 +703,22 @@ int main(int argc, char** argv) {
             property_editor->refresh();
         }
 #endif
-        vkkk::Context::Frame frame{};
-        if (!viewport.begin_frame(frame)) {
-            continue;
+        ORL::Rhi::FrameState frame;
+        if (const auto status = viewport.begin_frame(frame); !status) {
+            if (status.code == ORL::Rhi::StatusCode::drawable_unavailable) {
+                continue;
+            }
+            std::cerr << "Viewer frame could not begin: " << status.message << '\n';
+            exit_code = 1;
+            break;
         }
 
-        const auto extent = viewport.extent();
-        camera.ratio = static_cast<float>(extent.width) /
-                       static_cast<float>(extent.height == 0 ? 1 : extent.height);
+        camera.ratio = static_cast<float>(frame.extent.width) /
+                       static_cast<float>(frame.extent.height == 0 ? 1 : frame.extent.height);
         navigator.update_ubo();
+        if (const auto status = adapter.set_camera(make_camera_state(camera)); !status) {
+            std::cerr << "Viewer camera update failed: " << status.message << '\n';
+        }
         if (create_joint.is_active()) {
             create_joint.refresh_preview();
         }
@@ -704,16 +726,17 @@ int main(int argc, char** argv) {
             grid->visible = show_grid && !navigator.orthographic;
         }
 
-        viewport.update(frame);
-        viewport.record_frame(frame);
-        viewport.end_frame(frame);
+        viewport.update();
+        if (const auto status = viewport.end_frame(frame); !status) {
+            std::cerr << "Viewer frame could not be submitted: " << status.message << '\n';
+            exit_code = 1;
+            break;
+        }
     }
 
-    context.wait_idle();
-    if (!context.save_pipeline_cache(pipeline_cache_path)) {
-        std::cerr << "Failed to save viewer pipeline cache to "
-                  << pipeline_cache_path << '\n';
+    if (const auto status = adapter.shutdown(); !status) {
+        std::cerr << "Viewer RHI shutdown: " << status.message << '\n';
     }
     controls.detach();
-    return 0;
+    return exit_code;
 }
