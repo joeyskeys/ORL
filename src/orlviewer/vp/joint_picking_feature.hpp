@@ -1,112 +1,51 @@
 #pragma once
 
-#include <algorithm>
-#include <array>
-#include <cmath>
 #include <cstdint>
-#include <filesystem>
-#include <functional>
 #include <iostream>
-#include <string>
+#include <span>
 #include <vector>
 
-#include "built_in_shader/common.h"
 #include "component_manager.hpp"
-#include "concepts/camera.h"
-#include "concepts/point.h"
-#include "gui/input.hpp"
 #include "../scene_graph_context.hpp"
-#include "vk_ins/shader_module_pack.hpp"
-#include "vp/feature.hpp"
-#include "vp/joint_feature.hpp"
 #include "vp/picking.hpp"
+#include "vp/rhi_feature.hpp"
 
 namespace ORL
 {
 
 // GPU joint pick: same point size and radial discard as JointFeature, written
-// into a vkkk A-buffer so overlapping hits can be resolved on readback.
-class JointPickingFeature final : public vkkk::vp::ViewportFeature<vkkk::vp::ViewportPhase::Picking> {
+// into an A-buffer so overlapping hits can be resolved on readback.
+class JointPickingFeature final : public RhiFeature {
 public:
     JointPickingFeature(SceneGraphContext& graph_context,
-        const ComponentManager& components, const vkkk::Camera& camera,
-        std::filesystem::path shader_dir, uint32_t nodes_per_pixel = 4)
+        const ComponentManager& components, std::uint32_t nodes_per_pixel = 4)
         : graph_context(graph_context)
         , components(components)
-        , camera(camera)
-        , shader_dir(std::move(shader_dir))
         , nodes_per_pixel(nodes_per_pixel)
     {
     }
 
-    void on_attach(vkkk::Context& context, vk::Extent2D extent) {
-        ready = nodes_per_pixel != 0 && create_pipeline(context) && create_dummy_points(context)
-            && context.resize_pipeline_ssbo(kPipeline, kJointsBlock, 1)
-            && context.alloc_pipeline_ssbo(kPipeline, kJointsBlock)
-            && resize_buffers(context, extent);
+    void on_attach(ViewerAdapter& adapter, Rhi::Extent2D) {
+        ready = prepare(adapter);
+        std::cout << (ready ? "Joint picking: GPU\n"
+                            : "Joint picking: CPU (GPU prepare failed)\n");
+    }
+
+    void on_resize(ViewerAdapter& adapter, Rhi::Extent2D) {
+        pick.reset();
+        ready = ready && prepare(adapter);
+    }
+
+    void on_update(ViewerAdapter& adapter, const Rhi::FrameState& frame) {
         if (ready) {
-            std::cout << "Joint picking: GPU\n";
-        }
-        else {
-            std::cout << "Joint picking: CPU (GPU prepare failed)\n";
+            pick.update(adapter, frame);
         }
     }
 
-    void on_resize(vkkk::Context& context, vk::Extent2D extent) {
-        pick_pending = false;
-        last_render_serial = 0;
-        ready = ready && resize_buffers(context, extent);
-    }
-
-    void on_update(vkkk::Context& context, const vkkk::Context::Frame& frame) {
-        current_serial = frame.serial;
-        if (!ready) {
+    void on_submit(ViewerAdapter& adapter, const Rhi::FrameState&) {
+        if (!ready || !enabled || !pick.pending()) {
             return;
         }
-
-        if (pick_pending && last_render_serial >= pending_serial) {
-            std::vector<vkkk::ABufferHit> raw_hits;
-            std::vector<GpuPickHit> hits;
-            bool overflow = false;
-            context.read_abuffer_pixel(
-                kABufferName, last_image_index, pending_x, pending_y,
-                raw_hits, overflow);
-            hits.reserve(raw_hits.size());
-            for (const auto& hit : raw_hits) {
-                hits.push_back(GpuPickHit{hit.vertex_id, hit.depth});
-            }
-            if (hit_callback) {
-                hit_callback(pending_request_id, hits, overflow);
-            }
-            pick_pending = false;
-        }
-
-        if (!want_pick || context.window() == nullptr) {
-            return;
-        }
-
-        if (context.window()->map_cursor(pick_event.x, pick_event.y, context.extent(),
-                pending_x, pending_y))
-        {
-            pending_serial = frame.serial;
-            pending_request_id = requested_request_id;
-            pick_pending = true;
-        }
-        else if (hit_callback) {
-            hit_callback(requested_request_id, {}, false);
-        }
-        want_pick = false;
-    }
-
-    void on_record(vkkk::Context& context, vk::raii::CommandBuffer& cmd, uint32_t image_index) {
-        if (!ready || !enabled || !pick_pending || !context.clear_abuffer(kABufferName, image_index)) {
-            return;
-        }
-
-        vkkk::PassDesc pass{};
-        pass.colors.clear();
-        pass.present = false;
-        context.begin_pass(cmd, image_index, pass);
 
         bool gpu_joints = false;
         std::uint32_t joint_count = 0;
@@ -116,69 +55,39 @@ public:
         {
             joint_count = static_cast<std::uint32_t>(
                 graph_context.computed_joints_device_count());
-            const auto bytes = static_cast<vk::DeviceSize>(joint_count)
-                * orlviewer::kJointStride;
-            gpu_joints = device_joints->bytes >= bytes
-                && context.resize_pipeline_ssbo(
-                    kPipeline, kJointsBlock, joint_count)
-                && context.write_pipeline_ssbo_from_cuda(
-                    kPipeline, kJointsBlock, image_index,
-                    device_joints->device_ptr, bytes);
+            gpu_joints = static_cast<bool>(adapter.upload_device_pick_joints(
+                {device_joints->device_ptr, device_joints->bytes}, joint_count));
         }
 
         std::vector<orlviewer::Joint> joints;
-        bool have_joints = gpu_joints;
         if (!gpu_joints) {
             joints = components.packed_joints();
-            have_joints = !joints.empty()
-                && context.resize_pipeline_ssbo(
-                    kPipeline, kJointsBlock, joints.size());
-            if (have_joints) {
-                joint_count = static_cast<std::uint32_t>(joints.size());
-            }
+            joint_count = static_cast<std::uint32_t>(joints.size());
         }
         rendered_joint_ids = components.packed_joint_ids();
         if (rendered_joint_ids.size() > joint_count) {
             rendered_joint_ids.resize(joint_count);
         }
 
-        if (have_joints) {
-            PointSizeUBO size = point_size;
-            size.value.x = std::clamp(size.value.x, context.point_size_range[0],
-                context.point_size_range[1]);
-            context.sync_ubo(kPipeline, vkkk::buf::CameraUBO, &camera.ubo_data, image_index);
-            context.sync_ubo(kPipeline, kPointSizeBlock, &size, image_index);
-            if (!gpu_joints) {
-                context.sync_ssbo(kPipeline, kJointsBlock, joints.data(),
-                    image_index, static_cast<uint32_t>(
-                        joints.size() * orlviewer::kJointStride));
-            }
-            if (context.bind(cmd, kPipeline, image_index)) {
-                context.draw_points(cmd, kDummyPoints, 0, joint_count);
-            }
+        const auto status = adapter.draw_joint_pick({
+            .joints = std::as_bytes(std::span{joints}),
+            .joint_count = joint_count,
+            .use_device_joints = gpu_joints,
+            .point_size = point_size,
+        });
+        if (!status) {
+            std::cerr << "JointPickingFeature: " << status.message << '\n';
         }
-
-        context.end_pass(cmd, image_index, pass);
-        context.barrier_abuffer_for_host(cmd);
-        last_image_index = image_index;
-        last_render_serial = current_serial;
     }
 
     bool available() const { return ready && enabled; }
 
-    std::uint64_t request(const vkkk::InputEvent& event) {
-        if (!available()) {
-            return 0;
-        }
-        pick_event = event;
-        requested_request_id = ++next_request_id;
-        want_pick = true;
-        return requested_request_id;
+    std::uint64_t request(double x, double y) {
+        return available() ? pick.request(x, y) : 0;
     }
 
-    void set_hit_callback(std::function<void(
-        std::uint64_t, const std::vector<GpuPickHit>&, bool)> callback) {
-        hit_callback = std::move(callback);
+    void set_hit_callback(PickRequest::HitCallback callback) {
+        pick.set_hit_callback(std::move(callback));
     }
 
     ComponentId resolve_joint_index(std::uint32_t index) const {
@@ -186,84 +95,27 @@ public:
             ? rendered_joint_ids[index] : ComponentId{};
     }
 
-    PointSizeUBO point_size{};
+    float point_size = 10.0f;
     bool enabled = true;
 
 private:
-    static constexpr const char* kPipeline = "orl_joint_picking";
-    static constexpr const char* kABufferName = "orl_joint_picking_abuffer";
-    static constexpr const char* kJointsBlock = "Joints";
-    static constexpr const char* kPointSizeBlock = "PointSizeUBO";
-    static constexpr const char* kDummyPoints = "orl_joint_pick_points";
-
-    bool create_pipeline(vkkk::Context& context) {
-        if (context.pipelines.contains(kPipeline)) {
-            return true;
+    bool prepare(ViewerAdapter& adapter) {
+        const auto status = adapter.prepare_pick_layer({
+            .layer = Rhi::PickLayer::joint,
+            .nodes_per_pixel = nodes_per_pixel,
+            .joint_stride = orlviewer::kJointStride,
+        });
+        if (!status) {
+            std::cerr << "JointPickingFeature: " << status.message << '\n';
         }
-
-        const auto vert_path = shader_dir / "joint_picking.vert";
-        const auto frag_path = shader_dir / "joint_picking.frag";
-        vkkk::ShaderModule vert_module;
-        vkkk::ShaderModule frag_module;
-        if (!context.load_shader(
-                vert_module, vert_path, vk::ShaderStageFlagBits::eVertex)
-            || !context.load_shader(
-                frag_module, frag_path, vk::ShaderStageFlagBits::eFragment))
-        {
-            return false;
-        }
-
-        vkkk::ShaderModulePack pack;
-        if (!pack.add_shader_module(vert_module) || !pack.add_shader_module(frag_module)) {
-            return false;
-        }
-
-        vkkk::PipelineOption option;
-        option.setup_input_assembly(vk::PrimitiveTopology::ePointList, false);
-        option.setup_multisampling(false, vk::SampleCountFlagBits::e1);
-        option.setup_rasterizer(false, false, vk::PolygonMode::eFill, 1.0f,
-            vk::CullModeFlagBits::eNone, vk::FrontFace::eCounterClockwise, false);
-        option.setup_depth_stencil(false, false, vk::CompareOp::eAlways, false, false);
-        return context.create_pipeline(kPipeline, pack, option, {vkkk::VERTEX}, true, true, {},
-            static_cast<vk::Format>(context.get_depth_format()));
-    }
-
-    bool create_dummy_points(vkkk::Context& context) {
-        if (context.points.contains(kDummyPoints)) {
-            return true;
-        }
-        const std::array<float, 3> vertex{0.0f, 0.0f, 0.0f};
-        vkkk::Points points({vkkk::VERTEX});
-        points.load(1, reinterpret_cast<const char*>(vertex.data()),
-            static_cast<uint32_t>(vertex.size() * sizeof(float)));
-        return context.load_points(kDummyPoints, points);
-    }
-
-    bool resize_buffers(vkkk::Context& context, vk::Extent2D extent) {
-        return context.resize_abuffer(kABufferName, extent, nodes_per_pixel)
-            && context.bind_pipeline_abuffer(kPipeline, kABufferName, 3, 4);
+        return static_cast<bool>(status);
     }
 
     SceneGraphContext& graph_context;
     const ComponentManager& components;
-    const vkkk::Camera& camera;
-    std::filesystem::path shader_dir;
-    std::function<void(
-        std::uint64_t, const std::vector<GpuPickHit>&, bool)> hit_callback;
+    PickRequest pick{Rhi::PickLayer::joint, "JointPickingFeature"};
     std::vector<ComponentId> rendered_joint_ids;
-    uint32_t nodes_per_pixel = 4;
-    uint32_t pending_x = 0;
-    uint32_t pending_y = 0;
-    uint32_t last_image_index = 0;
-    uint64_t pending_serial = 0;
-    uint64_t last_render_serial = 0;
-    uint64_t current_serial = 0;
-    uint64_t next_request_id = 0;
-    uint64_t requested_request_id = 0;
-    uint64_t pending_request_id = 0;
-    vkkk::InputEvent pick_event;
-    bool want_pick = false;
-    bool pick_pending = false;
+    std::uint32_t nodes_per_pixel = 4;
     bool ready = false;
 };
 

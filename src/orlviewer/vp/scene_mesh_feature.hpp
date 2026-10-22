@@ -1,292 +1,106 @@
 #pragma once
 
-#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "asset_mgr/scene.h"
-#include "built_in_shader/phong.h"
-#include "concepts/camera.h"
 #include "selection.hpp"
-#include "utils/sizeable.hpp"
-#include "vk_ins/shader_module_pack.hpp"
-#include "vp/feature.hpp"
+#include "vp/rhi_feature.hpp"
 
 namespace ORL
 {
 
-struct XRayInstanceAttrs : public vkkk::Sizeable<XRayInstanceAttrs> {
-    glm::mat4 model{1.0f};
-    glm::vec4 color{0.45f, 0.78f, 0.95f, 0.22f};
-};
-
-class SceneMeshFeature final : public vkkk::vp::ViewportFeature<vkkk::vp::ViewportPhase::Scene> {
+class SceneMeshFeature final : public RhiFeature {
 public:
-    SceneMeshFeature(vkkk::Scene& scene, bool right_handed, std::filesystem::path shader_dir,
-        const Selection& selection)
+    SceneMeshFeature(vkkk::Scene& scene, bool right_handed, const Selection& selection)
         : scene(scene)
         , right_handed(right_handed)
-        , shader_dir(std::move(shader_dir))
         , selection(selection)
     {
     }
 
     bool set_display_mode(std::string_view name) {
         if (name == "phong") {
-            mode = Mode::Phong;
+            shading = Rhi::SceneShading::phong;
             return true;
         }
         if (name == "xray") {
-            mode = Mode::XRay;
+            shading = Rhi::SceneShading::xray;
             return true;
         }
         return false;
     }
 
     std::string_view display_mode() const {
-        return mode == Mode::XRay ? "xray" : "phong";
+        return shading == Rhi::SceneShading::xray ? "xray" : "phong";
     }
 
-    void on_attach(vkkk::Context& context, vk::Extent2D) {
-        if (scene.camera == nullptr) {
-            return;
-        }
-        phong_ready = create_phong_pipeline(context)
-            && context.resize_pipeline_ssbo(kPhongPipeline, vkkk::buf::PhongInstanceAttrs, 1)
-            && context.alloc_pipeline_ssbo(kPhongPipeline, vkkk::buf::PhongInstanceAttrs);
-        wire_ready = create_wire_pipeline(context)
-            && context.resize_pipeline_ssbo(kWirePipeline, vkkk::buf::PhongInstanceAttrs, 1)
-            && context.alloc_pipeline_ssbo(kWirePipeline, vkkk::buf::PhongInstanceAttrs);
-        xray_ready = create_xray_pipeline(context)
-            && context.resize_pipeline_ssbo(kXRayPipeline, kXRayInstanceBlock, 1)
-            && context.alloc_pipeline_ssbo(kXRayPipeline, kXRayInstanceBlock);
-        if (!xray_ready) {
-            std::cerr << "SceneMeshFeature: x-ray pipeline is unavailable\n";
+    void on_attach(ViewerAdapter& adapter, Rhi::Extent2D) {
+        const auto status = adapter.prepare_scene_meshes({.right_handed = right_handed});
+        if (!status) {
+            std::cerr << "SceneMeshFeature: " << status.message << '\n';
         }
     }
 
-    void on_record(vkkk::Context& context, vk::raii::CommandBuffer& cmd, uint32_t image_index) {
+    void on_submit(ViewerAdapter& adapter, const Rhi::FrameState&) {
         if (scene.camera == nullptr || scene.object_count() == 0) {
             return;
         }
-        if (mode == Mode::XRay) {
-            record_xray(context, cmd, image_index);
-            record_wire(context, cmd, image_index);
-            return;
-        }
-        record_phong(context, cmd, image_index);
-        record_wire(context, cmd, image_index);
-    }
 
-private:
-    enum class Mode {
-        Phong,
-        XRay,
-    };
-
-    static constexpr const char* kPhongPipeline = "orl_scene_phong";
-    static constexpr const char* kWirePipeline = "orl_scene_wire";
-    static constexpr const char* kXRayPipeline = "orl_scene_xray";
-    static constexpr const char* kXRayInstanceBlock = "XRayInstanceAttrs";
-
-    vk::FrontFace front_face() const {
-        return right_handed ? vk::FrontFace::eClockwise : vk::FrontFace::eCounterClockwise;
-    }
-
-    bool create_phong_pipeline(vkkk::Context& context) {
-        if (context.pipelines.contains(kPhongPipeline)) {
-            return true;
-        }
-
-        vkkk::ShaderModule vert_module;
-        vkkk::ShaderModule frag_module;
-        if (!context.load_shader(
-                vert_module, vkkk::phong_vert,
-                vk::ShaderStageFlagBits::eVertex, "orl_scene_phong_vert")
-            || !context.load_shader(
-                frag_module, vkkk::phong_frag,
-                vk::ShaderStageFlagBits::eFragment, "orl_scene_phong_frag"))
-        {
-            return false;
-        }
-
-        vkkk::ShaderModulePack pack;
-        if (!pack.add_shader_module(vert_module) || !pack.add_shader_module(frag_module)) {
-            return false;
-        }
-
-        vkkk::PipelineOption option;
-        option.setup_input_assembly(vk::PrimitiveTopology::eTriangleList, false);
-        option.setup_multisampling(false, vk::SampleCountFlagBits::e1);
-        option.setup_rasterizer(false, false, vk::PolygonMode::eFill, 1.0f,
-            vk::CullModeFlagBits::eBack, front_face(), false);
-        option.setup_depth_stencil(true, true, vk::CompareOp::eLessOrEqual, false, false);
-        return context.create_pipeline(kPhongPipeline, pack, option, {vkkk::VERTEX, vkkk::NORMAL});
-    }
-
-    bool create_wire_pipeline(vkkk::Context& context) {
-        if (context.pipelines.contains(kWirePipeline)) {
-            return true;
-        }
-
-        vkkk::ShaderModule vert_module;
-        vkkk::ShaderModule frag_module;
-        if (!context.load_shader(
-                vert_module, vkkk::phong_vert,
-                vk::ShaderStageFlagBits::eVertex, "orl_scene_wire_vert")
-            || !context.load_shader(
-                frag_module, vkkk::phong_frag,
-                vk::ShaderStageFlagBits::eFragment, "orl_scene_wire_frag"))
-        {
-            return false;
-        }
-
-        vkkk::ShaderModulePack pack;
-        if (!pack.add_shader_module(vert_module) || !pack.add_shader_module(frag_module)) {
-            return false;
-        }
-
-        vkkk::PipelineOption option;
-        option.setup_input_assembly(vk::PrimitiveTopology::eTriangleList, false);
-        option.setup_multisampling(false, vk::SampleCountFlagBits::e1);
-        option.setup_rasterizer(false, false, vk::PolygonMode::eLine, 1.0f,
-            vk::CullModeFlagBits::eBack, front_face(), false);
-        option.setup_depth_stencil(true, false, vk::CompareOp::eLessOrEqual, false, false);
-        return context.create_pipeline(kWirePipeline, pack, option, {vkkk::VERTEX, vkkk::NORMAL});
-    }
-
-    bool create_xray_pipeline(vkkk::Context& context) {
-        if (context.pipelines.contains(kXRayPipeline)) {
-            return true;
-        }
-
-        const auto vert_path = shader_dir / "xray.vert";
-        const auto frag_path = shader_dir / "xray.frag";
-        vkkk::ShaderModule vert_module;
-        vkkk::ShaderModule frag_module;
-        if (!context.load_shader(
-                vert_module, vert_path, vk::ShaderStageFlagBits::eVertex)
-            || !context.load_shader(
-                frag_module, frag_path, vk::ShaderStageFlagBits::eFragment))
-        {
-            return false;
-        }
-
-        vkkk::ShaderModulePack pack;
-        if (!pack.add_shader_module(vert_module) || !pack.add_shader_module(frag_module)) {
-            return false;
-        }
-
-        vkkk::PipelineOption option;
-        option.setup_input_assembly(vk::PrimitiveTopology::eTriangleList, false);
-        option.setup_multisampling(false, vk::SampleCountFlagBits::e1);
-        option.setup_rasterizer(false, false, vk::PolygonMode::eFill, 1.0f,
-            vk::CullModeFlagBits::eNone, front_face(), false);
-        option.setup_depth_stencil(true, false, vk::CompareOp::eLessOrEqual, false, false);
-        option.blend_attachment_info.blendEnable = vk::True;
-        option.blend_attachment_info.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
-        option.blend_attachment_info.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
-        option.blend_attachment_info.colorBlendOp = vk::BlendOp::eAdd;
-        option.blend_attachment_info.srcAlphaBlendFactor = vk::BlendFactor::eOne;
-        option.blend_attachment_info.dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
-        option.blend_attachment_info.alphaBlendOp = vk::BlendOp::eAdd;
-        return context.create_pipeline(kXRayPipeline, pack, option, {vkkk::VERTEX, vkkk::NORMAL});
-    }
-
-    void record_phong(vkkk::Context& context, vk::raii::CommandBuffer& cmd, uint32_t image_index) {
-        if (!phong_ready) {
-            return;
-        }
-
-        vkkk::PointLightUBO light{};
-        light.vec = glm::vec4{2.0f, 3.0f, 2.0f, 1.0f};
-        light.color = glm::vec4{1.0f};
-        context.sync_ubo(kPhongPipeline, vkkk::buf::CameraUBO, &scene.camera->ubo_data, image_index);
-        context.sync_ubo(kPhongPipeline, vkkk::buf::PointLightUBO, &light, image_index);
-
+        instances.clear();
         scene.for_each_object([&](const std::string&, const vkkk::SceneObject& object) {
-            auto attrs = phong_material;
-            attrs.model = object.model;
-            context.sync_ssbo(kPhongPipeline, vkkk::buf::PhongInstanceAttrs, &attrs, image_index);
-            if (context.bind(cmd, kPhongPipeline, image_index)) {
-                context.draw(cmd, kPhongPipeline, object.mesh_name, 1);
-            }
+            instances.push_back({object.mesh_name, to_rhi(object.model)});
         });
-    }
-
-    void record_wire(vkkk::Context& context, vk::raii::CommandBuffer& cmd, uint32_t image_index) {
-        if (!wire_ready || scene.camera == nullptr) {
-            return;
-        }
-
-        vkkk::PointLightUBO light{};
-        light.vec = glm::vec4{2.0f, 3.0f, 2.0f, 1.0f};
-        light.color = glm::vec4{1.0f};
-        bool synced = false;
+        highlighted.clear();
         for (const auto& ref : selection.refs()) {
             if (ref.kind != SelectionRef::Kind::SceneObject) {
                 continue;
             }
-            const auto* object = scene.find_object(ref.object_name);
-            if (object == nullptr) {
-                continue;
-            }
-            if (!synced) {
-                context.sync_ubo(kWirePipeline, vkkk::buf::CameraUBO, &scene.camera->ubo_data,
-                    image_index);
-                context.sync_ubo(kWirePipeline, vkkk::buf::PointLightUBO, &light, image_index);
-                synced = true;
-            }
-            auto attrs = wire_material;
-            attrs.model = object->model;
-            context.sync_ssbo(kWirePipeline, vkkk::buf::PhongInstanceAttrs, &attrs, image_index);
-            if (context.bind(cmd, kWirePipeline, image_index)) {
-                context.draw(cmd, kWirePipeline, object->mesh_name, 1);
+            if (const auto* object = scene.find_object(ref.object_name); object != nullptr) {
+                highlighted.push_back({object->mesh_name, to_rhi(object->model)});
             }
         }
-    }
 
-    void record_xray(vkkk::Context& context, vk::raii::CommandBuffer& cmd, uint32_t image_index) {
-        if (!xray_ready) {
-            record_phong(context, cmd, image_index);
-            return;
-        }
-
-        context.sync_ubo(kXRayPipeline, vkkk::buf::CameraUBO, &scene.camera->ubo_data, image_index);
-        scene.for_each_object([&](const std::string&, const vkkk::SceneObject& object) {
-            auto attrs = xray_material;
-            attrs.model = object.model;
-            context.sync_ssbo(kXRayPipeline, kXRayInstanceBlock, &attrs, image_index);
-            if (context.bind(cmd, kXRayPipeline, image_index)) {
-                context.draw(cmd, kXRayPipeline, object.mesh_name, 1);
-            }
+        const auto status = adapter.draw_scene_meshes({
+            .shading = shading,
+            .instances = instances,
+            .highlighted = highlighted,
+            .surface = surface_material,
+            .highlight = highlight_material,
+            .xray_color = xray_color,
+            .light = light,
         });
+        if (!status) {
+            std::cerr << "SceneMeshFeature: " << status.message << '\n';
+        }
     }
 
+private:
     vkkk::Scene& scene;
     bool right_handed = true;
-    std::filesystem::path shader_dir;
     const Selection& selection;
-    Mode mode = Mode::Phong;
-    vkkk::PhongInstanceAttrs phong_material{
-        .model = glm::mat4{1.0f},
-        .ambient = glm::vec4{0.08f, 0.08f, 0.08f, 1.0f},
-        .diffuse = glm::vec4{0.72f, 0.72f, 0.72f, 1.0f},
-        .specular = glm::vec4{0.35f, 0.35f, 0.35f, 1.0f},
+    Rhi::SceneShading shading = Rhi::SceneShading::phong;
+    std::vector<Rhi::SceneMeshInstance> instances;
+    std::vector<Rhi::SceneMeshInstance> highlighted;
+    Rhi::SurfaceMaterial surface_material{
+        .ambient = {0.08f, 0.08f, 0.08f, 1.0f},
+        .diffuse = {0.72f, 0.72f, 0.72f, 1.0f},
+        .specular = {0.35f, 0.35f, 0.35f, 1.0f},
         .shininess = 32.0f,
     };
-    vkkk::PhongInstanceAttrs wire_material{
-        .model = glm::mat4{1.0f},
-        .ambient = glm::vec4{0.05f, 0.12f, 0.28f, 1.0f},
-        .diffuse = glm::vec4{0.2f, 0.45f, 1.0f, 1.0f},
-        .specular = glm::vec4{0.0f},
+    Rhi::SurfaceMaterial highlight_material{
+        .ambient = {0.05f, 0.12f, 0.28f, 1.0f},
+        .diffuse = {0.2f, 0.45f, 1.0f, 1.0f},
+        .specular = {0.0f, 0.0f, 0.0f, 0.0f},
         .shininess = 1.0f,
     };
-    XRayInstanceAttrs xray_material{};
-    bool phong_ready = false;
-    bool wire_ready = false;
-    bool xray_ready = false;
+    Rhi::Vec4 xray_color{0.45f, 0.78f, 0.95f, 0.22f};
+    Rhi::PointLight light{
+        .position = {2.0f, 3.0f, 2.0f, 1.0f},
+        .color = {1.0f, 1.0f, 1.0f, 1.0f},
+    };
 };
 
 } // namespace ORL
