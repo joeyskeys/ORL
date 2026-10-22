@@ -110,6 +110,14 @@ struct JointDraw {
     Vec4 line_color{0.62f, 0.44f, 0.14f, 1.0f};
 };
 
+// One registered shape drawn with a model transform and a flat color. Line
+// shapes keep the baked controller width; triangle shapes write depth.
+struct ShapeInstanceDraw {
+    std::string shape;
+    Mat4 model = identity_mat4();
+    Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
+};
+
 template <typename Adapter>
 concept ShapeRegistryAdapter = requires(
     Adapter& adapter,
@@ -145,9 +153,19 @@ concept JointDisplayAdapter = requires(
 };
 
 template <typename Adapter>
+concept ControllerDisplayAdapter = requires(
+    Adapter& adapter,
+    const ShapeInstanceDraw& draw)
+{
+    { adapter.prepare_controllers() } -> std::same_as<Status>;
+    { adapter.draw_controller(draw) } -> std::same_as<Status>;
+};
+
+template <typename Adapter>
 concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && ShapeRegistryAdapter<Adapter>
     && SceneMeshDisplayAdapter<Adapter>
-    && JointDisplayAdapter<Adapter>;
+    && JointDisplayAdapter<Adapter>
+    && ControllerDisplayAdapter<Adapter>;
 
 } // namespace ORL::Rhi

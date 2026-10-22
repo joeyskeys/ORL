@@ -89,6 +89,14 @@ constexpr const char* kLineColorBlock = "LineColorUBO";
 constexpr const char* kJointDummyPoints = "orl_joint_draw_points";
 constexpr const char* kJointDummyLines = "orl_joint_draw_lines";
 
+// --- Controllers ------------------------------------------------------------
+
+constexpr const char* kControllerLinePipeline = "orl_controller_lines";
+constexpr const char* kControllerPolyPipeline = "orl_controller_poly";
+constexpr const char* kModelBlock = "ModelUBO";
+constexpr const char* kColorBlock = "ColorUBO";
+constexpr float kControllerLineWidth = 2.5f;
+
 bool load_dummy_points(vkkk::Context& context, const std::string& name) {
     if (context.points.contains(name)) {
         return true;
@@ -474,6 +482,83 @@ Status VkkkAdapter::draw_joints(const JointDraw& draw) {
                 if (context.bind(*cmd, kJointPointPipeline, image_index)) {
                     context.draw_points(*cmd, kJointDummyPoints, 0, joint_count);
                 }
+            }
+        });
+    return Status::success();
+}
+
+Status VkkkAdapter::prepare_controllers() {
+    if (auto status = impl_->require_context("prepare_controllers"); !status) {
+        return status;
+    }
+    auto& context = *impl_->context;
+    auto& state = impl_->controllers;
+
+    PipelineDesc lines;
+    lines.name = kControllerLinePipeline;
+    lines.vertex.path = impl_->shader_path("controller.vert");
+    lines.fragment.path = impl_->shader_path("line.frag");
+    lines.topology = vk::PrimitiveTopology::eLineList;
+    lines.line_width = vkkk_detail::line_width_for(context, kControllerLineWidth);
+    lines.depth_write = false;
+    state.lines_ready = vkkk_detail::create_pipeline(context, lines);
+
+    PipelineDesc poly = lines;
+    poly.name = kControllerPolyPipeline;
+    poly.topology = vk::PrimitiveTopology::eTriangleList;
+    poly.line_width = 1.0f;
+    poly.depth_write = true;
+    state.poly_ready = vkkk_detail::create_pipeline(context, poly);
+
+    state.prepared = true;
+    if (!state.lines_ready) {
+        return Status::failure(StatusCode::resource_failure,
+            "controller curve pipeline is unavailable");
+    }
+    if (!state.poly_ready) {
+        return Status::failure(StatusCode::resource_failure,
+            "controller polygon pipeline is unavailable");
+    }
+    return Status::success();
+}
+
+Status VkkkAdapter::draw_controller(const ShapeInstanceDraw& draw) {
+    if (auto status = impl_->require_frame("draw_controller"); !status) {
+        return status;
+    }
+    const auto state = impl_->controllers;
+    if (!state.prepared) {
+        return Status::failure(StatusCode::not_initialized,
+            "draw_controller requires prepare_controllers");
+    }
+    const auto found = impl_->shapes.find(draw.shape);
+    if (found == impl_->shapes.end()) {
+        return Status::failure(StatusCode::invalid_argument,
+            "draw_controller: shape '" + draw.shape + "' is not registered");
+    }
+    const bool lines = found->second == ShapeKind::lines;
+    if (lines ? !state.lines_ready : !state.poly_ready) {
+        return Status::success();
+    }
+
+    const char* pipeline = lines ? kControllerLinePipeline : kControllerPolyPipeline;
+    const auto model = to_glm(draw.model);
+    const auto color = to_glm(draw.color);
+    impl_->queue(Pass::scene,
+        [impl = impl_.get(), lines, pipeline, shape = draw.shape, model, color](
+            vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
+            auto& context = *impl->context;
+            context.sync_ubo(pipeline, vkkk::buf::CameraUBO, &impl->camera_ubo, image_index);
+            context.sync_ubo(pipeline, kModelBlock, &model, image_index);
+            context.sync_ubo(pipeline, kColorBlock, &color, image_index);
+            if (!context.bind(*cmd, pipeline, image_index)) {
+                return;
+            }
+            if (lines) {
+                context.draw_lines(*cmd, shape);
+            }
+            else {
+                context.draw(*cmd, pipeline, shape, 1);
             }
         });
     return Status::success();

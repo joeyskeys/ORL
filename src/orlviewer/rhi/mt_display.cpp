@@ -36,4 +36,12 @@ Status MtAdapter::draw_joints(const JointDraw&) {
     return unsupported("draw_joints");
 }
 
+Status MtAdapter::prepare_controllers() {
+    return unsupported("prepare_controllers");
+}
+
+Status MtAdapter::draw_controller(const ShapeInstanceDraw&) {
+    return unsupported("draw_controller");
+}
+
 } // namespace ORL::Rhi

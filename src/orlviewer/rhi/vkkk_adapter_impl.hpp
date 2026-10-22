@@ -149,6 +149,12 @@ struct SceneMeshState {
     bool xray_ready = false;
 };
 
+struct ControllerState {
+    bool prepared = false;
+    bool lines_ready = false;
+    bool poly_ready = false;
+};
+
 struct JointState {
     bool prepared = false;
     bool points_ready = false;
@@ -182,6 +188,7 @@ struct VkkkAdapter::Impl {
     std::unordered_map<std::string, ShapeKind> shapes;
     vkkk_detail::SceneMeshState scene_meshes;
     vkkk_detail::JointState joints;
+    vkkk_detail::ControllerState controllers;
     std::uint64_t next_mesh_token = 1;
     Capabilities caps{
         .windowed = true,

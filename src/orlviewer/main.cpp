@@ -336,8 +336,7 @@ int main(int argc, char** argv) {
     viewport.add_feature<ORL::LocatorFeature>(
         components, camera,
         std::filesystem::path{ORL_RESOURCE_DIR} / "shaders", selection);
-    viewport.add_feature<ORL::ControllerFeature>(
-        components, camera, selection, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    viewport.add_feature<ORL::ControllerFeature>(components, selection);
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
         camera, font_path, make_coordinate_system(viewport_frame));
     viewport.add_feature<ORL::RuntimeHudFeature>();

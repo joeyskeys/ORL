@@ -44,6 +44,8 @@ public:
     Status prepare_joints(const JointDisplaySetup& setup);
     Status upload_device_joints(DeviceBuffer device, std::uint32_t count);
     Status draw_joints(const JointDraw& draw);
+    Status prepare_controllers();
+    Status draw_controller(const ShapeInstanceDraw& draw);
 
 private:
     struct Impl;
