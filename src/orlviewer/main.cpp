@@ -380,8 +380,7 @@ int main(int argc, char** argv) {
     ORL::RotateOp rotate_op(selection, navigator, &window_backend);
     ORL::ScaleOp scale_op(selection, navigator, &window_backend);
     viewport.add_feature<ORL::TransformGuideFeature>(
-        move_op, rotate_op, scale_op, camera,
-        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+        move_op, rotate_op, scale_op, camera);
     if (auto* csr = viewport.find_feature(csr_handle)) {
         clear_scene.set_csr(*csr);
     }

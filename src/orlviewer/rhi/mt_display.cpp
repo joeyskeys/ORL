@@ -60,4 +60,12 @@ Status MtAdapter::draw_ortho_grid(const OrthoGridDraw&) {
     return unsupported("draw_ortho_grid");
 }
 
+Status MtAdapter::prepare_overlay_lines() {
+    return unsupported("prepare_overlay_lines");
+}
+
+Status MtAdapter::draw_overlay_line(const ShapeInstanceDraw&) {
+    return unsupported("draw_overlay_line");
+}
+
 } // namespace ORL::Rhi

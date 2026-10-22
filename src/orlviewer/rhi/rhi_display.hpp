@@ -196,6 +196,17 @@ concept OrthoGridDisplayAdapter = requires(Adapter& adapter, const OrthoGridDraw
     { adapter.draw_ortho_grid(draw) } -> std::same_as<Status>;
 };
 
+// Line shapes drawn in the overlay pass without depth test, e.g. transform
+// guides. Width follows the controller lines.
+template <typename Adapter>
+concept OverlayLineDisplayAdapter = requires(
+    Adapter& adapter,
+    const ShapeInstanceDraw& draw)
+{
+    { adapter.prepare_overlay_lines() } -> std::same_as<Status>;
+    { adapter.draw_overlay_line(draw) } -> std::same_as<Status>;
+};
+
 template <typename Adapter>
 concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && ShapeRegistryAdapter<Adapter>
@@ -203,6 +214,7 @@ concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && JointDisplayAdapter<Adapter>
     && ControllerDisplayAdapter<Adapter>
     && LocatorDisplayAdapter<Adapter>
-    && OrthoGridDisplayAdapter<Adapter>;
+    && OrthoGridDisplayAdapter<Adapter>
+    && OverlayLineDisplayAdapter<Adapter>;
 
 } // namespace ORL::Rhi

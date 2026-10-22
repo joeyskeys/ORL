@@ -193,6 +193,9 @@ struct VkkkAdapter::Impl {
     bool locators_ready = false;
     bool ortho_grid_prepared = false;
     bool ortho_grid_ready = false;
+    bool overlay_lines_prepared = false;
+    bool overlay_lines_ready = false;
+    bool overlay_line_width_dynamic = false;
     std::uint64_t next_mesh_token = 1;
     Capabilities caps{
         .windowed = true,

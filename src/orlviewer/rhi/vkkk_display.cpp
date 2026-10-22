@@ -96,6 +96,7 @@ constexpr const char* kControllerPolyPipeline = "orl_controller_poly";
 constexpr const char* kModelBlock = "ModelUBO";
 constexpr const char* kColorBlock = "ColorUBO";
 constexpr float kControllerLineWidth = 2.5f;
+constexpr const char* kOverlayLinePipeline = "orl_transform_guide";
 
 // --- Locators ---------------------------------------------------------------
 
@@ -706,6 +707,70 @@ Status VkkkAdapter::draw_ortho_grid(const OrthoGridDraw& draw) {
             context.sync_ubo(kOrthoGridPipeline, kOrthoGridBlock, &ubo, image_index);
             if (context.bind(*cmd, kOrthoGridPipeline, image_index)) {
                 context.draw(*cmd, kOrthoGridPipeline, kOrthoGridTriangle, 1);
+            }
+        });
+    return Status::success();
+}
+
+Status VkkkAdapter::prepare_overlay_lines() {
+    if (auto status = impl_->require_context("prepare_overlay_lines"); !status) {
+        return status;
+    }
+    auto& context = *impl_->context;
+    PipelineDesc desc;
+    desc.name = kOverlayLinePipeline;
+    desc.vertex.path = impl_->shader_path("controller.vert");
+    desc.fragment.path = impl_->shader_path("line.frag");
+    desc.topology = vk::PrimitiveTopology::eLineList;
+    desc.line_width = vkkk_detail::line_width_for(context, kControllerLineWidth);
+    desc.dynamic_line_width = context.wide_lines_enabled;
+    desc.depth_test = false;
+    desc.depth_write = false;
+    impl_->overlay_lines_ready = vkkk_detail::create_pipeline(context, desc);
+    impl_->overlay_line_width_dynamic =
+        impl_->overlay_lines_ready && context.wide_lines_enabled;
+    impl_->overlay_lines_prepared = true;
+    if (!impl_->overlay_lines_ready) {
+        return Status::failure(StatusCode::resource_failure,
+            "overlay line pipeline is unavailable");
+    }
+    return Status::success();
+}
+
+Status VkkkAdapter::draw_overlay_line(const ShapeInstanceDraw& draw) {
+    if (auto status = impl_->require_frame("draw_overlay_line"); !status) {
+        return status;
+    }
+    if (!impl_->overlay_lines_prepared) {
+        return Status::failure(StatusCode::not_initialized,
+            "draw_overlay_line requires prepare_overlay_lines");
+    }
+    const auto found = impl_->shapes.find(draw.shape);
+    if (found == impl_->shapes.end() || found->second != ShapeKind::lines) {
+        return Status::failure(StatusCode::invalid_argument,
+            "draw_overlay_line: '" + draw.shape + "' is not a registered line shape");
+    }
+    if (!impl_->overlay_lines_ready) {
+        return Status::success();
+    }
+
+    const auto model = to_glm(draw.model);
+    const auto color = to_glm(draw.color);
+    const float width = impl_->overlay_line_width_dynamic
+        ? vkkk_detail::line_width_for(*impl_->context, kControllerLineWidth) : 0.0f;
+    impl_->queue(Pass::overlay,
+        [impl = impl_.get(), shape = draw.shape, model, color, width](
+            vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
+            auto& context = *impl->context;
+            context.sync_ubo(kOverlayLinePipeline, vkkk::buf::CameraUBO,
+                &impl->camera_ubo, image_index);
+            context.sync_ubo(kOverlayLinePipeline, kModelBlock, &model, image_index);
+            context.sync_ubo(kOverlayLinePipeline, kColorBlock, &color, image_index);
+            if (context.bind(*cmd, kOverlayLinePipeline, image_index)) {
+                if (impl->overlay_line_width_dynamic) {
+                    cmd.setLineWidth(width);
+                }
+                context.draw_lines(*cmd, shape);
             }
         });
     return Status::success();
