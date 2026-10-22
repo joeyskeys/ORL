@@ -32,6 +32,8 @@ VkkkAdapter::Impl::~Impl() {
             // native context has already reported its failure.
         }
     }
+    frame_axis.reset();
+    world_grid.reset();
     context.reset();
     window.reset();
 }
@@ -147,6 +149,7 @@ Status VkkkAdapter::set_camera(const CameraState& camera) {
     std::memcpy(&impl_->camera_ubo.view, camera.view.data(), sizeof(glm::mat4));
     std::memcpy(
         &impl_->camera_ubo.proj, camera.projection.data(), sizeof(glm::mat4));
+    impl_->camera_mirror.ubo_data = impl_->camera_ubo;
     return Status::success();
 }
 

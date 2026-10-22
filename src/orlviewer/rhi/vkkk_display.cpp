@@ -829,4 +829,79 @@ Status VkkkAdapter::draw_status_text(std::string_view text) {
     return Status::success();
 }
 
+Status VkkkAdapter::prepare_world_grid(const WorldGridSetup& setup) {
+    if (auto status = impl_->require_context("prepare_world_grid"); !status) {
+        return status;
+    }
+    if (impl_->world_grid == nullptr) {
+        try {
+            auto grid = std::make_unique<vkkk::vp::GridFeature>(
+                impl_->camera_mirror, setup.cell_count, setup.cell_size);
+            grid->on_attach(*impl_->context, vk::Extent2D{
+                impl_->config.initial_extent.width, impl_->config.initial_extent.height});
+            impl_->world_grid = std::move(grid);
+        }
+        catch (const std::exception& error) {
+            return exception_status(StatusCode::resource_failure, error);
+        }
+    }
+    return Status::success();
+}
+
+Status VkkkAdapter::draw_world_grid() {
+    if (auto status = impl_->require_frame("draw_world_grid"); !status) {
+        return status;
+    }
+    if (impl_->world_grid == nullptr) {
+        return Status::failure(StatusCode::not_initialized,
+            "draw_world_grid requires prepare_world_grid");
+    }
+    impl_->world_grid->on_update(*impl_->context, *impl_->active_frame);
+    impl_->queue(Pass::scene,
+        [impl = impl_.get()](vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
+            impl->world_grid->on_record(*impl->context, cmd, image_index);
+        });
+    return Status::success();
+}
+
+Status VkkkAdapter::prepare_frame_axis(const FrameAxisSetup& setup) {
+    if (auto status = impl_->require_context("prepare_frame_axis"); !status) {
+        return status;
+    }
+    if (impl_->frame_axis == nullptr) {
+        vkkk::vp::CoordinateSystem frame;
+        for (std::size_t axis = 0; axis < frame.axes.size(); ++axis) {
+            frame.axes[axis] = {setup.axes[axis][0], setup.axes[axis][1], setup.axes[axis][2]};
+            frame.labels[axis] = setup.labels[axis];
+        }
+        try {
+            auto gizmo = std::make_unique<vkkk::vp::FrameAxisFeature>(
+                impl_->camera_mirror, std::filesystem::path{setup.font_path}, frame);
+            gizmo->on_attach(*impl_->context, vk::Extent2D{
+                impl_->config.initial_extent.width, impl_->config.initial_extent.height});
+            impl_->frame_axis = std::move(gizmo);
+        }
+        catch (const std::exception& error) {
+            return exception_status(StatusCode::resource_failure, error);
+        }
+    }
+    return Status::success();
+}
+
+Status VkkkAdapter::draw_frame_axis() {
+    if (auto status = impl_->require_frame("draw_frame_axis"); !status) {
+        return status;
+    }
+    if (impl_->frame_axis == nullptr) {
+        return Status::failure(StatusCode::not_initialized,
+            "draw_frame_axis requires prepare_frame_axis");
+    }
+    impl_->frame_axis->on_update(*impl_->context, *impl_->active_frame);
+    impl_->queue(Pass::overlay,
+        [impl = impl_.get()](vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
+            impl->frame_axis->on_record(*impl->context, cmd, image_index);
+        });
+    return Status::success();
+}
+
 } // namespace ORL::Rhi

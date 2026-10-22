@@ -136,6 +136,24 @@ struct OrthoGridDraw {
     Vec4 axis_color{0.08f, 0.08f, 0.08f, 2.0f};
 };
 
+// World-space XZ reference grid centered on the origin.
+struct WorldGridSetup {
+    std::uint32_t cell_count = 24;
+    float cell_size = 1.0f;
+};
+
+// Screen-corner orientation gizmo; axes and labels describe the world frame.
+struct FrameAxisSetup {
+    std::array<Vec3, 3> axes{{
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f},
+    }};
+    std::array<std::string, 3> labels{"x", "y", "z"};
+    // Empty draws the gizmo without labels.
+    std::string font_path;
+};
+
 template <typename Adapter>
 concept ShapeRegistryAdapter = requires(
     Adapter& adapter,
@@ -216,6 +234,19 @@ concept StatusTextDisplayAdapter = requires(Adapter& adapter, std::string_view t
     { adapter.draw_status_text(text) } -> std::same_as<Status>;
 };
 
+// Both use the camera from set_camera.
+template <typename Adapter>
+concept ReferenceDisplayAdapter = requires(
+    Adapter& adapter,
+    const WorldGridSetup& grid,
+    const FrameAxisSetup& axis)
+{
+    { adapter.prepare_world_grid(grid) } -> std::same_as<Status>;
+    { adapter.draw_world_grid() } -> std::same_as<Status>;
+    { adapter.prepare_frame_axis(axis) } -> std::same_as<Status>;
+    { adapter.draw_frame_axis() } -> std::same_as<Status>;
+};
+
 template <typename Adapter>
 concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && ShapeRegistryAdapter<Adapter>
@@ -225,6 +256,7 @@ concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && LocatorDisplayAdapter<Adapter>
     && OrthoGridDisplayAdapter<Adapter>
     && OverlayLineDisplayAdapter<Adapter>
-    && StatusTextDisplayAdapter<Adapter>;
+    && StatusTextDisplayAdapter<Adapter>
+    && ReferenceDisplayAdapter<Adapter>;
 
 } // namespace ORL::Rhi

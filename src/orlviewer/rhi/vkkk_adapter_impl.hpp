@@ -20,6 +20,8 @@
 
 #include "built_in_shader/common.h"
 #include "concepts/camera.h"
+#include "vp/frame_axis.hpp"
+#include "vp/grid.hpp"
 #if !ORL_USE_QT6
 #include "gui/gui.h"
 #endif
@@ -218,6 +220,10 @@ struct VkkkAdapter::Impl {
     bool shut_down = false;
     AdapterConfig config{};
     vkkk::CameraUBO camera_ubo{};
+    // vkkk's reference features read a Camera; only ubo_data is kept current.
+    vkkk::Camera camera_mirror{};
+    std::unique_ptr<vkkk::vp::GridFeature> world_grid;
+    std::unique_ptr<vkkk::vp::FrameAxisFeature> frame_axis;
 
     ~Impl();
 

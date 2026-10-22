@@ -52,14 +52,13 @@
 #include "vp/controller_feature.hpp"
 #include "vp/deformer_feature.hpp"
 #include "vp/solver_feature.hpp"
-#include "vp/frame_axis.hpp"
-#include "vp/grid.hpp"
 #include "vp/joint_feature.hpp"
 #include "vp/joint_picking_feature.hpp"
 #include "vp/locator_feature.hpp"
 #include "vp/mesh_csr_feature.hpp"
 #include "vp/mesh_picking_feature.hpp"
 #include "vp/ortho_grid_feature.hpp"
+#include "vp/reference_features.hpp"
 #include "vp/rig_picking_feature.hpp"
 #include "vp/runtime_hud_feature.hpp"
 #include "vp/scene_mesh_feature.hpp"
@@ -124,11 +123,16 @@ ViewportFrame make_viewport_frame(const ORL::Frame& frame) {
     return viewport_frame;
 }
 
-vkkk::vp::CoordinateSystem make_coordinate_system(const ViewportFrame& viewport_frame) {
-    return {
-        viewport_frame.axes,
-        {"x", "y", "z"},
-    };
+ORL::Rhi::FrameAxisSetup make_frame_axis_setup(const ViewportFrame& viewport_frame,
+    const std::filesystem::path& font_path)
+{
+    ORL::Rhi::FrameAxisSetup setup;
+    for (std::size_t axis = 0; axis < setup.axes.size(); ++axis) {
+        setup.axes[axis] = ORL::to_rhi(viewport_frame.axes[axis]);
+    }
+    setup.labels = {"x", "y", "z"};
+    setup.font_path = font_path.string();
+    return setup;
 }
 
 ORL::Rhi::CameraState make_camera_state(const vkkk::Camera& camera) {
@@ -296,7 +300,7 @@ int main(int argc, char** argv) {
 #endif
 
     using Viewport = ORL::ViewportHost<
-        vkkk::vp::GridFeature,
+        ORL::WorldGridFeature,
         ORL::OrthoGridFeature,
         ORL::SceneMeshFeature,
         ORL::JointFeature,
@@ -309,13 +313,13 @@ int main(int argc, char** argv) {
         ORL::JointPickingFeature,
         ORL::DeformerFeature,
         ORL::LocatorFeature,
-        vkkk::vp::FrameAxisFeature,
+        ORL::FrameAxisFeature,
         ORL::RuntimeHudFeature,
         ORL::TransformGuideFeature>;
     Viewport viewport(adapter);
     const std::filesystem::path font_path =
         std::filesystem::path{ORL_VKKK_SOURCE_DIR} / "resource/font/Roboto-Light.ttf";
-    const auto grid_handle = viewport.add_feature<vkkk::vp::GridFeature>(camera);
+    const auto grid_handle = viewport.add_feature<ORL::WorldGridFeature>();
     const auto mesh_handle = viewport.add_feature<ORL::SceneMeshFeature>(
         scene, viewport_frame.right_handed, selection);
     const auto csr_handle = viewport.add_feature<ORL::MeshCsrFeature>(
@@ -335,8 +339,8 @@ int main(int argc, char** argv) {
         scene_graph, components);
     viewport.add_feature<ORL::LocatorFeature>(components, selection);
     viewport.add_feature<ORL::ControllerFeature>(components, selection);
-    const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
-        camera, font_path, make_coordinate_system(viewport_frame));
+    const auto axis_handle = viewport.add_feature<ORL::FrameAxisFeature>(
+        make_frame_axis_setup(viewport_frame, font_path));
     viewport.add_feature<ORL::RuntimeHudFeature>();
 
     ORL::CameraNavigator navigator(camera, world_frame, viewport_frame.right_handed);

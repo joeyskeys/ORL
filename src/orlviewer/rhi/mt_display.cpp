@@ -76,4 +76,20 @@ Status MtAdapter::draw_status_text(std::string_view) {
     return unsupported("draw_status_text");
 }
 
+Status MtAdapter::prepare_world_grid(const WorldGridSetup&) {
+    return unsupported("prepare_world_grid");
+}
+
+Status MtAdapter::draw_world_grid() {
+    return unsupported("draw_world_grid");
+}
+
+Status MtAdapter::prepare_frame_axis(const FrameAxisSetup&) {
+    return unsupported("prepare_frame_axis");
+}
+
+Status MtAdapter::draw_frame_axis() {
+    return unsupported("draw_frame_axis");
+}
+
 } // namespace ORL::Rhi

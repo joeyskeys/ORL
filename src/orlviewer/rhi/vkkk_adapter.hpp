@@ -53,6 +53,10 @@ public:
     Status draw_overlay_line(const ShapeInstanceDraw& draw);
     Status prepare_status_text();
     Status draw_status_text(std::string_view text);
+    Status prepare_world_grid(const WorldGridSetup& setup);
+    Status draw_world_grid();
+    Status prepare_frame_axis(const FrameAxisSetup& setup);
+    Status draw_frame_axis();
 
 private:
     friend struct VkkkNative;
