@@ -3,18 +3,14 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "built_in_shader/fixed_color.h"
-#include "concepts/camera.h"
 #include "concepts/mesh.h"
-#include "vk_ins/shader_module_pack.hpp"
-#include "vkkk_native.hpp"
+#include "vkkk_adapter_impl.hpp"
 
 namespace ORL::Rhi {
 namespace {
@@ -23,127 +19,45 @@ constexpr const char* kPipelineName = "orl_rhi_fixed_color";
 constexpr const char* kInstanceBlockName = "FixedColorInstanceAttrs";
 constexpr const char* kCameraBlockName = "CameraUBO";
 
-Status exception_status(StatusCode code, const std::exception& error) {
-    return Status::failure(code, error.what());
-}
-
 } // namespace
 
-struct VkkkAdapter::Impl {
-    struct MeshRecord {
-        std::string name;
-        std::uint32_t index_count = 0;
-    };
-
-    std::unique_ptr<VkkkWindow> window;
-    std::unique_ptr<vkkk::Context> context;
-    std::optional<vkkk::Context::Frame> active_frame;
-    std::unordered_map<std::uint64_t, MeshRecord> meshes;
-    std::vector<std::pair<MeshToken, std::uint32_t>> pending_draws;
-    VkkkPassHooks pass_hooks;
-    std::uint64_t next_mesh_token = 1;
-    Capabilities caps{
-        .windowed = true,
-        .offscreen = false,
-        .indexed_mesh = true,
-        .depth_test = true,
-        .blending = true,
-        .picking = false,
-        .host_upload = true,
-    };
-    bool initialized = false;
-    bool pipeline_ready = false;
-    bool shut_down = false;
-    AdapterConfig config{};
-    vkkk::CameraUBO camera_ubo{};
-
-    ~Impl() {
-        if (context != nullptr) {
-            try {
-                context->wait_idle();
-            }
-            catch (...) {
-                // Destruction must not throw after a partially initialized
-                // native context has already reported its failure.
-            }
+VkkkAdapter::Impl::~Impl() {
+    if (context != nullptr) {
+        try {
+            context->wait_idle();
         }
-        context.reset();
-        window.reset();
+        catch (...) {
+            // Destruction must not throw after a partially initialized
+            // native context has already reported its failure.
+        }
+    }
+    context.reset();
+    window.reset();
+}
+
+Status VkkkAdapter::Impl::create_pipeline() {
+    vkkk_detail::PipelineDesc desc;
+    desc.name = kPipelineName;
+    desc.vertex = {vkkk::fixed_color_vert, "orl_rhi_fixed_color_vert"};
+    desc.fragment = {vkkk::fixed_color_frag, "orl_rhi_fixed_color_frag"};
+    if (!vkkk_detail::create_pipeline(*context, desc)) {
+        return Status::failure(
+            StatusCode::resource_failure,
+            "vkkk could not create the RHI fixed-color pipeline");
+    }
+    if (!context->resize_pipeline_ssbo(kPipelineName, kInstanceBlockName, 1)
+        || !context->alloc_pipeline_ssbo(kPipelineName, kInstanceBlockName))
+    {
+        return Status::failure(
+            StatusCode::resource_failure,
+            "vkkk could not allocate the RHI instance buffer");
     }
 
-    Status create_pipeline() {
-        vkkk::ShaderModule vertex_module;
-        vkkk::ShaderModule fragment_module;
-        if (!vertex_module.load(
-                vkkk::fixed_color_vert,
-                vk::ShaderStageFlagBits::eVertex,
-                "orl_rhi_fixed_color_vert")
-            || !fragment_module.load(
-                vkkk::fixed_color_frag,
-                vk::ShaderStageFlagBits::eFragment,
-                "orl_rhi_fixed_color_frag"))
-        {
-            return Status::failure(
-                StatusCode::resource_failure,
-                "vkkk could not compile the RHI fixed-color shaders");
-        }
-
-        vkkk::ShaderModulePack shader_pack;
-        if (!shader_pack.add_shader_module(vertex_module)
-            || !shader_pack.add_shader_module(fragment_module))
-        {
-            return Status::failure(
-                StatusCode::resource_failure,
-                "vkkk could not assemble the RHI shader pack");
-        }
-
-        vkkk::PipelineOption option;
-        option.setup_input_assembly(vk::PrimitiveTopology::eTriangleList, false);
-        option.setup_multisampling(false, vk::SampleCountFlagBits::e1);
-        option.setup_rasterizer(
-            false,
-            false,
-            vk::PolygonMode::eFill,
-            1.0f,
-            vk::CullModeFlagBits::eNone,
-            vk::FrontFace::eCounterClockwise,
-            false);
-        option.setup_depth_stencil(
-            true,
-            true,
-            vk::CompareOp::eLessOrEqual,
-            false,
-            false);
-
-        if (!context->create_pipeline(
-                kPipelineName,
-                shader_pack,
-                option,
-                {vkkk::VERTEX}))
-        {
-            return Status::failure(
-                StatusCode::resource_failure,
-                "vkkk could not create the RHI fixed-color pipeline");
-        }
-        if (!context->resize_pipeline_ssbo(
-                kPipelineName,
-                kInstanceBlockName,
-                1)
-            || !context->alloc_pipeline_ssbo(
-                kPipelineName,
-                kInstanceBlockName))
-        {
-            return Status::failure(
-                StatusCode::resource_failure,
-                "vkkk could not allocate the RHI instance buffer");
-        }
-
-        camera_ubo.view = glm::mat4{1.0f};
-        camera_ubo.proj = glm::mat4{1.0f};
-        pipeline_ready = true;
-        return Status::success();
-    }
-};
+    camera_ubo.view = glm::mat4{1.0f};
+    camera_ubo.proj = glm::mat4{1.0f};
+    pipeline_ready = true;
+    return Status::success();
+}
 
 VkkkAdapter::VkkkAdapter()
     : impl_(std::make_unique<Impl>()) {}
@@ -398,12 +312,17 @@ Status VkkkAdapter::end_frame(FrameState& frame, bool present) {
             [this, present](vk::raii::CommandBuffer& command_buffer,
                             std::uint32_t image_index) {
                 const auto& hooks = impl_->pass_hooks;
+                for (const auto& command : impl_->picking_commands) {
+                    command(command_buffer, image_index);
+                }
                 if (hooks.before_scene) {
                     hooks.before_scene(command_buffer, image_index);
                 }
 
+                const bool has_overlay =
+                    hooks.overlay || !impl_->overlay_commands.empty();
                 vkkk::PassDesc pass;
-                pass.present = present && !hooks.overlay;
+                pass.present = present && !has_overlay;
                 const auto& clear = impl_->config.clear_color;
                 pass.colors[0].clear = {clear[0], clear[1], clear[2], clear[3]};
                 impl_->context->begin_pass(
@@ -443,6 +362,9 @@ Status VkkkAdapter::end_frame(FrameState& frame, bool present) {
                             index_count);
                     }
                 }
+                for (const auto& command : impl_->scene_commands) {
+                    command(command_buffer, image_index);
+                }
                 if (hooks.scene) {
                     hooks.scene(command_buffer, image_index);
                 }
@@ -451,7 +373,7 @@ Status VkkkAdapter::end_frame(FrameState& frame, bool present) {
                     image_index,
                     pass);
 
-                if (hooks.overlay) {
+                if (has_overlay) {
                     vkkk::PassDesc overlay_pass;
                     overlay_pass.colors.front().load = vkkk::PassLoadOp::Load;
                     overlay_pass.depth_index = vkkk::kNoDepth;
@@ -460,7 +382,12 @@ Status VkkkAdapter::end_frame(FrameState& frame, bool present) {
                         command_buffer,
                         image_index,
                         overlay_pass);
-                    hooks.overlay(command_buffer, image_index);
+                    for (const auto& command : impl_->overlay_commands) {
+                        command(command_buffer, image_index);
+                    }
+                    if (hooks.overlay) {
+                        hooks.overlay(command_buffer, image_index);
+                    }
                     impl_->context->end_pass(
                         command_buffer,
                         image_index,
@@ -468,13 +395,13 @@ Status VkkkAdapter::end_frame(FrameState& frame, bool present) {
                 }
             });
         impl_->context->end_frame(native_frame);
-        impl_->pending_draws.clear();
+        impl_->clear_frame_commands();
         impl_->active_frame.reset();
         frame.drawable = false;
         return Status::success();
     }
     catch (const std::exception& error) {
-        impl_->pending_draws.clear();
+        impl_->clear_frame_commands();
         impl_->active_frame.reset();
         return exception_status(StatusCode::device_failure, error);
     }

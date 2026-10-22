@@ -202,6 +202,8 @@ int main(int argc, char** argv) {
     adapter_config.force_shader_recompile = startup.force_recompile;
     adapter_config.application_name = "ORL";
     adapter_config.window_title = "ORL Viewport";
+    adapter_config.shader_directory =
+        (std::filesystem::path{ORL_RESOURCE_DIR} / "shaders").string();
     adapter_config.shader_cache_directory = spirv_cache_directory.string();
     adapter_config.pipeline_cache_path = pipeline_cache_path.string();
     adapter_config.clear_color = {0.38f, 0.38f, 0.38f, 1.0f};
@@ -315,8 +317,7 @@ int main(int argc, char** argv) {
         std::filesystem::path{ORL_VKKK_SOURCE_DIR} / "resource/font/Roboto-Light.ttf";
     const auto grid_handle = viewport.add_feature<vkkk::vp::GridFeature>(camera);
     const auto mesh_handle = viewport.add_feature<ORL::SceneMeshFeature>(
-        scene, viewport_frame.right_handed,
-        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders", selection);
+        scene, viewport_frame.right_handed, selection);
     const auto csr_handle = viewport.add_feature<ORL::MeshCsrFeature>(
         scene, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
     const auto auto_weight_handle = viewport.add_feature<ORL::AutoWeightFeature>(
@@ -726,7 +727,7 @@ int main(int argc, char** argv) {
             grid->visible = show_grid && !navigator.orthographic;
         }
 
-        viewport.update();
+        viewport.update(frame);
         if (const auto status = viewport.end_frame(frame); !status) {
             std::cerr << "Viewer frame could not be submitted: " << status.message << '\n';
             exit_code = 1;

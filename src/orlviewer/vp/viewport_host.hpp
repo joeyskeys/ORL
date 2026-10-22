@@ -8,32 +8,45 @@
 #include <vector>
 
 #include "orlviewer/rhi/vkkk_native.hpp"
+#include "vp/rhi_feature.hpp"
 #include "vp/viewport.hpp"
 
 namespace ORL
 {
 
+// Features still recording native vkkk commands. They are recorded through the
+// adapter's pass hooks until they move onto adapter display calls.
+template <typename Feature>
+concept NativeFeatureType = !RhiFeatureType<Feature>
+    && vkkk::vp::ViewportFeatureType<Feature>;
+
+template <typename Feature>
+concept HostedFeatureType = RhiFeatureType<Feature> || NativeFeatureType<Feature>;
+
 // Viewer feature host driven by the RHI adapter. The adapter owns the window,
-// frame lifecycle, and the cleared scene pass; features that still record
-// vkkk commands are attached here and recorded through the adapter's pass
-// hooks in the same Picking -> Scene -> ScreenOverlay order as vkkk's Viewport.
-// Per frame call: begin_frame -> update -> end_frame.
-template <vkkk::vp::ViewportFeatureType... FeatureTypes>
+// frame lifecycle, and passes. Per frame call: begin_frame -> update ->
+// end_frame. end_frame submits RhiFeature draws in feature order, then the
+// adapter records them before any native feature in the same pass.
+template <HostedFeatureType... FeatureTypes>
 class ViewportHost {
 public:
-    explicit ViewportHost(Rhi::VkkkAdapter& adapter)
+    explicit ViewportHost(ViewerAdapter& adapter)
         : adapter(adapter)
         , ctx(Rhi::VkkkNative::context(adapter))
-        , viewport_extent(ctx.extent())
+        , viewport_extent{ctx.extent().width, ctx.extent().height}
     {
         Rhi::VkkkPassHooks hooks;
-        hooks.before_scene = [this](vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
-            record_phase<vkkk::vp::ViewportPhase::Picking>(cmd, image_index);
-        };
-        hooks.scene = [this](vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
-            record_phase<vkkk::vp::ViewportPhase::Scene>(cmd, image_index);
-        };
-        if constexpr (has_screen_overlay) {
+        if constexpr (has_native_phase<vkkk::vp::ViewportPhase::Picking>) {
+            hooks.before_scene = [this](vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
+                record_phase<vkkk::vp::ViewportPhase::Picking>(cmd, image_index);
+            };
+        }
+        if constexpr (has_native_phase<vkkk::vp::ViewportPhase::Scene>) {
+            hooks.scene = [this](vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
+                record_phase<vkkk::vp::ViewportPhase::Scene>(cmd, image_index);
+            };
+        }
+        if constexpr (has_native_phase<vkkk::vp::ViewportPhase::ScreenOverlay>) {
             hooks.overlay = [this](vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
                 record_phase<vkkk::vp::ViewportPhase::ScreenOverlay>(cmd, image_index);
             };
@@ -53,31 +66,42 @@ public:
         if (!status) {
             return status;
         }
-        const vk::Extent2D current{frame.extent.width, frame.extent.height};
-        if (current != viewport_extent) {
-            viewport_extent = current;
+        if (frame.extent != viewport_extent) {
+            viewport_extent = frame.extent;
             resize_all();
         }
         return status;
     }
 
-    void update() {
-        const auto* frame = Rhi::VkkkNative::active_frame(adapter);
-        if (frame == nullptr) {
+    void update(const Rhi::FrameState& frame) {
+        const auto* native_frame = Rhi::VkkkNative::active_frame(adapter);
+        if (native_frame == nullptr) {
             return;
         }
         ([&] {
             for (auto& entry : store<FeatureTypes>().entries) {
-                entry.feature.on_update(ctx, *frame);
+                if constexpr (RhiFeatureType<FeatureTypes>) {
+                    entry.feature.on_update(adapter, frame);
+                }
+                else {
+                    entry.feature.on_update(ctx, *native_frame);
+                }
             }
         }(), ...);
     }
 
     Rhi::Status end_frame(Rhi::FrameState& frame) {
+        ([&] {
+            if constexpr (RhiFeatureType<FeatureTypes>) {
+                for (auto& entry : store<FeatureTypes>().entries) {
+                    entry.feature.on_submit(adapter, frame);
+                }
+            }
+        }(), ...);
         return adapter.end_frame(frame, true);
     }
 
-    template <vkkk::vp::ViewportFeatureType Feature, typename... Args>
+    template <HostedFeatureType Feature, typename... Args>
         requires ((std::same_as<Feature, FeatureTypes> || ...))
     vkkk::vp::FeatureHandle<Feature> add_feature(Args&&... args) {
         const vkkk::vp::FeatureHandle<Feature> handle{next_feature_id++};
@@ -88,12 +112,18 @@ public:
         });
 
         auto& feature = entries.back().feature;
-        feature.on_attach(ctx, viewport_extent);
-        feature.on_resize(ctx, viewport_extent);
+        if constexpr (RhiFeatureType<Feature>) {
+            feature.on_attach(adapter, viewport_extent);
+            feature.on_resize(adapter, viewport_extent);
+        }
+        else {
+            feature.on_attach(ctx, native_extent());
+            feature.on_resize(ctx, native_extent());
+        }
         return handle;
     }
 
-    template <vkkk::vp::ViewportFeatureType Feature>
+    template <HostedFeatureType Feature>
         requires ((std::same_as<Feature, FeatureTypes> || ...))
     Feature* find_feature(vkkk::vp::FeatureHandle<Feature> handle) {
         auto& entries = store<Feature>().entries;
@@ -102,7 +132,7 @@ public:
         return it == entries.end() ? nullptr : &it->feature;
     }
 
-    template <vkkk::vp::ViewportFeatureType Feature>
+    template <HostedFeatureType Feature>
         requires ((std::same_as<Feature, FeatureTypes> || ...))
     bool remove_feature(vkkk::vp::FeatureHandle<Feature> handle) {
         auto& entries = store<Feature>().entries;
@@ -116,22 +146,36 @@ public:
     }
 
     Rhi::Extent2D extent() const {
-        return {viewport_extent.width, viewport_extent.height};
+        return viewport_extent;
     }
 
 private:
-    static constexpr bool has_screen_overlay =
-        ((FeatureTypes::phase == vkkk::vp::ViewportPhase::ScreenOverlay) || ...);
+    template <typename Feature, vkkk::vp::ViewportPhase Phase>
+    static constexpr bool native_in_phase() {
+        if constexpr (NativeFeatureType<Feature>) {
+            return Feature::phase == Phase;
+        }
+        else {
+            return false;
+        }
+    }
+
+    template <vkkk::vp::ViewportPhase Phase>
+    static constexpr bool has_native_phase = (native_in_phase<FeatureTypes, Phase>() || ...);
 
     template <typename Feature>
     vkkk::vp::FeatureStore<Feature>& store() {
         return std::get<vkkk::vp::FeatureStore<Feature>>(feature_stores);
     }
 
+    vk::Extent2D native_extent() const {
+        return {viewport_extent.width, viewport_extent.height};
+    }
+
     template <vkkk::vp::ViewportPhase Phase>
     void record_phase(vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
         ([&] {
-            if constexpr (FeatureTypes::phase == Phase) {
+            if constexpr (native_in_phase<FeatureTypes, Phase>()) {
                 for (auto& entry : store<FeatureTypes>().entries) {
                     entry.feature.on_record(ctx, cmd, image_index);
                 }
@@ -142,14 +186,19 @@ private:
     void resize_all() {
         ([&] {
             for (auto& entry : store<FeatureTypes>().entries) {
-                entry.feature.on_resize(ctx, viewport_extent);
+                if constexpr (RhiFeatureType<FeatureTypes>) {
+                    entry.feature.on_resize(adapter, viewport_extent);
+                }
+                else {
+                    entry.feature.on_resize(ctx, native_extent());
+                }
             }
         }(), ...);
     }
 
-    Rhi::VkkkAdapter& adapter;
+    ViewerAdapter& adapter;
     vkkk::Context& ctx;
-    vk::Extent2D viewport_extent{};
+    Rhi::Extent2D viewport_extent{};
     std::uint64_t next_feature_id = 1;
     std::tuple<vkkk::vp::FeatureStore<FeatureTypes>...> feature_stores;
 };

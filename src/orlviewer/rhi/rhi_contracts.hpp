@@ -66,6 +66,8 @@ struct AdapterConfig {
     bool force_shader_recompile = false;
     std::string application_name = "ORL";
     std::string window_title = "ORL";
+    // Backend shader sources for the viewer display families.
+    std::string shader_directory;
     std::string shader_cache_directory;
     // Loaded at initialize and written back by shutdown when non-empty.
     std::string pipeline_cache_path;

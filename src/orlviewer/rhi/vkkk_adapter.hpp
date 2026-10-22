@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "adapter.hpp"
+#include "rhi_display.hpp"
 
 namespace ORL::Rhi {
 
@@ -35,6 +36,11 @@ public:
     void wait_idle() noexcept;
     Status shutdown();
 
+    Status register_shape(std::string_view name, ShapeKind kind,
+        const ShapeGeometry& geometry);
+    Status prepare_scene_meshes(const SceneMeshSetup& setup);
+    Status draw_scene_meshes(const SceneMeshDraw& draw);
+
 private:
     friend struct VkkkNative;
 
@@ -42,6 +48,6 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-static_assert(StaticAdapter<VkkkAdapter>);
+static_assert(ViewerDisplayAdapter<VkkkAdapter>);
 
 } // namespace ORL::Rhi

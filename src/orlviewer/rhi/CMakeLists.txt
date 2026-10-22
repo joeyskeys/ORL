@@ -27,6 +27,8 @@ if(ORL_RHI_BACKEND_RESOLVED STREQUAL "VKKK")
     add_library(orl_rhi_vkkk STATIC
         vkkk_adapter.cpp
         vkkk_adapter.hpp
+        vkkk_adapter_impl.hpp
+        vkkk_display.cpp
         vkkk_native.hpp
     )
     target_include_directories(orl_rhi_vkkk
@@ -57,6 +59,7 @@ elseif(ORL_RHI_BACKEND_RESOLVED STREQUAL "MT")
     add_library(orl_rhi_mt STATIC
         mt_adapter.cpp
         mt_adapter.hpp
+        mt_display.cpp
     )
     target_include_directories(orl_rhi_mt
         PRIVATE

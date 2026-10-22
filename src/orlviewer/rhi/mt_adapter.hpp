@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "adapter.hpp"
+#include "rhi_display.hpp"
 
 namespace ORL::Rhi {
 
@@ -35,11 +36,17 @@ public:
     void wait_idle() noexcept;
     Status shutdown();
 
+    // Display families report unsupported until their MSL pipelines exist.
+    Status register_shape(std::string_view name, ShapeKind kind,
+        const ShapeGeometry& geometry);
+    Status prepare_scene_meshes(const SceneMeshSetup& setup);
+    Status draw_scene_meshes(const SceneMeshDraw& draw);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
 
-static_assert(StaticAdapter<MtAdapter>);
+static_assert(ViewerDisplayAdapter<MtAdapter>);
 
 } // namespace ORL::Rhi
