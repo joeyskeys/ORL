@@ -149,6 +149,17 @@ struct SceneMeshState {
     bool xray_ready = false;
 };
 
+struct JointState {
+    bool prepared = false;
+    bool points_ready = false;
+    bool lines_ready = false;
+    bool line_width_dynamic = false;
+    std::size_t joint_stride = 0;
+    // Serial of the frame whose joint buffers hold the last device upload.
+    std::optional<std::uint64_t> device_upload_serial;
+    std::uint32_t device_joint_count = 0;
+};
+
 } // namespace vkkk_detail
 
 struct VkkkAdapter::Impl {
@@ -170,6 +181,7 @@ struct VkkkAdapter::Impl {
     std::vector<VkkkRecordFn> overlay_commands;
     std::unordered_map<std::string, ShapeKind> shapes;
     vkkk_detail::SceneMeshState scene_meshes;
+    vkkk_detail::JointState joints;
     std::uint64_t next_mesh_token = 1;
     Capabilities caps{
         .windowed = true,

@@ -1,5 +1,8 @@
 #include "vkkk_adapter.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>
@@ -7,6 +10,7 @@
 #include "built_in_shader/phong.h"
 #include "concepts/line.h"
 #include "concepts/mesh.h"
+#include "concepts/point.h"
 #include "vkkk_adapter_impl.hpp"
 
 namespace ORL::Rhi {
@@ -71,6 +75,44 @@ std::vector<SceneMeshRecord> scene_records(std::span<const SceneMeshInstance> in
         records.push_back({instance.mesh, to_glm(instance.model)});
     }
     return records;
+}
+
+// --- Joints -----------------------------------------------------------------
+
+constexpr const char* kJointPointPipeline = "orl_joints";
+constexpr const char* kJointLinePipeline = "orl_joint_lines";
+constexpr const char* kJointsBlock = "Joints";
+constexpr const char* kPointSizeBlock = "PointSizeUBO";
+constexpr const char* kPointColorBlock = "PointColorUBO";
+constexpr const char* kLineWidthBlock = "LineWidthUBO";
+constexpr const char* kLineColorBlock = "LineColorUBO";
+constexpr const char* kJointDummyPoints = "orl_joint_draw_points";
+constexpr const char* kJointDummyLines = "orl_joint_draw_lines";
+
+bool load_dummy_points(vkkk::Context& context, const std::string& name) {
+    if (context.points.contains(name)) {
+        return true;
+    }
+    const std::array<float, 3> vertex{0.0f, 0.0f, 0.0f};
+    vkkk::Points points({vkkk::VERTEX});
+    points.load(1, reinterpret_cast<const char*>(vertex.data()),
+        static_cast<std::uint32_t>(vertex.size() * sizeof(float)));
+    return context.load_points(name, points);
+}
+
+bool load_dummy_lines(vkkk::Context& context, const std::string& name) {
+    if (context.lines.contains(name)) {
+        return true;
+    }
+    constexpr float vertices[] = {
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+    };
+    constexpr std::uint32_t indices[] = {0, 1};
+    vkkk::Lines lines({vkkk::VERTEX});
+    lines.load(2, reinterpret_cast<const char*>(vertices), sizeof(vertices),
+        2, reinterpret_cast<const char*>(indices), sizeof(indices));
+    return context.load_lines(name, lines);
 }
 
 } // namespace
@@ -256,6 +298,181 @@ Status VkkkAdapter::draw_scene_meshes(const SceneMeshDraw& draw) {
                     &attrs, image_index);
                 if (context.bind(*cmd, kWirePipeline, image_index)) {
                     context.draw(*cmd, kWirePipeline, instance.mesh, 1);
+                }
+            }
+        });
+    return Status::success();
+}
+
+Status VkkkAdapter::prepare_joints(const JointDisplaySetup& setup) {
+    if (auto status = impl_->require_context("prepare_joints"); !status) {
+        return status;
+    }
+    if (setup.joint_stride == 0) {
+        return Status::failure(StatusCode::invalid_argument,
+            "prepare_joints needs a joint stride");
+    }
+    auto& context = *impl_->context;
+    auto& state = impl_->joints;
+    state.joint_stride = setup.joint_stride;
+
+    PipelineDesc points;
+    points.name = kJointPointPipeline;
+    points.vertex.path = impl_->shader_path("point.vert");
+    points.fragment.path = impl_->shader_path("point.frag");
+    points.topology = vk::PrimitiveTopology::ePointList;
+    state.points_ready = vkkk_detail::create_pipeline(context, points)
+        && load_dummy_points(context, kJointDummyPoints)
+        && context.resize_pipeline_ssbo(kJointPointPipeline, kJointsBlock, 1)
+        && context.alloc_pipeline_ssbo(kJointPointPipeline, kJointsBlock);
+
+    PipelineDesc lines;
+    lines.name = kJointLinePipeline;
+    lines.vertex.path = impl_->shader_path("line.vert");
+    lines.fragment.path = impl_->shader_path("line.frag");
+    lines.topology = vk::PrimitiveTopology::eLineList;
+    lines.line_width = vkkk_detail::line_width_for(context, setup.line_width);
+    lines.dynamic_line_width = context.wide_lines_enabled;
+    lines.depth_write = false;
+    state.lines_ready = vkkk_detail::create_pipeline(context, lines)
+        && load_dummy_lines(context, kJointDummyLines)
+        && context.resize_pipeline_ssbo(kJointLinePipeline, kJointsBlock, 1)
+        && context.alloc_pipeline_ssbo(kJointLinePipeline, kJointsBlock);
+    state.line_width_dynamic = state.lines_ready && context.wide_lines_enabled;
+
+    state.prepared = true;
+    if (!state.points_ready) {
+        return Status::failure(StatusCode::resource_failure,
+            "joint point-list pipeline is unavailable");
+    }
+    if (!state.lines_ready) {
+        return Status::failure(StatusCode::resource_failure,
+            "joint line-list pipeline is unavailable");
+    }
+    return Status::success();
+}
+
+Status VkkkAdapter::upload_device_joints(DeviceBuffer device, std::uint32_t count) {
+    if (auto status = impl_->require_frame("upload_device_joints"); !status) {
+        return status;
+    }
+    auto& state = impl_->joints;
+    if (!state.prepared) {
+        return Status::failure(StatusCode::not_initialized,
+            "upload_device_joints requires prepare_joints");
+    }
+    state.device_upload_serial.reset();
+    state.device_joint_count = 0;
+    const auto bytes = static_cast<vk::DeviceSize>(count) * state.joint_stride;
+    if (count == 0 || device.device_ptr == 0 || device.bytes < bytes) {
+        return Status::failure(StatusCode::invalid_argument,
+            "device joints are empty or smaller than the requested count");
+    }
+
+    auto& context = *impl_->context;
+    const auto image_index = impl_->active_frame->image_index;
+    try {
+        const bool uploaded = context.resize_pipeline_ssbo(
+                kJointPointPipeline, kJointsBlock, count)
+            && context.resize_pipeline_ssbo(kJointLinePipeline, kJointsBlock, count)
+            && context.write_pipeline_ssbo_from_cuda(kJointPointPipeline, kJointsBlock,
+                image_index, device.device_ptr, bytes)
+            && context.write_pipeline_ssbo_from_cuda(kJointLinePipeline, kJointsBlock,
+                image_index, device.device_ptr, bytes);
+        if (!uploaded) {
+            return Status::failure(StatusCode::resource_failure,
+                "vkkk could not copy device joints into the joint buffers");
+        }
+    }
+    catch (const std::exception& error) {
+        return exception_status(StatusCode::resource_failure, error);
+    }
+    state.device_upload_serial = impl_->active_frame->serial;
+    state.device_joint_count = count;
+    return Status::success();
+}
+
+Status VkkkAdapter::draw_joints(const JointDraw& draw) {
+    if (auto status = impl_->require_frame("draw_joints"); !status) {
+        return status;
+    }
+    const auto state = impl_->joints;
+    if (!state.prepared) {
+        return Status::failure(StatusCode::not_initialized,
+            "draw_joints requires prepare_joints");
+    }
+    std::uint32_t joint_count = draw.joint_count;
+    std::vector<std::byte> joints;
+    if (draw.use_device_joints) {
+        if (state.device_upload_serial != impl_->active_frame->serial) {
+            return Status::failure(StatusCode::invalid_argument,
+                "draw_joints uses device joints that were not uploaded this frame");
+        }
+        joint_count = std::min(joint_count, state.device_joint_count);
+    }
+    else {
+        if (draw.joints.size() < static_cast<std::size_t>(joint_count) * state.joint_stride) {
+            return Status::failure(StatusCode::invalid_argument,
+                "draw_joints host data is smaller than joint_count records");
+        }
+        joints.assign(draw.joints.begin(),
+            draw.joints.begin() + static_cast<std::ptrdiff_t>(joint_count * state.joint_stride));
+    }
+    if (joint_count == 0) {
+        return Status::success();
+    }
+
+    auto& context = *impl_->context;
+    const glm::vec4 point_size{
+        vkkk_detail::point_size_for(context, draw.point_size), 0.0f, 0.0f, 0.0f};
+    const glm::vec4 line_width{
+        vkkk_detail::line_width_for(context, draw.line_width), 0.0f, 0.0f, 0.0f};
+    const auto point_color = to_glm(draw.point_color);
+    const auto line_color = to_glm(draw.line_color);
+    const bool host = !draw.use_device_joints;
+    const bool lines = draw.lines && state.lines_ready;
+    const bool points = draw.points && state.points_ready;
+
+    impl_->queue(Pass::scene,
+        [impl = impl_.get(), state, host, lines, points, joint_count,
+            joints = std::move(joints), point_size, line_width, point_color, line_color](
+            vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
+            auto& context = *impl->context;
+            const auto bytes = static_cast<std::uint32_t>(joints.size());
+            if (lines
+                && (!host || context.resize_pipeline_ssbo(
+                    kJointLinePipeline, kJointsBlock, joint_count)))
+            {
+                if (host) {
+                    context.sync_ssbo(kJointLinePipeline, kJointsBlock, joints.data(),
+                        image_index, bytes);
+                }
+                context.sync_ubo(kJointLinePipeline, vkkk::buf::CameraUBO,
+                    &impl->camera_ubo, image_index);
+                context.sync_ubo(kJointLinePipeline, kLineWidthBlock, &line_width, image_index);
+                context.sync_ubo(kJointLinePipeline, kLineColorBlock, &line_color, image_index);
+                if (context.bind(*cmd, kJointLinePipeline, image_index)) {
+                    if (state.line_width_dynamic) {
+                        cmd.setLineWidth(line_width.x);
+                    }
+                    context.draw_lines(*cmd, kJointDummyLines, 0, joint_count);
+                }
+            }
+
+            if (points
+                && (!host || context.resize_pipeline_ssbo(
+                    kJointPointPipeline, kJointsBlock, joint_count)))
+            {
+                if (host) {
+                    context.sync_ssbo(kJointPointPipeline, kJointsBlock, joints.data(),
+                        image_index, bytes);
+                }
+                context.sync_ubo(kJointPointPipeline, vkkk::buf::CameraUBO,
+                    &impl->camera_ubo, image_index);
+                context.sync_ubo(kJointPointPipeline, kPointSizeBlock, &point_size, image_index);
+                context.sync_ubo(kJointPointPipeline, kPointColorBlock, &point_color, image_index);
+                if (context.bind(*cmd, kJointPointPipeline, image_index)) {
+                    context.draw_points(*cmd, kJointDummyPoints, 0, joint_count);
                 }
             }
         });

@@ -332,8 +332,7 @@ int main(int argc, char** argv) {
     const auto deformer_handle = viewport.add_feature<ORL::DeformerFeature>(
         scene_graph, deformer_id, weight_id, selection);
     const auto joint_feature_handle = viewport.add_feature<ORL::JointFeature>(
-        scene_graph, components, camera,
-        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+        scene_graph, components);
     viewport.add_feature<ORL::LocatorFeature>(
         components, camera,
         std::filesystem::path{ORL_RESOURCE_DIR} / "shaders", selection);

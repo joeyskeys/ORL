@@ -2,6 +2,7 @@
 
 #include <array>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -82,6 +83,33 @@ struct SceneMeshDraw {
     PointLight light{};
 };
 
+// A CUDA device allocation shared with the graphics backend.
+struct DeviceBuffer {
+    std::uint64_t device_ptr = 0;
+    std::size_t bytes = 0;
+};
+
+// Joints are packed ORL rig joints; the adapter treats them as opaque records
+// of joint_stride bytes that the joint shaders decode.
+struct JointDisplaySetup {
+    std::size_t joint_stride = 0;
+    // Baked into the line pipeline when the backend has no dynamic width.
+    float line_width = 2.5f;
+};
+
+struct JointDraw {
+    // Host joints; ignored when use_device_joints draws the last device upload.
+    std::span<const std::byte> joints{};
+    std::uint32_t joint_count = 0;
+    bool use_device_joints = false;
+    bool lines = true;
+    bool points = true;
+    float point_size = 10.0f;
+    Vec4 point_color{0.95f, 0.78f, 0.28f, 1.0f};
+    float line_width = 2.5f;
+    Vec4 line_color{0.62f, 0.44f, 0.14f, 1.0f};
+};
+
 template <typename Adapter>
 concept ShapeRegistryAdapter = requires(
     Adapter& adapter,
@@ -101,9 +129,25 @@ concept SceneMeshDisplayAdapter = requires(
     { adapter.draw_scene_meshes(draw) } -> std::same_as<Status>;
 };
 
+// upload_device_joints copies device joints into the current frame's joint
+// buffers immediately, so a failure lets the caller fall back to host joints.
+template <typename Adapter>
+concept JointDisplayAdapter = requires(
+    Adapter& adapter,
+    const JointDisplaySetup& setup,
+    DeviceBuffer device,
+    std::uint32_t count,
+    const JointDraw& draw)
+{
+    { adapter.prepare_joints(setup) } -> std::same_as<Status>;
+    { adapter.upload_device_joints(device, count) } -> std::same_as<Status>;
+    { adapter.draw_joints(draw) } -> std::same_as<Status>;
+};
+
 template <typename Adapter>
 concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && ShapeRegistryAdapter<Adapter>
-    && SceneMeshDisplayAdapter<Adapter>;
+    && SceneMeshDisplayAdapter<Adapter>
+    && JointDisplayAdapter<Adapter>;
 
 } // namespace ORL::Rhi

@@ -16,13 +16,17 @@
 #include "concepts/point.h"
 #include "gui/input.hpp"
 #include "../scene_graph_context.hpp"
+#include "utils/sizeable.hpp"
 #include "vk_ins/shader_module_pack.hpp"
 #include "vp/feature.hpp"
-#include "vp/joint_feature.hpp"
 #include "vp/picking.hpp"
 
 namespace ORL
 {
+
+struct PointSizeUBO : public vkkk::Sizeable<PointSizeUBO> {
+    glm::vec4 value{10.0f, 0.0f, 0.0f, 0.0f};
+};
 
 // GPU joint pick: same point size and radial discard as JointFeature, written
 // into a vkkk A-buffer so overlapping hits can be resolved on readback.

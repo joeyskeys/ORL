@@ -24,4 +24,16 @@ Status MtAdapter::draw_scene_meshes(const SceneMeshDraw&) {
     return unsupported("draw_scene_meshes");
 }
 
+Status MtAdapter::prepare_joints(const JointDisplaySetup&) {
+    return unsupported("prepare_joints");
+}
+
+Status MtAdapter::upload_device_joints(DeviceBuffer, std::uint32_t) {
+    return unsupported("upload_device_joints");
+}
+
+Status MtAdapter::draw_joints(const JointDraw&) {
+    return unsupported("draw_joints");
+}
+
 } // namespace ORL::Rhi

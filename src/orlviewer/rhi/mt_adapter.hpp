@@ -41,6 +41,9 @@ public:
         const ShapeGeometry& geometry);
     Status prepare_scene_meshes(const SceneMeshSetup& setup);
     Status draw_scene_meshes(const SceneMeshDraw& draw);
+    Status prepare_joints(const JointDisplaySetup& setup);
+    Status upload_device_joints(DeviceBuffer device, std::uint32_t count);
+    Status draw_joints(const JointDraw& draw);
 
 private:
     struct Impl;
