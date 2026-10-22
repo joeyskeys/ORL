@@ -44,4 +44,12 @@ Status MtAdapter::draw_controller(const ShapeInstanceDraw&) {
     return unsupported("draw_controller");
 }
 
+Status MtAdapter::prepare_locators() {
+    return unsupported("prepare_locators");
+}
+
+Status MtAdapter::draw_locators(std::string_view, std::span<const LocatorInstance>) {
+    return unsupported("draw_locators");
+}
+
 } // namespace ORL::Rhi

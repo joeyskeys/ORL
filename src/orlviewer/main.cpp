@@ -333,9 +333,7 @@ int main(int argc, char** argv) {
         scene_graph, deformer_id, weight_id, selection);
     const auto joint_feature_handle = viewport.add_feature<ORL::JointFeature>(
         scene_graph, components);
-    viewport.add_feature<ORL::LocatorFeature>(
-        components, camera,
-        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders", selection);
+    viewport.add_feature<ORL::LocatorFeature>(components, selection);
     viewport.add_feature<ORL::ControllerFeature>(components, selection);
     const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
         camera, font_path, make_coordinate_system(viewport_frame));

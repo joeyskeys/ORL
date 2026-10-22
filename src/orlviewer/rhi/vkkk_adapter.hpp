@@ -45,6 +45,8 @@ public:
     Status draw_joints(const JointDraw& draw);
     Status prepare_controllers();
     Status draw_controller(const ShapeInstanceDraw& draw);
+    Status prepare_locators();
+    Status draw_locators(std::string_view shape, std::span<const LocatorInstance> instances);
 
 private:
     friend struct VkkkNative;

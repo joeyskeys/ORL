@@ -118,6 +118,12 @@ struct ShapeInstanceDraw {
     Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
 };
 
+// Locators draw one line shape instanced once per record.
+struct LocatorInstance {
+    Mat4 model = identity_mat4();
+    Vec4 color{0.95f, 0.78f, 0.28f, 1.0f};
+};
+
 template <typename Adapter>
 concept ShapeRegistryAdapter = requires(
     Adapter& adapter,
@@ -162,10 +168,21 @@ concept ControllerDisplayAdapter = requires(
 };
 
 template <typename Adapter>
+concept LocatorDisplayAdapter = requires(
+    Adapter& adapter,
+    std::string_view shape,
+    std::span<const LocatorInstance> instances)
+{
+    { adapter.prepare_locators() } -> std::same_as<Status>;
+    { adapter.draw_locators(shape, instances) } -> std::same_as<Status>;
+};
+
+template <typename Adapter>
 concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && ShapeRegistryAdapter<Adapter>
     && SceneMeshDisplayAdapter<Adapter>
     && JointDisplayAdapter<Adapter>
-    && ControllerDisplayAdapter<Adapter>;
+    && ControllerDisplayAdapter<Adapter>
+    && LocatorDisplayAdapter<Adapter>;
 
 } // namespace ORL::Rhi

@@ -16,6 +16,22 @@ namespace ORL::rig_shapes
 {
 
 inline constexpr const char* kControllerQuad = "orl_controller_quad";
+inline constexpr const char* kLocatorCross = "orl_locator_cross";
+
+inline Rhi::ShapeGeometry locator_cross(float half = 0.15f) {
+    return {
+        .positions = {
+            {-half, 0.0f, 0.0f}, {half, 0.0f, 0.0f},
+            {0.0f, -half, 0.0f}, {0.0f, half, 0.0f},
+            {0.0f, 0.0f, -half}, {0.0f, 0.0f, half},
+        },
+        .indices = {0, 1, 2, 3, 4, 5},
+    };
+}
+
+inline Rhi::Status register_locator_shapes(ViewerAdapter& adapter) {
+    return adapter.register_shape(kLocatorCross, Rhi::ShapeKind::lines, locator_cross());
+}
 
 inline Rhi::ShapeGeometry polyline(const std::vector<glm::vec3>& points) {
     Rhi::ShapeGeometry geometry;

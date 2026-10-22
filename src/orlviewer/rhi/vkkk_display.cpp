@@ -97,6 +97,14 @@ constexpr const char* kModelBlock = "ModelUBO";
 constexpr const char* kColorBlock = "ColorUBO";
 constexpr float kControllerLineWidth = 2.5f;
 
+// --- Locators ---------------------------------------------------------------
+
+constexpr const char* kLocatorPipeline = "orl_locators";
+constexpr const char* kLocatorsBlock = "Locators";
+
+// Matches the std430 Locators record in locator.vert.
+static_assert(sizeof(LocatorInstance) == sizeof(float) * 20);
+
 bool load_dummy_points(vkkk::Context& context, const std::string& name) {
     if (context.points.contains(name)) {
         return true;
@@ -559,6 +567,67 @@ Status VkkkAdapter::draw_controller(const ShapeInstanceDraw& draw) {
             }
             else {
                 context.draw(*cmd, pipeline, shape, 1);
+            }
+        });
+    return Status::success();
+}
+
+Status VkkkAdapter::prepare_locators() {
+    if (auto status = impl_->require_context("prepare_locators"); !status) {
+        return status;
+    }
+    auto& context = *impl_->context;
+    PipelineDesc desc;
+    desc.name = kLocatorPipeline;
+    desc.vertex.path = impl_->shader_path("locator.vert");
+    desc.fragment.path = impl_->shader_path("line.frag");
+    desc.topology = vk::PrimitiveTopology::eLineList;
+    desc.depth_write = false;
+    impl_->locators_ready = vkkk_detail::create_pipeline(context, desc)
+        && context.resize_pipeline_ssbo(kLocatorPipeline, kLocatorsBlock, 1)
+        && context.alloc_pipeline_ssbo(kLocatorPipeline, kLocatorsBlock);
+    impl_->locators_prepared = true;
+    if (!impl_->locators_ready) {
+        return Status::failure(StatusCode::resource_failure,
+            "locator pipeline is unavailable");
+    }
+    return Status::success();
+}
+
+Status VkkkAdapter::draw_locators(std::string_view shape,
+    std::span<const LocatorInstance> instances)
+{
+    if (auto status = impl_->require_frame("draw_locators"); !status) {
+        return status;
+    }
+    if (!impl_->locators_prepared) {
+        return Status::failure(StatusCode::not_initialized,
+            "draw_locators requires prepare_locators");
+    }
+    const std::string key{shape};
+    const auto found = impl_->shapes.find(key);
+    if (found == impl_->shapes.end() || found->second != ShapeKind::lines) {
+        return Status::failure(StatusCode::invalid_argument,
+            "draw_locators: '" + key + "' is not a registered line shape");
+    }
+    if (!impl_->locators_ready || instances.empty()) {
+        return Status::success();
+    }
+
+    impl_->queue(Pass::scene,
+        [impl = impl_.get(), shape = key,
+            records = std::vector<LocatorInstance>(instances.begin(), instances.end())](
+            vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
+            auto& context = *impl->context;
+            if (!context.resize_pipeline_ssbo(kLocatorPipeline, kLocatorsBlock, records.size())) {
+                return;
+            }
+            context.sync_ubo(kLocatorPipeline, vkkk::buf::CameraUBO,
+                &impl->camera_ubo, image_index);
+            context.sync_ssbo(kLocatorPipeline, kLocatorsBlock, records.data(), image_index,
+                static_cast<std::uint32_t>(records.size() * sizeof(LocatorInstance)));
+            if (context.bind(*cmd, kLocatorPipeline, image_index)) {
+                context.draw_lines(*cmd, shape, 0, static_cast<std::uint32_t>(records.size()));
             }
         });
     return Status::success();
