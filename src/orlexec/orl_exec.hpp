@@ -53,15 +53,35 @@ struct DeviceBufferView {
     std::size_t bytes = 0;
 };
 
+struct ExecutionTelemetry {
+    std::uint64_t evaluation_count = 0;
+    double upload_ms = 0.0;
+    double kernel_ms = 0.0;
+    double download_ms = 0.0;
+    double total_ms = 0.0;
+    std::size_t upload_calls = 0;
+    std::size_t upload_bytes = 0;
+    std::size_t download_calls = 0;
+    std::size_t download_bytes = 0;
+};
+
+struct PackedBufferRange {
+    std::size_t offset = 0;
+    std::size_t bytes = 0;
+};
+
 // A view into one mutable host allocation shared by multiple buffer
 // parameters. The execution uploads the complete storage allocation once and
-// passes each parameter's byte range as a device pointer offset.
+// passes each parameter's byte range as a device pointer offset. When the
+// optional dirty ranges are supplied, only those absolute storage ranges are
+// uploaded after the initial allocation upload.
 struct PackedBufferView {
     void* data = nullptr;
     std::size_t storage_bytes = 0;
     std::size_t offset = 0;
     std::size_t bytes = 0;
     std::uint64_t version = 0;
+    std::vector<PackedBufferRange> dirty_ranges;
 };
 
 // Owning, growable host storage for one ORL buffer parameter. Applications
@@ -198,6 +218,8 @@ public:
     std::optional<DeviceBufferView> device_buffer_view(std::string_view parameter);
     std::optional<std::uint64_t> device_buffer_pointer(std::string_view parameter);
     std::optional<DeviceBufferView> handle_joint_device_view();
+    std::optional<DeviceBufferView> handle_locator_device_view();
+    ExecutionTelemetry last_execution_telemetry() const;
     bool synchronize();
 
     Backend backend() const;

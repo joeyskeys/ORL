@@ -534,6 +534,14 @@ std::optional<DeviceBufferView> OrlGraphExecution::handle_joint_device_view()
         : std::nullopt;
 }
 
+std::optional<DeviceBufferView>
+OrlGraphExecution::handle_locator_device_view()
+{
+    return execution_.has_value()
+        ? execution_->handle_locator_device_view()
+        : std::nullopt;
+}
+
 void OrlGraphExecution::clear_bindings() {
     if (execution_.has_value()) {
         execution_->clear_bindings();
@@ -673,6 +681,13 @@ std::optional<std::uint64_t> OrlGraphExecution::device_buffer_pointer(
         errors_ = execution_->errors();
     }
     return result;
+}
+
+ExecutionTelemetry OrlGraphExecution::last_execution_telemetry() const
+{
+    return execution_.has_value()
+        ? execution_->last_execution_telemetry()
+        : ExecutionTelemetry{};
 }
 
 bool OrlGraphExecution::synchronize() {

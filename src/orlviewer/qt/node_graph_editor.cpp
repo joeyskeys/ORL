@@ -80,6 +80,16 @@ bool is_matrix_input_definition(std::string_view qualified_name)
     return qualified_name == "orlrig.input.matrix";
 }
 
+bool is_orderable_definition(const orlgraph::NodeDefinition& definition)
+{
+    return definition.operation == "solver"
+        || definition.operation == "constraint"
+        || definition.partial_footprint.has_value()
+        || (definition.implementation.kind
+                == orlgraph::ImplementationKind::OrlFunction
+            && definition.operation != "identity");
+}
+
 std::vector<double> pack_orl_matrix(const glm::mat4& matrix)
 {
     std::vector<double> values(16, 0.0);
@@ -1001,6 +1011,14 @@ void NodeGraphEditor::rebuild_view()
             continue;
         }
 
+        if (connection.sequence) {
+            if (source_node >= 0 && destination_node >= 0) {
+                links_.push_back(Link{
+                    source_node, -1, destination_node, -1, true});
+            }
+            continue;
+        }
+
         const auto endpoint_port_id = [](const orlgraph::Endpoint& endpoint) {
             return QString::fromStdString(
                 endpoint.kind == orlgraph::EndpointKind::NodePort
@@ -1012,7 +1030,8 @@ void NodeGraphEditor::rebuild_view()
             endpoint_port_id(connection.destination));
         if (source_port >= 0 && destination_port >= 0) {
             links_.push_back(Link{
-                source_node, source_port, destination_node, destination_port});
+                source_node, source_port, destination_node, destination_port,
+                false});
         }
     }
     for (const auto& id : selected_node_ids) {
@@ -1926,6 +1945,231 @@ bool NodeGraphEditor::add_connection(const Socket& first, const Socket& second)
     return true;
 }
 
+bool NodeGraphEditor::is_orderable_node(int index) const
+{
+    if (index < 0 || index >= nodes_.size()
+        || nodes_[index].kind != Node::Kind::Definition)
+    {
+        return false;
+    }
+    const auto* instance = active_graph().node(
+        orlgraph::StableId{nodes_[index].id.toStdString()});
+    const auto* definition = instance == nullptr
+        ? nullptr : active_registry().find(instance->definition);
+    return definition != nullptr && is_orderable_definition(*definition);
+}
+
+bool NodeGraphEditor::add_execution_order(
+    const QString& before_id, const QString& after_id)
+{
+    if (before_id.isEmpty() || after_id.isEmpty() || before_id == after_id) {
+        return false;
+    }
+
+    const auto find_node = [this](const QString& id) {
+        for (int index = 0; index < nodes_.size(); ++index) {
+            if (nodes_[index].id == id) {
+                return index;
+            }
+        }
+        return -1;
+    };
+    const int before_index = find_node(before_id);
+    const int after_index = find_node(after_id);
+    if (!is_orderable_node(before_index)
+        || !is_orderable_node(after_index))
+    {
+        QMessageBox::warning(this, QStringLiteral("Execution order"),
+            QStringLiteral(
+                "Both endpoints must be solver or constraint nodes."));
+        return false;
+    }
+
+    const orlgraph::StableId before{before_id.toStdString()};
+    const orlgraph::StableId after{after_id.toStdString()};
+    auto& connections = active_graph().mutable_connections();
+    for (const auto& connection : connections) {
+        if (!connection.sequence
+            || connection.source.kind != orlgraph::EndpointKind::NodePort
+            || connection.destination.kind
+                != orlgraph::EndpointKind::NodePort)
+        {
+            continue;
+        }
+        if (connection.source.owner == before
+            && connection.destination.owner == after)
+        {
+            return true;
+        }
+        if (connection.source.owner == after
+            && connection.destination.owner == before)
+        {
+            QMessageBox::warning(this, QStringLiteral("Execution order"),
+                QStringLiteral("The opposite execution order already exists. "
+                               "Remove it before adding this order."));
+            return false;
+        }
+    }
+
+    std::string error;
+    // Sequence connections use node owners for scheduling; their port IDs
+    // are intentionally opaque and are not treated as dataflow sockets.
+    if (!active_graph().add_connection(orlgraph::Connection{
+            orlgraph::Endpoint::node_port(
+                before, orlgraph::StableId{"__sequence__"}),
+            orlgraph::Endpoint::node_port(
+                after, orlgraph::StableId{"__sequence__"}),
+            {}, {}, {}, false, true}, &error))
+    {
+        QMessageBox::warning(this, QStringLiteral("Execution order"),
+            QStringLiteral("Could not add the execution order: ")
+                + QString::fromStdString(error));
+        return false;
+    }
+
+    const auto schedule = orlgraph::topological_schedule(active_graph());
+    if (!schedule.ok) {
+        connections.pop_back();
+        QMessageBox::warning(this, QStringLiteral("Execution order"),
+            QStringLiteral(
+                "That order would create a dependency cycle."));
+        return false;
+    }
+
+    notify_graph_changed();
+    rebuild_view();
+    return true;
+}
+
+bool NodeGraphEditor::remove_execution_order(
+    const QString& before_id, const QString& after_id)
+{
+    const orlgraph::StableId before{before_id.toStdString()};
+    const orlgraph::StableId after{after_id.toStdString()};
+    auto& connections = active_graph().mutable_connections();
+    const auto previous_size = connections.size();
+    connections.erase(
+        std::remove_if(connections.begin(), connections.end(),
+            [&](const orlgraph::Connection& connection) {
+                return connection.sequence
+                    && connection.source.kind
+                        == orlgraph::EndpointKind::NodePort
+                    && connection.destination.kind
+                        == orlgraph::EndpointKind::NodePort
+                    && connection.source.owner == before
+                    && connection.destination.owner == after;
+            }),
+        connections.end());
+    if (connections.size() == previous_size) {
+        return false;
+    }
+    notify_graph_changed();
+    rebuild_view();
+    return true;
+}
+
+void NodeGraphEditor::show_node_context_menu(
+    int node_index, const QPoint& anchor)
+{
+    if (!is_orderable_node(node_index)) {
+        return;
+    }
+
+    const QString node_id = nodes_[node_index].id;
+    const QString node_title = nodes_[node_index].title;
+    QMenu menu(this);
+    QMenu* ordering = menu.addMenu(QStringLiteral("Execution order"));
+    QMenu* before_menu = ordering->addMenu(
+        QStringLiteral("Run this node before..."));
+    QMenu* after_menu = ordering->addMenu(
+        QStringLiteral("Run this node after..."));
+    QMenu* remove_menu = ordering->addMenu(
+        QStringLiteral("Remove explicit order..."));
+
+    const auto display_node = [this](int index) {
+        const Node& node = nodes_[index];
+        return node.title + QStringLiteral(" [") + node.id
+            + QStringLiteral("]");
+    };
+    bool has_candidate = false;
+    for (int index = 0; index < nodes_.size(); ++index) {
+        if (index == node_index || !is_orderable_node(index)) {
+            continue;
+        }
+        has_candidate = true;
+        const QString other_id = nodes_[index].id;
+        const QString label = display_node(index);
+        QAction* before_action = before_menu->addAction(label);
+        QObject::connect(before_action, &QAction::triggered, this,
+            [this, node_id, other_id] {
+                add_execution_order(node_id, other_id);
+            });
+        QAction* after_action = after_menu->addAction(label);
+        QObject::connect(after_action, &QAction::triggered, this,
+            [this, node_id, other_id] {
+                add_execution_order(other_id, node_id);
+            });
+    }
+    if (!has_candidate) {
+        QAction* empty_before = before_menu->addAction(
+            QStringLiteral("No other solver nodes"));
+        empty_before->setEnabled(false);
+        QAction* empty_after = after_menu->addAction(
+            QStringLiteral("No other solver nodes"));
+        empty_after->setEnabled(false);
+    }
+
+    bool has_explicit_order = false;
+    const orlgraph::StableId current{node_id.toStdString()};
+    for (const auto& connection : active_graph().connections()) {
+        if (!connection.sequence
+            || connection.source.kind != orlgraph::EndpointKind::NodePort
+            || connection.destination.kind
+                != orlgraph::EndpointKind::NodePort)
+        {
+            continue;
+        }
+        if (connection.source.owner != current
+            && connection.destination.owner != current)
+        {
+            continue;
+        }
+        QString other_id;
+        QString before_label;
+        QString after_label;
+        if (connection.source.owner == current) {
+            before_label = node_title;
+            other_id = QString::fromStdString(
+                connection.destination.owner.value);
+            after_label = other_id;
+        } else {
+            before_label = QString::fromStdString(
+                connection.source.owner.value);
+            other_id = before_label;
+            after_label = node_title;
+        }
+        has_explicit_order = true;
+        QAction* remove_action = remove_menu->addAction(
+            QStringLiteral("Remove %1 before %2")
+                .arg(before_label, after_label));
+        const QString before_id = connection.source.owner == current
+            ? node_id : other_id;
+        const QString after_id = connection.destination.owner == current
+            ? node_id : other_id;
+        QObject::connect(remove_action, &QAction::triggered, this,
+            [this, before_id, after_id] {
+                remove_execution_order(before_id, after_id);
+            });
+    }
+    if (!has_explicit_order) {
+        QAction* empty_remove = remove_menu->addAction(
+            QStringLiteral("No explicit order on this node"));
+        empty_remove->setEnabled(false);
+    }
+
+    menu.exec(mapToGlobal(anchor));
+}
+
 void NodeGraphEditor::draw_grid(QPainter& painter) const
 {
     const QRectF visible(
@@ -1974,6 +2218,35 @@ void NodeGraphEditor::draw_link(QPainter& painter, const Link& link) const
     }
     const Node& source_node = nodes_[link.source_node];
     const Node& destination_node = nodes_[link.destination_node];
+    if (link.sequence) {
+        const QRectF source_rect = node_rect(source_node);
+        const QRectF destination_rect = node_rect(destination_node);
+        const bool points_right =
+            destination_rect.center().x() >= source_rect.center().x();
+        const double direction = points_right ? 1.0 : -1.0;
+        const QPointF source{
+            points_right ? source_rect.right() : source_rect.left(),
+            source_rect.center().y()};
+        const QPointF destination{
+            points_right ? destination_rect.left() : destination_rect.right(),
+            destination_rect.center().y()};
+        const double distance = std::max(
+            60.0, std::abs(destination.x() - source.x()) * 0.5);
+        QPainterPath path(source);
+        path.cubicTo(
+            source + QPointF{direction * distance, 0.0},
+            destination - QPointF{direction * distance, 0.0},
+            destination);
+        painter.setPen(QPen(
+            QColor{QStringLiteral("#6fb7e9")}, 2.0 / zoom_, Qt::DashLine));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(path);
+        painter.drawLine(destination,
+            destination + QPointF{-direction * 10.0, -5.0});
+        painter.drawLine(destination,
+            destination + QPointF{-direction * 10.0, 5.0});
+        return;
+    }
     if (link.source_port < 0 || link.source_port >= source_node.outputs.size()
         || link.destination_port < 0
         || link.destination_port >= destination_node.inputs.size())
@@ -2370,6 +2643,15 @@ void NodeGraphEditor::mousePressEvent(QMouseEvent* event)
         last_mouse_position_ = event->position().toPoint();
         event->accept();
         return;
+    }
+    if (event->button() == Qt::RightButton) {
+        const int hit = node_at(scene);
+        if (hit >= 0 && nodes_[hit].kind == Node::Kind::Definition) {
+            select_only(hit);
+            show_node_context_menu(hit, event->position().toPoint());
+            event->accept();
+            return;
+        }
     }
     if (event->button() == Qt::LeftButton) {
         const Socket socket = socket_at(scene);

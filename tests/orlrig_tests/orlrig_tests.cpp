@@ -1028,6 +1028,25 @@ TEST_CASE("evaluation plan resolves typed solver footprints and dirty levels",
     REQUIRE(glm::vec3{worlds[2][3]}.x == Catch::Approx(2.0f));
 }
 
+TEST_CASE("compiled scalar solver definitions advertise fusion safety",
+    "[orlrig][fusion][contract]")
+{
+    orlgraph::NodeRegistry registry;
+    REQUIRE(orlrig::register_rig_node_definitions(registry));
+    const auto* ik = registry.find(
+        orlgraph::StableId{"orlrig.solver.ik_two_bone"});
+    REQUIRE(ik != nullptr);
+    REQUIRE(ik->fusion.has_value());
+    REQUIRE(ik->fusion->scalar_safe);
+    REQUIRE(ik->fusion->device_safe);
+    REQUIRE_FALSE(ik->fusion->stateful);
+    REQUIRE_FALSE(ik->fusion->parallel_domain);
+    REQUIRE(ik->fusion->supports_device_dispatch);
+    REQUIRE(std::find(
+        ik->capabilities.begin(), ik->capabilities.end(),
+        "cuda_fusable_scalar") != ik->capabilities.end());
+}
+
 TEST_CASE("evaluation plan expands computed handle walks",
     "[orlrig][partial][walk]")
 {

@@ -1045,6 +1045,7 @@ TEST_CASE("computed joints resolves the shared device buffer",
     vkkk::Scene scene;
     ORL::ComponentManager components;
     components.create_joint("root");
+    components.create_locator("target");
 
     ORL::SceneGraphContext context(scene, components);
     context.refresh_scene_inputs();
@@ -1075,6 +1076,31 @@ TEST_CASE("computed joints resolves the shared device buffer",
         descriptor->port, binding, &error));
     REQUIRE(binding.buffer != nullptr);
     REQUIRE(binding.device_ptr == 0);
+
+    const auto* locator_descriptor = context.scene_inputs().find(
+        orlgraph::StableId{std::string{orlrig::kSceneLocatorsBinding}});
+    REQUIRE(locator_descriptor != nullptr);
+    ORL::exec::GraphInputBinding locator_binding;
+    REQUIRE(context.scene_inputs().resolve(
+        locator_descriptor->port, locator_binding, &error));
+    REQUIRE(locator_binding.buffer != nullptr);
+
+    context.set_computed_locators_device(
+        ORL::exec::DeviceBufferView{
+            0x5678, orlrig::kLocatorStride},
+        1);
+    REQUIRE(context.scene_inputs().resolve(
+        locator_descriptor->port, locator_binding, &error));
+    REQUIRE(locator_binding.buffer == nullptr);
+    REQUIRE(locator_binding.device_ptr == 0x5678);
+    REQUIRE(locator_binding.bytes == orlrig::kLocatorStride);
+    REQUIRE(locator_binding.element_count == 1);
+
+    context.clear_computed_locators_device();
+    REQUIRE(context.scene_inputs().resolve(
+        locator_descriptor->port, locator_binding, &error));
+    REQUIRE(locator_binding.buffer != nullptr);
+    REQUIRE(locator_binding.device_ptr == 0);
 }
 
 TEST_CASE("CUDA scene inputs share one packed arena",

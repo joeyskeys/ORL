@@ -653,6 +653,271 @@ TEST_CASE("orlexec exposes packed rig buffers through solver context",
     REQUIRE(*result == 117);
 }
 
+TEST_CASE("orlexec keeps typed and direct solver state in one CUDA arena",
+    "[orl][exec][fusion][solver_context][handle][cuda]")
+{
+    const auto program = OrlProgram::Compile(R"(
+        use rig/handles;
+        use joint;
+        int mixed(joint_handle value) {
+            Joint typed = Joint(value);
+            vec4 translation = typed.translation;
+            translation = vec4(
+                translation.x + 2.0,
+                translation.y, translation.z, translation.w);
+            typed.translation = translation;
+            Joint direct = solver_context.joints[0];
+            return direct.translation.x > 2.0;
+        }
+    )", {.entry_function = "mixed", .source_name = "mixed_solver_state"});
+    REQUIRE(program.valid());
+
+    constexpr std::size_t joints_offset = sizeof(orlrig::SolverContext);
+    constexpr std::size_t locators_offset =
+        joints_offset + orlrig::kJointStride;
+    OrlBuffer storage(orlrig::kSolverContextOrlType, 1);
+    REQUIRE(storage.resize(locators_offset));
+    auto joint = orlrig::make_identity_joint();
+    joint.translation[0] = 1.0;
+    std::memcpy(
+        static_cast<std::byte*>(storage.data()) + joints_offset,
+        &joint, sizeof(joint));
+    const orlrig::SolverContext context{
+        1, 0, 0,
+        static_cast<std::int64_t>(joints_offset),
+        static_cast<std::int64_t>(locators_offset),
+        static_cast<std::int64_t>(locators_offset)};
+    std::memcpy(storage.data(), &context, sizeof(context));
+    const auto handle_type =
+        orlcomp::HandleTypeIdFor("orlrig::joint_handle");
+    orlrig::HandleViewContext handle_context{
+        {static_cast<std::byte*>(storage.data()) + joints_offset,
+            1, orlrig::kJointStride, true},
+        {static_cast<std::byte*>(storage.data()) + locators_offset,
+            0, orlrig::kLocatorStride, false},
+        1,
+        storage.version(),
+        storage.version()};
+
+    const auto bind = [&](OrlExecution& execution) {
+        REQUIRE(execution.bind_solver_context(PackedBufferView{
+            storage.data(), storage.byte_size(), 0,
+            storage.byte_size(), storage.version()}));
+        REQUIRE(execution.set_solver_context(context));
+        REQUIRE(execution.bind_handle_view_context(handle_context));
+        REQUIRE(execution.bind_handle("value", {handle_type, 0}));
+    };
+
+    auto cpu = OrlExecution::Create(program, Backend::Cpu);
+    if (!cpu.valid() && !cpu.errors().empty()) {
+        WARN(cpu.errors().back());
+    }
+    REQUIRE(cpu.valid());
+    bind(cpu);
+    const auto cpu_result = cpu.evaluate();
+    REQUIRE(cpu_result.has_value());
+    REQUIRE(*cpu_result == 1);
+
+    joint.translation[0] = 1.0;
+    std::memcpy(
+        static_cast<std::byte*>(storage.data()) + joints_offset,
+        &joint, sizeof(joint));
+    auto cuda = OrlExecution::Create(program, Backend::Cuda);
+    if (!cuda.valid()) {
+        WARN((cuda.errors().empty()
+            ? "CUDA execution runtime unavailable in this environment"
+            : cuda.errors().back()));
+        return;
+    }
+    bind(cuda);
+    REQUIRE(cuda.evaluate_device(1));
+    REQUIRE(cuda.last_execution_telemetry().download_calls == 0);
+    REQUIRE(cuda.bind_handle("value", {handle_type, 0}));
+    const auto cuda_result = cuda.evaluate(1);
+    REQUIRE(cuda_result.has_value());
+    REQUIRE(*cuda_result == 1);
+    const auto* updated = static_cast<const orlrig::Joint*>(
+        static_cast<const void*>(
+            static_cast<const std::byte*>(storage.data()) + joints_offset));
+    REQUIRE(updated->translation[0] == Catch::Approx(5.0));
+}
+
+TEST_CASE("orlexec shares a published typed-handle device arena",
+    "[orl][exec][handle][cuda][device-state]")
+{
+    const auto mutate_program = OrlProgram::Compile(R"(
+        use rig/handles;
+        int mutate(joint_handle value) {
+            Joint joint = Joint(value);
+            vec4 translation = joint.translation;
+            translation = vec4(
+                translation.x + 2.0,
+                translation.y, translation.z, translation.w);
+            joint.translation = translation;
+            return 0;
+        }
+    )", {.entry_function = "mutate", .source_name = "typed_mutate"});
+    REQUIRE(mutate_program.valid());
+
+    const auto read_program = OrlProgram::Compile(R"(
+        use rig/handles;
+        int read(joint_handle value) {
+            Joint joint = Joint(value);
+            return joint.translation.x > 2.0;
+        }
+    )", {.entry_function = "read", .source_name = "typed_read"});
+    REQUIRE(read_program.valid());
+
+    auto producer = OrlExecution::Create(mutate_program, Backend::Cuda);
+    if (!producer.valid()) {
+        WARN((producer.errors().empty()
+            ? "CUDA execution runtime unavailable in this environment"
+            : producer.errors().back()));
+        return;
+    }
+
+    auto joint = orlrig::make_identity_joint();
+    joint.translation[0] = 1.0;
+    const auto type_id =
+        orlcomp::HandleTypeIdFor("orlrig::joint_handle");
+    orlrig::HandleViewContext producer_context{
+        {&joint, 1, orlrig::kJointStride, true},
+        {},
+        1,
+        1,
+        1,
+    };
+    REQUIRE(producer.bind_handle_view_context(producer_context));
+    REQUIRE(producer.bind_handle("value", {type_id, 0}));
+    REQUIRE(producer.evaluate_device());
+    REQUIRE(producer.last_execution_telemetry().download_calls == 0);
+
+    const auto published = producer.handle_joint_device_view();
+    REQUIRE(published.has_value());
+
+    auto consumer = OrlExecution::Create(read_program, Backend::Cuda);
+    REQUIRE(consumer.valid());
+    orlrig::HandleViewContext consumer_context{
+        {&joint, 1, orlrig::kJointStride, true,
+            published->device_ptr, published->bytes},
+        {},
+        1,
+        1,
+        1,
+    };
+    REQUIRE(consumer.bind_handle_view_context(consumer_context));
+    REQUIRE(consumer.bind_handle("value", {type_id, 0}));
+    const auto result = consumer.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 1);
+    REQUIRE(joint.translation[0] == Catch::Approx(3.0));
+}
+
+TEST_CASE("orlexec shares published mixed solver state across executions",
+    "[orl][exec][solver_context][handle][cuda][device-state]")
+{
+    const auto producer_program = OrlProgram::Compile(R"(
+        use rig/handles;
+        use joint;
+        int write(joint_handle value) {
+            Joint typed = Joint(value);
+            vec4 translation = typed.translation;
+            translation = vec4(
+                translation.x + 2.0,
+                translation.y, translation.z, translation.w);
+            typed.translation = translation;
+            Joint direct = solver_context.joints[0];
+            return direct.translation.x > 2.0;
+        }
+    )", {.entry_function = "write", .source_name = "mixed_producer"});
+    REQUIRE(producer_program.valid());
+
+    const auto consumer_program = OrlProgram::Compile(R"(
+        use rig/handles;
+        use joint;
+        int read(joint_handle value) {
+            Joint typed = Joint(value);
+            Joint direct = solver_context.joints[0];
+            return typed.translation.x > 2.0
+                && direct.translation.x > 2.0;
+        }
+    )", {.entry_function = "read", .source_name = "mixed_consumer"});
+    REQUIRE(consumer_program.valid());
+
+    constexpr std::size_t joints_offset = sizeof(orlrig::SolverContext);
+    constexpr std::size_t locators_offset =
+        joints_offset + orlrig::kJointStride;
+    OrlBuffer storage(orlrig::kSolverContextOrlType, 1);
+    REQUIRE(storage.resize(joints_offset + orlrig::kJointStride));
+    auto joint = orlrig::make_identity_joint();
+    joint.translation[0] = 1.0;
+    std::memcpy(
+        static_cast<std::byte*>(storage.data()) + joints_offset,
+        &joint, sizeof(joint));
+    const orlrig::SolverContext context{
+        1, 0, 0,
+        static_cast<std::int64_t>(joints_offset),
+        static_cast<std::int64_t>(locators_offset),
+        static_cast<std::int64_t>(locators_offset)};
+    std::memcpy(storage.data(), &context, sizeof(context));
+    const auto type_id =
+        orlcomp::HandleTypeIdFor("orlrig::joint_handle");
+
+    auto producer = OrlExecution::Create(producer_program, Backend::Cuda);
+    if (!producer.valid()) {
+        WARN((producer.errors().empty()
+            ? "CUDA execution runtime unavailable in this environment"
+            : producer.errors().back()));
+        return;
+    }
+    orlrig::HandleViewContext producer_context{
+        {static_cast<std::byte*>(storage.data()) + joints_offset,
+            1, orlrig::kJointStride, true},
+        {},
+        1,
+        storage.version(),
+        storage.version(),
+    };
+    REQUIRE(producer.bind_solver_context(PackedBufferView{
+        storage.data(), storage.byte_size(), 0,
+        storage.byte_size(), storage.version()}));
+    REQUIRE(producer.set_solver_context(context));
+    REQUIRE(producer.bind_handle_view_context(producer_context));
+    REQUIRE(producer.bind_handle("value", {type_id, 0}));
+    REQUIRE(producer.evaluate_device());
+    REQUIRE(producer.last_execution_telemetry().download_calls == 0);
+
+    const auto device_context =
+        producer.device_buffer_view(orlcomp::kSolverContextParameterName);
+    const auto device_joints = producer.handle_joint_device_view();
+    REQUIRE(device_context.has_value());
+    REQUIRE(device_joints.has_value());
+
+    auto consumer = OrlExecution::Create(consumer_program, Backend::Cuda);
+    REQUIRE(consumer.valid());
+    orlrig::HandleViewContext consumer_context{
+        {static_cast<std::byte*>(storage.data()) + joints_offset,
+            1, orlrig::kJointStride, true,
+            device_joints->device_ptr, device_joints->bytes},
+        {},
+        1,
+        storage.version(),
+        storage.version(),
+    };
+    REQUIRE(consumer.bind_device_buffer(
+        orlcomp::kSolverContextParameterName,
+        device_context->device_ptr, device_context->bytes));
+    REQUIRE(consumer.bind_handle_view_context(consumer_context));
+    REQUIRE(consumer.bind_handle("value", {type_id, 0}));
+    const auto result = consumer.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 1);
+    const auto* updated = static_cast<const orlrig::Joint*>(
+        static_cast<const void*>(
+            static_cast<const std::byte*>(storage.data()) + joints_offset));
+    REQUIRE(updated->translation[0] == Catch::Approx(3.0));
+}
+
 TEST_CASE("orlexec binds implicit hierarchy context and data",
     "[orl][exec][hierarchy][cpu]")
 {
@@ -790,7 +1055,13 @@ TEST_CASE("orlexec executes CUDA buffers when CUDA is available", "[orl][exec][c
     REQUIRE(execution.bind_buffer("input", input));
     REQUIRE(execution.bind_buffer("output", output));
     REQUIRE(execution.bind_int("count", 3));
+    REQUIRE(execution.evaluate_device(3));
+    const auto device_telemetry = execution.last_execution_telemetry();
+    REQUIRE(device_telemetry.download_calls == 0);
+    REQUIRE(device_telemetry.download_bytes == 0);
     REQUIRE(execution.evaluate(3).has_value());
+    const auto host_telemetry = execution.last_execution_telemetry();
+    REQUIRE(host_telemetry.download_calls > 0);
 
     std::int64_t value = 0;
     REQUIRE(output.read(2, &value));
@@ -826,6 +1097,90 @@ TEST_CASE("orlexec evaluates a packed buffer subrange on CUDA",
     const auto result = execution.evaluate();
     REQUIRE(result.has_value());
     REQUIRE(*result == 29);
+}
+
+TEST_CASE("orlexec uploads only dirty packed ranges on CUDA",
+    "[orl][exec][cuda][packed][telemetry]")
+{
+    const auto program = OrlProgram::Compile(
+        "int read(int values[]) { return values[1]; }\n",
+        {.entry_function = "read"});
+    REQUIRE(program.valid());
+
+    auto execution = OrlExecution::Create(program, Backend::Cuda);
+    if (!execution.valid()) {
+        const std::string reason = execution.errors().empty()
+            ? "CUDA execution runtime unavailable in this environment"
+            : execution.errors().back();
+        WARN(reason);
+        return;
+    }
+
+    std::array<std::int64_t, 2> storage{13, 29};
+    REQUIRE(execution.bind_packed_buffer(
+        "values",
+        PackedBufferView{
+            storage.data(),
+            sizeof(storage),
+            0,
+            sizeof(storage),
+            1}));
+    REQUIRE(execution.evaluate_device());
+    REQUIRE(execution.last_execution_telemetry().upload_bytes
+        == sizeof(storage));
+
+    storage[1] = 31;
+    REQUIRE(execution.bind_packed_buffer(
+        "values",
+        PackedBufferView{
+            storage.data(),
+            sizeof(storage),
+            0,
+            sizeof(storage),
+            2,
+            {{sizeof(std::int64_t), sizeof(std::int64_t)}}}));
+    REQUIRE(execution.evaluate_device());
+    REQUIRE(execution.last_execution_telemetry().upload_calls == 1);
+    REQUIRE(execution.last_execution_telemetry().upload_bytes
+        == sizeof(std::int64_t));
+}
+
+TEST_CASE("orlexec tracks packed solver-context mutations after binding",
+    "[orl][exec][cuda][packed][solver_context][telemetry]")
+{
+    const auto program = OrlProgram::Compile(
+        R"(
+            int read_context() {
+                return solver_context.joint_count
+                    + solver_context.controller_count;
+            }
+        )",
+        {.entry_function = "read_context"});
+    REQUIRE(program.valid());
+
+    auto execution = OrlExecution::Create(program, Backend::Cuda);
+    if (!execution.valid()) {
+        const std::string reason = execution.errors().empty()
+            ? "CUDA execution runtime unavailable in this environment"
+            : execution.errors().back();
+        WARN(reason);
+        return;
+    }
+
+    std::array<std::byte, sizeof(orlrig::SolverContext)> storage{};
+    REQUIRE(execution.bind_solver_context(PackedBufferView{
+        storage.data(), storage.size(), 0, storage.size(), 1}));
+    REQUIRE(execution.set_solver_context(3, 4));
+    REQUIRE(execution.evaluate_device());
+
+    REQUIRE(execution.set_solver_context(9, 2));
+    REQUIRE(execution.evaluate_device());
+    REQUIRE(execution.last_execution_telemetry().upload_bytes
+        == sizeof(orlrig::SolverContext));
+
+    const auto result = execution.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 11);
 }
 
 #endif

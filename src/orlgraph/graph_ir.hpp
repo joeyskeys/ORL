@@ -145,6 +145,24 @@ enum class InlinePolicy : std::uint8_t {
     Always,
 };
 
+// Describes whether a node can participate in the scalar, single-launch
+// device execution path.  This is deliberately separate from the generic
+// backend capability strings: fusion also needs to know whether a node
+// carries state, requires a host adapter, or needs a barrier between
+// invocations.
+struct FusionCapability {
+    bool scalar_safe = false;
+    bool device_safe = false;
+    bool stateful = false;
+    bool parallel_domain = false;
+    bool host_adapter = false;
+    bool requires_barrier = false;
+    bool supports_device_dispatch = false;
+
+    friend bool operator==(const FusionCapability&,
+        const FusionCapability&) = default;
+};
+
 enum class ImplementationKind : std::uint8_t {
     OrlFunction,
     Subgraph,
@@ -226,6 +244,7 @@ struct NodeDefinition {
     bool stateful = false;
     Provenance provenance;
     std::optional<PartialEvaluationFootprint> partial_footprint;
+    std::optional<FusionCapability> fusion;
 
     const Port* input(std::string_view name) const;
     const Port* output(std::string_view name) const;

@@ -488,6 +488,31 @@ TEST_CASE("llvm codegen lowers advanced IK solvers", "[orl][codegen][stdlib][sol
     REQUIRE(parser.Parse());
     REQUIRE(parser.Errors().empty());
 
+    auto& registry = global_handle_view_registry();
+    registry.clear();
+    REQUIRE(registry.register_view({
+        "orlrig::joint_handle", "Joint", 1, 1, "joint_arena",
+        {
+            {"translation", HandleViewFieldKind::Vec4, 0,
+                "read_joint", "write_joint", "vec4"},
+            {"rotation", HandleViewFieldKind::Vec4, 1,
+                "read_joint", "write_joint", "quat"},
+            {"scale", HandleViewFieldKind::Vec4, 2,
+                "read_joint", "write_joint", "vec4"},
+        }}));
+    REQUIRE(registry.register_view({
+        "orlrig::locator_handle", "Locator", 1, 1, "locator_arena",
+        {{
+            "xform", HandleViewFieldKind::Matrix, 0,
+            "read_locator", "write_locator", "matrix",
+        }}}));
+    REQUIRE(registry.register_view({
+        "orlrig::joint_handle", "WorldTransform", 1, 1, "joint_arena",
+        {{
+            "xform", HandleViewFieldKind::Matrix, 0,
+            "read_world", "write_world", "matrix",
+        }}}));
+
     LlvmIrCodegen codegen("orl_stdlib_advanced_ik_solver_module");
     REQUIRE(codegen.Generate(*parser.Ast()));
     REQUIRE(codegen.Errors().empty());
@@ -496,6 +521,7 @@ TEST_CASE("llvm codegen lowers advanced IK solvers", "[orl][codegen][stdlib][sol
     REQUIRE(ir.find("define i64 @solver_hd_id") != std::string::npos);
     REQUIRE(ir.find("define i64 @solver_spline_ik") != std::string::npos);
     REQUIRE(ir.find("define i64 @solver_full_body_ik") != std::string::npos);
+    registry.clear();
 }
 
 TEST_CASE("llvm codegen lowers implicit solver context",
@@ -603,6 +629,71 @@ TEST_CASE("llvm codegen lowers transform constraints", "[orl][codegen][stdlib][c
     REQUIRE(ir.find("define i64 @constraint_copy_scale") != std::string::npos);
     REQUIRE(ir.find("define i64 @constraint_parent") != std::string::npos);
     global_handle_view_registry().clear();
+}
+
+TEST_CASE("llvm CUDA codegen uses the WorldTransform helper ABI",
+    "[orl][codegen][cuda][handle][view][world]")
+{
+    const std::string src =
+        "use constraint/parent;\n"
+        "int parent(source_xform_handle source, "
+        "destination_xform_handle destination, matrix offset) {\n"
+        "    return constraint_parent(source, destination, offset);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    auto& registry = global_handle_view_registry();
+    registry.clear();
+    REQUIRE(registry.register_view({
+        "orlrig::joint_handle", "WorldTransform", 1, 3, "joint_arena",
+        {{"xform", HandleViewFieldKind::Matrix, 0,
+            "read_world", "write_world", "matrix"}}}));
+    REQUIRE(registry.register_view({
+        "orlrig::locator_handle", "Locator", 1, 3, "locator_arena",
+        {{"xform", HandleViewFieldKind::Matrix, 0,
+            "read_locator", "write_locator", "matrix"}}}));
+
+    LlvmIrCodegen codegen(
+        "orl_cuda_world_transform_helper_abi",
+        OrlCodegenTarget::Cuda);
+    codegen.SetHandleTypeIdentities({
+        {"constraint::handles::source_xform_handle",
+            "orlrig::joint_handle"},
+        {"constraint::handles::destination_xform_handle",
+            "orlrig::joint_handle"},
+    });
+    const bool generated = codegen.Generate(*parser.Ast());
+    for (const auto& error : codegen.Errors()) {
+        INFO(error);
+    }
+    REQUIRE(generated);
+    REQUIRE(codegen.Errors().empty());
+
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find(
+        "define [16 x double] @joint_world_matrix(ptr")
+        != std::string::npos);
+    REQUIRE(ir.find(
+        "define i64 @joint_write_world_matrix(ptr")
+        != std::string::npos);
+    REQUIRE(ir.find(
+        "call i64 @joint_write_world_matrix(ptr")
+        != std::string::npos);
+    REQUIRE(ir.find(
+        "call i64 @joint_write_world_matrix(ptr %")
+        != std::string::npos);
+    const auto write_call = ir.find(
+        "call i64 @joint_write_world_matrix(ptr");
+    REQUIRE(write_call != std::string::npos);
+    const auto write_line_end = ir.find('\n', write_call);
+    REQUIRE(write_line_end != std::string::npos);
+    REQUIRE(ir.substr(write_call, write_line_end - write_call)
+        .find("[16 x double]") == std::string::npos);
+
+    registry.clear();
 }
 
 TEST_CASE("llvm codegen lowers lbs deformer", "[orl][codegen][stdlib][deformer]") {

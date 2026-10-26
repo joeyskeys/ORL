@@ -720,6 +720,9 @@ TEST_CASE("oro serialization preserves partial evaluation footprints",
     });
     footprint.read_resources = {StableId{"scene.joints"}};
     definition.partial_footprint = footprint;
+    const FusionCapability fusion{
+        true, true, false, false, false, false, true};
+    definition.fusion = fusion;
     REQUIRE(registry.register_definition(std::move(definition)));
 
     GraphModule module;
@@ -732,6 +735,8 @@ TEST_CASE("oro serialization preserves partial evaluation footprints",
     REQUIRE(result != nullptr);
     REQUIRE(result->partial_footprint.has_value());
     REQUIRE(*result->partial_footprint == footprint);
+    REQUIRE(result->fusion.has_value());
+    REQUIRE(*result->fusion == fusion);
 }
 
 TEST_CASE("graph IR cache round trips a content-addressed oro document",

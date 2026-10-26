@@ -162,6 +162,64 @@ TEST_CASE("graph lowering preserves exact handle lane inputs and outputs",
     REQUIRE(lowered.outputs.front().source_parameter == "_handle");
 }
 
+TEST_CASE("graph lowering emits the validated fused execution order",
+    "[orl][graph][lowering][fusion]")
+{
+    NodeRegistry registry;
+    NodeDefinition first;
+    first.id = StableId{"test.first"};
+    first.qualified_name = "test.first";
+    first.implementation.kind = ImplementationKind::OrlFunction;
+    first.implementation.function = "first";
+    NodeDefinition second;
+    second.id = StableId{"test.second"};
+    second.qualified_name = "test.second";
+    second.implementation.kind = ImplementationKind::OrlFunction;
+    second.implementation.function = "second";
+    REQUIRE(registry.register_definition(first));
+    REQUIRE(registry.register_definition(second));
+
+    GraphModule module;
+    module.module_id = "lowering.fusion_order";
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"z_first"}, StableId{"test.first"}, "z_first",
+        {}, {}, InlinePolicy::Default}));
+    REQUIRE(module.add_node(NodeInstance{
+        StableId{"a_second"}, StableId{"test.second"}, "a_second",
+        {}, {}, InlinePolicy::Default}));
+    REQUIRE(module.add_connection(Connection{
+        Endpoint::node_port(
+            StableId{"z_first"}, StableId{"__sequence__"}),
+        Endpoint::node_port(
+            StableId{"a_second"}, StableId{"__sequence__"}),
+        {}, {}, {}, false, true}));
+
+    const auto lowered = orlcomp::OrlGraphLowerer{}.lower(
+        module, registry, orlcomp::GraphLoweringOptions{
+            .entry_function = "fused_order",
+            .emit_module_uses = false,
+            .execution_order = {
+                StableId{"z_first"}, StableId{"a_second"}},
+            .dispatch_parameter = "__dispatch",
+            .dispatch_indices = {
+                {StableId{"z_first"}, 0},
+                {StableId{"a_second"}, 1}},
+        });
+    REQUIRE(lowered.ok);
+    const auto first_call = lowered.source.find("first();");
+    const auto second_call = lowered.source.find("second();");
+    REQUIRE(first_call != std::string::npos);
+    REQUIRE(second_call != std::string::npos);
+    REQUIRE(first_call < second_call);
+    REQUIRE(lowered.source.find(
+        "int __dispatch[]") != std::string::npos);
+    REQUIRE(lowered.source.find(
+        "if (__dispatch[0] != 0)") != std::string::npos);
+    REQUIRE(lowered.source.find(
+        "if (__dispatch[1] != 0)") != std::string::npos);
+    REQUIRE(lowered.source.find("__sequence__") == std::string::npos);
+}
+
 NodeDefinition make_scene_probe_definition() {
     NodeDefinition definition;
     definition.id = StableId{"test.scene_probe"};

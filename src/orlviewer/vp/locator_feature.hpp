@@ -25,6 +25,12 @@ public:
     }
 
     void on_submit(ViewerAdapter& adapter, const Rhi::FrameState&) {
+        // LocatorFeature intentionally renders the host-authored component
+        // snapshot. Device-only solver locator state is published through
+        // SceneGraphContext for GPU graph consumers; copying it back here
+        // would reintroduce the readback that the fused solver avoids. A
+        // future external-buffer locator draw can consume that publication
+        // directly.
         locators.clear();
         components.for_each([&](const Component& meta) {
             if (meta.kind != ComponentKind::Locator) {

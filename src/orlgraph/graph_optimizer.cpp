@@ -73,7 +73,8 @@ void remove_duplicate_connections(GraphModule& module) {
         [&seen](const Connection& connection) {
             const std::string key = endpoint_key(connection.source) + "->"
                 + endpoint_key(connection.destination) + ":" + connection.conversion
-                + ":" + (connection.feedback ? "feedback" : "normal");
+                + ":" + (connection.feedback ? "feedback" : "normal")
+                + ":" + (connection.sequence ? "sequence" : "data");
             return !seen.insert(key).second;
         }), connections.end());
 }
@@ -129,6 +130,22 @@ void simplify_identity(GraphModule& module, const NodeRegistry& registry,
         if (node_it == module.nodes().end()) {
             continue;
         }
+        const bool has_sequence_edge = std::any_of(
+            module.connections().begin(), module.connections().end(),
+            [&identity](const Connection& connection) {
+                return connection.sequence
+                    && ((connection.source.kind == EndpointKind::NodePort
+                            && connection.source.owner == identity)
+                        || (connection.destination.kind
+                                == EndpointKind::NodePort
+                            && connection.destination.owner == identity));
+            });
+        if (has_sequence_edge) {
+            // Removing an identity would otherwise erase the ordering edge
+            // with it. Keep the node until an optimizer with an explicit
+            // ordering rewrite is available.
+            continue;
+        }
         Endpoint source;
         bool found = false;
         for (const auto& connection : module.connections()) {
@@ -175,6 +192,19 @@ void eliminate_common_nodes(GraphModule& module, const NodeRegistry& registry,
         if (definition == nullptr || !definition->pure || has_write_effect(*definition)) {
             continue;
         }
+        if (std::any_of(module.connections().begin(), module.connections().end(),
+                [&id](const Connection& connection) {
+                    return connection.sequence
+                        && ((connection.source.kind
+                                == EndpointKind::NodePort
+                                && connection.source.owner == id)
+                            || (connection.destination.kind
+                                == EndpointKind::NodePort
+                                && connection.destination.owner == id));
+                }))
+        {
+            continue;
+        }
         std::ostringstream signature;
         signature << node.definition.value << "|";
         for (const auto& [name, value] : node.parameter_values) {
@@ -215,6 +245,13 @@ void eliminate_dead_nodes(GraphModule& module, const NodeRegistry& registry,
             if (live.insert(connection.source.owner).second) {
                 work.push_back(connection.source.owner);
             }
+        }
+        if (connection.sequence
+            && connection.source.kind == EndpointKind::NodePort
+            && connection.destination.kind == EndpointKind::NodePort)
+        {
+            live.insert(connection.source.owner);
+            live.insert(connection.destination.owner);
         }
     }
     for (const auto& [id, node] : module.nodes()) {
@@ -287,6 +324,20 @@ bool flatten_subgraph_node(GraphModule& module, const NodeRegistry& registry,
     const NodeInstance& instance, const NodeDefinition& definition,
     std::vector<StableId>* removed, std::vector<Diagnostic>* diagnostics)
 {
+    if (std::any_of(module.connections().begin(), module.connections().end(),
+            [&instance](const Connection& connection) {
+                return connection.sequence
+                    && ((connection.source.kind == EndpointKind::NodePort
+                            && connection.source.owner == instance.id)
+                        || (connection.destination.kind
+                                == EndpointKind::NodePort
+                            && connection.destination.owner == instance.id));
+            }))
+    {
+        // The subgraph boundary may carry an ordering-only dependency. Keep
+        // it opaque rather than dropping that dependency during flattening.
+        return false;
+    }
     const auto* nested = registry.find_subgraph(definition.implementation.subgraph);
     if (nested == nullptr) {
         add_warning(*diagnostics, "ORLGRAPH_MISSING_SUBGRAPH",

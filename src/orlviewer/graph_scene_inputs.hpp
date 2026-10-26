@@ -80,6 +80,23 @@ public:
     std::size_t computed_joints_device_count() const {
         return computed_joints_device_count_;
     }
+    void set_computed_locators_device(
+        std::optional<exec::DeviceBufferView> view,
+        std::size_t element_count);
+    void clear_computed_locators_device();
+    std::optional<exec::DeviceBufferView> computed_locators_device() const {
+        return computed_locators_device_;
+    }
+    std::size_t computed_locators_device_count() const {
+        return computed_locators_device_count_;
+    }
+    void set_computed_solver_context_device(
+        std::optional<exec::DeviceBufferView> view);
+    void clear_computed_solver_context_device();
+    std::optional<exec::DeviceBufferView>
+    computed_solver_context_device() const {
+        return computed_solver_context_device_;
+    }
     exec::OrlBuffer& computed_joints_buffer() {
         return joints_;
     }
@@ -92,6 +109,8 @@ public:
         std::string* error = nullptr);
     orlrig::SolverContext solver_context() const;
     std::optional<exec::DeviceBufferView> solver_joints_device_view(
+        exec::OrlGraphExecution& execution) const;
+    std::optional<exec::DeviceBufferView> solver_locators_device_view(
         exec::OrlGraphExecution& execution) const;
     // Copies the host-side packed joint buffer back to component storage after
     // a graph evaluation that performed host readback. Device-only evaluation
@@ -164,6 +183,9 @@ private:
         std::size_t locators_offset = 0;
         std::size_t controllers_offset = 0;
         std::uint64_t version = 1;
+        std::vector<exec::PackedBufferRange> dirty_ranges;
+        std::vector<std::byte> device_host_joints_snapshot;
+        std::vector<std::byte> device_host_locators_snapshot;
         bool ready = false;
     };
 
@@ -179,6 +201,9 @@ private:
     exec::OrlBuffer joints_;
     std::optional<exec::DeviceBufferView> computed_joints_device_;
     std::size_t computed_joints_device_count_ = 0;
+    std::optional<exec::DeviceBufferView> computed_locators_device_;
+    std::size_t computed_locators_device_count_ = 0;
+    std::optional<exec::DeviceBufferView> computed_solver_context_device_;
     exec::OrlBuffer locators_;
     exec::OrlBuffer controllers_;
     std::vector<ComponentId> joint_ids_;

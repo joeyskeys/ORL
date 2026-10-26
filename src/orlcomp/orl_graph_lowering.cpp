@@ -259,6 +259,53 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
         return result;
     }
 
+    std::vector<orlgraph::StableId> execution_order =
+        validation.schedule.order;
+    if (!options.execution_order.empty()) {
+        if (options.execution_order.size() != module.nodes().size()) {
+            error(result, "ORL_LOWERING_ORDER",
+                "Explicit execution order is not a permutation of graph nodes");
+            return result;
+        }
+        std::map<orlgraph::StableId, std::size_t> positions;
+        for (std::size_t index = 0;
+             index < options.execution_order.size(); ++index)
+        {
+            const auto& node_id = options.execution_order[index];
+            if (module.node(node_id) == nullptr
+                || !positions.emplace(node_id, index).second)
+            {
+                error(result, "ORL_LOWERING_ORDER",
+                    "Explicit execution order contains an unknown or "
+                    "duplicate node: " + node_id.value);
+                return result;
+            }
+        }
+        for (const auto& connection : module.connections()) {
+            if (connection.feedback && !connection.sequence
+                || connection.source.kind
+                    != orlgraph::EndpointKind::NodePort
+                || connection.destination.kind
+                    != orlgraph::EndpointKind::NodePort)
+            {
+                continue;
+            }
+            const auto source = positions.find(connection.source.owner);
+            const auto destination =
+                positions.find(connection.destination.owner);
+            if (source == positions.end() || destination == positions.end()
+                || source->second >= destination->second)
+            {
+                error(result, "ORL_LOWERING_ORDER",
+                    "Explicit execution order violates graph dependency '"
+                    + connection.source.owner.value + "' -> '"
+                    + connection.destination.owner.value + "'");
+                return result;
+            }
+        }
+        execution_order = options.execution_order;
+    }
+
     std::set<std::string> modules;
     if (options.emit_module_uses) {
         for (const auto& [_, input] : module.inputs()) {
@@ -384,6 +431,46 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
         } else {
             source << " " << name;
         }
+    }
+    const std::string dispatch_name = identifier(options.dispatch_parameter);
+    if (!options.dispatch_parameter.empty()) {
+        if (options.dispatch_indices.empty()) {
+            error(result, "ORL_LOWERING_DISPATCH",
+                "Dispatch parameter has no mapped graph nodes");
+            return result;
+        }
+        std::set<std::size_t> dispatch_positions;
+        for (const auto& [node_id, dispatch_index] :
+             options.dispatch_indices)
+        {
+            if (module.node(node_id) == nullptr
+                || !dispatch_positions.emplace(dispatch_index).second)
+            {
+                error(result, "ORL_LOWERING_DISPATCH",
+                    "Dispatch selection contains an unknown node or "
+                    "duplicate region index");
+                return result;
+            }
+        }
+        const bool input_name_collision = std::any_of(
+            input_names.begin(), input_names.end(),
+            [&dispatch_name](const auto& entry) {
+                return entry.second == dispatch_name;
+            });
+        if (input_name_collision) {
+            error(result, "ORL_LOWERING_DISPATCH",
+                "Dispatch parameter collides with a graph input: "
+                    + dispatch_name);
+            return result;
+        }
+        if (!first) {
+            source << ", ";
+        }
+        source << "int " << dispatch_name << "[]";
+    } else if (!options.dispatch_indices.empty()) {
+        error(result, "ORL_LOWERING_DISPATCH",
+            "Dispatch node mappings require a dispatch parameter");
+        return result;
     }
     source << ") {\n";
 
@@ -563,7 +650,8 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
             const orlgraph::ConversionDefinition& conversion,
             std::string_view temporary,
             std::string_view selector,
-            std::string_view instance_key) {
+            std::string_view instance_key,
+            std::string_view indent) {
             if (conversion.implementation.function.empty()) {
                 error(result, "ORL_LOWERING_WRITEBACK_FUNCTION",
                     "Writeback conversion has no ORL function: "
@@ -599,7 +687,7 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
                         + std::string{instance_key});
                 return false;
             }
-            source << "    " << conversion.implementation.function << "("
+            source << indent << conversion.implementation.function << "("
                    << target_name->second << ", " << selector << ", "
                    << temporary << ");\n";
             return true;
@@ -617,7 +705,7 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
                 ? nullptr : &found->second;
         };
 
-    for (const auto& node_id : validation.schedule.order) {
+    for (const auto& node_id : execution_order) {
         const auto* node = module.node(node_id);
         const auto* definition = node == nullptr
             ? nullptr : registry.find(node->definition);
@@ -764,8 +852,30 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
                 arguments.push_back(std::move(expression));
             }
 
-            source << "    ";
-            if (definition->outputs.empty()) {
+            const auto dispatch = options.dispatch_indices.find(node_id);
+            const bool dispatch_guarded =
+                dispatch != options.dispatch_indices.end();
+            const bool guarded_output_used = std::any_of(
+                definition->outputs.begin(), definition->outputs.end(),
+                [&module, &node_id](const orlgraph::Port& output) {
+                    return output_is_used(module, node_id, output);
+                });
+            if (dispatch_guarded && guarded_output_used) {
+                error(result, "ORL_LOWERING_DISPATCH",
+                    "Dispatch-guarded node output is consumed by the graph: "
+                    + node_id.value);
+                return result;
+            }
+            const std::string_view indent =
+                dispatch_guarded ? "        " : "    ";
+            if (dispatch_guarded) {
+                source << "    if (" << dispatch_name << "["
+                       << dispatch->second << "] != 0) {\n";
+            }
+            source << indent;
+            if (definition->outputs.empty()
+                || (dispatch_guarded && !guarded_output_used))
+            {
                 source << definition->implementation.function << "(";
             } else {
                 const auto& output = definition->outputs.front();
@@ -800,10 +910,13 @@ LoweredGraph OrlGraphLowerer::lower(const orlgraph::GraphModule& module,
                 if (!emit_writeback(*conversion,
                         writable->second.temporary,
                         writable->second.writeback_index,
-                        key))
+                        key, indent))
                 {
                     return result;
                 }
+            }
+            if (dispatch_guarded) {
+                source << "    }\n";
             }
         }
 

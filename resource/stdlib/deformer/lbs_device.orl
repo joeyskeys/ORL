@@ -1,0 +1,36 @@
+// CUDA-only LBS entry point for a solver-published Joint device view.
+//
+// This module intentionally does not import deformer/lbs: that module's
+// capture entry makes SolverContext an implicit parameter. The device entry
+// instead receives the final solver Joint arena directly, allowing the
+// viewer to bind the preceding solver allocation without a host copy.
+
+use joint;
+use weight;
+
+export int deformer_lbs_device [[ string stage = "deformer" ]]
+    (point bind_positions[],
+     point output_positions[],
+     matrix inverse_binds[],
+     Weight weights[],
+     Joint joints[],
+     int vertex_count,
+     int weight_cnt) {
+    parallel for (int vertex = 0; vertex < vertex_count; vertex = vertex + 1) {
+        point bind = bind_positions[vertex];
+        point skinned(0.0, 0.0, 0.0);
+        int i = 0;
+        while (i < weight_cnt) {
+            Weight cell = weights[vertex * weight_cnt + i];
+            if (cell.joint >= 0) {
+                matrix world = joint_world_matrix(joints, cell.joint);
+                matrix skin = joint_skin_matrix(
+                    world, inverse_binds[cell.joint]);
+                skinned = skinned + cell.weight * (skin * bind);
+            }
+            i = i + 1;
+        }
+        output_positions[vertex] = skinned;
+    }
+    return vertex_count;
+}

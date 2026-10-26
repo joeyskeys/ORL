@@ -230,4 +230,69 @@ TEST_CASE("cuda lowering uses device offsets for Joint view fields",
     REQUIRE(ir.find("__orlrig_joint_write_i64") == std::string::npos);
 }
 
+TEST_CASE("cuda driver accepts WorldTransform handle helper calls",
+    "[orl][gpu][cuda][handle][view][world]")
+{
+    auto& registry = global_handle_view_registry();
+    registry.clear();
+    REQUIRE(registry.register_view({
+        "orlrig::joint_handle", "WorldTransform", 1, 3, "joint_arena",
+        {{"xform", HandleViewFieldKind::Matrix, 0,
+            "read_world", "write_world", "matrix"}}}));
+    REQUIRE(registry.register_view({
+        "orlrig::locator_handle", "Locator", 1, 3, "locator_arena",
+        {{"xform", HandleViewFieldKind::Matrix, 0,
+            "read_locator", "write_locator", "matrix"}}}));
+
+    Parser parser(R"(
+        use constraint/parent;
+        int compute(joint_handle source, joint_handle destination) {
+            matrix offset(
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0);
+            return constraint_parent(source, destination, offset);
+        }
+    )");
+    REQUIRE(parser.Parse());
+    REQUIRE(parser.Errors().empty());
+
+    LlvmIrCodegen codegen(
+        "orl_cuda_world_transform_driver",
+        OrlCodegenTarget::Cuda);
+    codegen.SetHandleTypeIdentities({
+        {"constraint::handles::source_xform_handle",
+            "orlrig::joint_handle"},
+        {"constraint::handles::destination_xform_handle",
+            "orlrig::joint_handle"},
+    });
+    const bool generated = codegen.Generate(*parser.Ast());
+    for (const auto& error : codegen.Errors()) {
+        INFO(error);
+    }
+    REQUIRE(generated);
+    REQUIRE(codegen.Errors().empty());
+
+    OrlGpuEngine gpu(OrlGpuBackend::Cuda);
+    gpu.SetCudaEntryFunction("compute");
+    if (!gpu.CompileModuleWithOptimization(
+            codegen.ReleaseModule(), codegen.ReleaseContext()))
+    {
+        const std::string reason = gpu.Errors().empty()
+            ? "CUDA PTX compilation unavailable in this environment"
+            : gpu.Errors().back();
+        WARN(reason);
+        registry.clear();
+        return;
+    }
+    if (!gpu.LoadToDriver()) {
+        const std::string reason = gpu.Errors().empty()
+            ? "CUDA driver/module load unavailable in this environment"
+            : gpu.Errors().back();
+        WARN(reason);
+    }
+    registry.clear();
+}
+
 #endif

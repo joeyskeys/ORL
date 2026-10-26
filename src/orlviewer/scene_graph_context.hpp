@@ -114,6 +114,23 @@ public:
     std::size_t computed_joints_device_count() const {
         return scene_inputs_.computed_joints_device_count();
     }
+    void set_computed_locators_device(
+        std::optional<exec::DeviceBufferView> view,
+        std::size_t element_count);
+    void clear_computed_locators_device();
+    std::optional<exec::DeviceBufferView> computed_locators_device() const {
+        return scene_inputs_.computed_locators_device();
+    }
+    std::size_t computed_locators_device_count() const {
+        return scene_inputs_.computed_locators_device_count();
+    }
+    void set_computed_solver_context_device(
+        std::optional<exec::DeviceBufferView> view);
+    void clear_computed_solver_context_device();
+    std::optional<exec::DeviceBufferView>
+    computed_solver_context_device() const {
+        return scene_inputs_.computed_solver_context_device();
+    }
 
     // Map a graph interface input to a descriptor supplied by the current
     // scene. The mapping is intentionally explicit because graph bindings

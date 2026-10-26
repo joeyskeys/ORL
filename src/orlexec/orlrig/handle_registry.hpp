@@ -23,12 +23,23 @@ struct HandleStorage {
     std::size_t count = 0;
     std::size_t stride = 0;
     bool writable = false;
+    // Optional device-resident storage for the same logical arena. When
+    // present, CUDA executions must consume this pointer instead of creating
+    // a second typed-handle arena from the host mirror.
+    std::uint64_t device_ptr = 0;
+    std::size_t device_bytes = 0;
 };
 
 struct HandleViewContext {
     HandleStorage joints;
     HandleStorage locators;
     std::uint64_t topology_revision = 0;
+    // Host-side content generations let a CUDA execution avoid re-uploading
+    // an arena whose device state was just produced by a fused solver. A
+    // zero generation means the caller cannot prove that the host storage is
+    // unchanged, so the execution uploads it conservatively.
+    std::uint64_t joints_revision = 0;
+    std::uint64_t locators_revision = 0;
 };
 
 void set_active_handle_context(HandleViewContext* context);

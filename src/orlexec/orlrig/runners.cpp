@@ -244,11 +244,20 @@ RunnerStatus LbsRunner::ensure_programs(const std::string& type) {
         && capture_execution.has_value() && capture_execution->valid()
         && deform_program.has_value() && deform_program->valid()
         && deform_execution.has_value() && deform_execution->valid()
+        && (compute_backend != exec::Backend::Cuda
+            || (deform_device_program.has_value()
+                && deform_device_program->valid()
+                && deform_device_execution.has_value()
+                && deform_device_execution->valid()))
         && capture_execution->backend() == compute_backend
         && deform_execution->backend() == compute_backend)
     {
         capture_execution->clear_bindings();
         deform_execution->clear_bindings();
+        if (deform_device_execution.has_value()) {
+            deform_device_execution->clear_bindings();
+        }
+        last_evaluation_used_device_joints = false;
         return success();
     }
 
@@ -256,6 +265,8 @@ RunnerStatus LbsRunner::ensure_programs(const std::string& type) {
     capture_execution.reset();
     deform_program.reset();
     deform_execution.reset();
+    deform_device_program.reset();
+    deform_device_execution.reset();
     compiled_type.clear();
 
     const std::string source = "use deformer/" + type + ";\n";
@@ -273,6 +284,17 @@ RunnerStatus LbsRunner::ensure_programs(const std::string& type) {
     if (!deform.valid()) {
         return failure(deform.errors());
     }
+    std::optional<exec::OrlProgram> deform_device;
+    if (compute_backend == exec::Backend::Cuda) {
+        deform_device.emplace(exec::OrlProgram::Compile(
+            "use deformer/" + type + "_device;\n", {
+                .entry_function = "deformer_" + type + "_device",
+                .source_name = "orlrig_deformer_device",
+            }));
+        if (!deform_device->valid()) {
+            return failure(deform_device->errors());
+        }
+    }
     auto capture_exec = exec::OrlExecution::Create(capture, compute_backend);
     if (!capture_exec.valid()) {
         return failure(capture_exec.errors());
@@ -281,12 +303,23 @@ RunnerStatus LbsRunner::ensure_programs(const std::string& type) {
     if (!deform_exec.valid()) {
         return failure(deform_exec.errors());
     }
+    std::optional<exec::OrlExecution> deform_device_exec;
+    if (deform_device.has_value()) {
+        deform_device_exec.emplace(exec::OrlExecution::Create(
+            *deform_device, compute_backend));
+        if (!deform_device_exec->valid()) {
+            return failure(deform_device_exec->errors());
+        }
+    }
 
     capture_program = std::move(capture);
     capture_execution = std::move(capture_exec);
     deform_program = std::move(deform);
     deform_execution = std::move(deform_exec);
+    deform_device_program = std::move(deform_device);
+    deform_device_execution = std::move(deform_device_exec);
     compiled_type = type;
+    last_evaluation_used_device_joints = false;
     return success();
 }
 
@@ -411,6 +444,58 @@ RunnerStatus LbsRunner::bind_deform(exec::OrlBuffer& packed,
     return success();
 }
 
+RunnerStatus LbsRunner::bind_deform_device(
+    exec::DeviceBufferView device_joints,
+    std::size_t joint_count,
+    DeformerData& deformer,
+    WeightData& weights,
+    std::int64_t vertex_count)
+{
+    if (!deform_device_program.has_value()
+        || !deform_device_execution.has_value())
+    {
+        return failure("CUDA device-joint deformer is unavailable");
+    }
+    if (device_joints.device_ptr == 0 || joint_count == 0
+        || joint_count > device_joints.bytes / kJointStride)
+    {
+        return failure("CUDA device Joint view is invalid");
+    }
+
+    const std::int64_t weight_count =
+        std::max<std::int64_t>(1, weights.weight_cnt);
+    auto& execution = *deform_device_execution;
+    for (const auto& parameter : deform_device_program->parameters()) {
+        bool bound = true;
+        if (parameter.name == "bind_positions") {
+            bound = execution.bind_buffer(
+                "bind_positions", deformer.bind_positions);
+        } else if (parameter.name == "output_positions") {
+            bound = execution.bind_buffer("output_positions", output);
+        } else if (parameter.name == "inverse_binds") {
+            bound = execution.bind_buffer(
+                "inverse_binds", deformer.inverse_binds);
+        } else if (parameter.name == "weights") {
+            bound = execution.bind_buffer("weights", weights.weights);
+        } else if (parameter.name == "joints") {
+            bound = execution.bind_device_buffer(
+                "joints", device_joints.device_ptr, device_joints.bytes);
+        } else if (parameter.name == "vertex_count") {
+            bound = execution.bind_int("vertex_count", vertex_count);
+        } else if (parameter.name == "weight_cnt") {
+            bound = execution.bind_int("weight_cnt", weight_count);
+        } else {
+            return failure(
+                "Unhandled device deformer parameter '"
+                + parameter.name + "'");
+        }
+        if (!bound) {
+            return bind_error(execution, "device deformer binding");
+        }
+    }
+    return success();
+}
+
 RunnerStatus LbsRunner::evaluate(DeformerData& deformer,
     WeightData& weights,
     const std::vector<Joint>& packed,
@@ -442,6 +527,7 @@ RunnerStatus LbsRunner::evaluate(DeformerData& deformer,
         return failure("Failed to resize LBS output buffer");
     }
     last_vertex_count = static_cast<std::int64_t>(deformer.bind_positions.count());
+    last_evaluation_used_device_joints = false;
     if (const auto status = bind_deform(
             packed, deformer, weights, last_vertex_count);
         !status)
@@ -462,26 +548,72 @@ RunnerStatus LbsRunner::evaluate(DeformerData& deformer,
     return success();
 }
 
+RunnerStatus LbsRunner::evaluate_device(
+    DeformerData& deformer,
+    WeightData& weights,
+    exec::DeviceBufferView device_joints,
+    std::size_t joint_count)
+{
+    if (compute_backend != exec::Backend::Cuda) {
+        return failure("Device-joint LBS evaluation requires CUDA");
+    }
+    if (!deformer.bound || deformer.bind_positions.count() == 0) {
+        return failure("LBS evaluation requires a captured bind pose");
+    }
+    if (const auto status = ensure_programs(deformer.type); !status) {
+        return status;
+    }
+    if (!output.resize(deformer.bind_positions.count())) {
+        return failure("Failed to resize LBS output buffer");
+    }
+    last_vertex_count =
+        static_cast<std::int64_t>(deformer.bind_positions.count());
+    if (const auto status = bind_deform_device(
+            device_joints, joint_count, deformer, weights,
+            last_vertex_count);
+        !status)
+    {
+        return status;
+    }
+    if (!deform_device_execution->evaluate_device(
+            static_cast<std::uint32_t>(last_vertex_count)))
+    {
+        return failure(deform_device_execution->errors());
+    }
+    last_evaluation_used_device_joints = true;
+    return success();
+}
+
 RunnerStatus LbsRunner::readback() {
     if (compute_backend == exec::Backend::Cpu) {
         return success();
     }
-    if (!deform_execution.has_value() || last_vertex_count <= 0
-        || !deform_execution->evaluate(
+    auto* execution = last_evaluation_used_device_joints
+        ? (deform_device_execution.has_value()
+            ? &*deform_device_execution : nullptr)
+        : (deform_execution.has_value()
+            ? &*deform_execution : nullptr);
+    if (execution == nullptr || last_vertex_count <= 0
+        || !execution->evaluate(
                 static_cast<std::uint32_t>(last_vertex_count)).has_value())
     {
-        return deform_execution.has_value()
-            ? failure(deform_execution->errors())
+        return execution != nullptr
+            ? failure(execution->errors())
             : failure("LBS execution is not initialized");
     }
     return success();
 }
 
 std::optional<exec::DeviceBufferView> LbsRunner::output_device() {
-    if (!deform_execution.has_value()) {
+    auto* execution = last_evaluation_used_device_joints
+        ? (deform_device_execution.has_value()
+            ? &*deform_device_execution : nullptr)
+        : (deform_execution.has_value()
+            ? &*deform_execution : nullptr);
+    if (execution == nullptr) {
         return std::nullopt;
     }
-    return deform_execution->device_buffer_view("output_positions");
+    return execution->device_buffer_view("output_positions");
 }
 
 AutoWeightRunner::AutoWeightRunner(std::string algorithm, exec::Backend backend)

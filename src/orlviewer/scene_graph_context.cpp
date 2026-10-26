@@ -31,6 +31,7 @@ void SceneGraphContext::set_graph(orlgraph::GraphModule module,
     solver_graph_ = {};
     registry_ = std::move(registry);
     scene_inputs_.clear_computed_joints_device();
+    scene_inputs_.clear_computed_locators_device();
     input_mappings_.clear();
     pending_operations_.clear();
     staged_graphs_ = false;
@@ -53,6 +54,7 @@ void SceneGraphContext::set_stage_graphs(
     graph_ = std::move(deformer);
     registry_ = std::move(registry);
     scene_inputs_.clear_computed_joints_device();
+    scene_inputs_.clear_computed_locators_device();
     input_mappings_.clear();
     pending_operations_.clear();
     staged_graphs_ = true;
@@ -196,7 +198,8 @@ std::size_t SceneGraphContext::evaluation_signature(
                 connection.source.owner.value
                 + connection.source.port.value
                 + connection.destination.owner.value
-                + connection.destination.port.value)
+                + connection.destination.port.value
+                + (connection.sequence ? ":sequence" : ":data"))
             + (signature << 6) + (signature >> 2);
     }
     return signature;
@@ -454,6 +457,30 @@ void SceneGraphContext::set_computed_joints_device(
 void SceneGraphContext::clear_computed_joints_device()
 {
     scene_inputs_.clear_computed_joints_device();
+}
+
+void SceneGraphContext::set_computed_locators_device(
+    std::optional<exec::DeviceBufferView> view,
+    std::size_t element_count)
+{
+    scene_inputs_.set_computed_locators_device(
+        std::move(view), element_count);
+}
+
+void SceneGraphContext::clear_computed_locators_device()
+{
+    scene_inputs_.clear_computed_locators_device();
+}
+
+void SceneGraphContext::set_computed_solver_context_device(
+    std::optional<exec::DeviceBufferView> view)
+{
+    scene_inputs_.set_computed_solver_context_device(std::move(view));
+}
+
+void SceneGraphContext::clear_computed_solver_context_device()
+{
+    scene_inputs_.clear_computed_solver_context_device();
 }
 
 bool SceneGraphContext::map_input(

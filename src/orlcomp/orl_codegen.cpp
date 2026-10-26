@@ -752,6 +752,63 @@ struct LlvmIrCodegen::Impl {
         return result;
     }
 
+    bool AppendRuntimeContextArguments(
+        std::vector<llvm::Value*>& arguments,
+        std::string_view function_name)
+    {
+        const auto append = [this, &arguments, function_name](
+                                llvm::Value* value,
+                                std::string_view context_name) {
+            if (value == nullptr) {
+                AddError(
+                    "CUDA handle view call to "
+                    + std::string{function_name}
+                    + " is missing implicit "
+                    + std::string{context_name});
+                return false;
+            }
+            arguments.push_back(value);
+            return true;
+        };
+        if (uses_solver_context_
+            && !append(solver_context_argument_, "SolverContext"))
+        {
+            return false;
+        }
+        if (uses_hierarchy_context_
+            && (!append(hierarchy_context_argument_, "HierarchyContext")
+                || !append(hierarchy_data_argument_, "hierarchy data")))
+        {
+            return false;
+        }
+        if (uses_handle_context_
+            && !append(handle_context_argument_, "handle view context"))
+        {
+            return false;
+        }
+        return true;
+    }
+
+    llvm::Function* FindCudaHelper(
+        std::string_view function_name,
+        const std::vector<llvm::Value*>& arguments)
+    {
+        auto* function = module_->getFunction(std::string{function_name});
+        if (function == nullptr) {
+            AddError(
+                "CUDA handle view helper '" + std::string{function_name}
+                + "' is not defined");
+            return nullptr;
+        }
+        if (function->arg_size() != arguments.size()) {
+            AddError(
+                "CUDA handle view helper '" + std::string{function_name}
+                + "' has an incompatible implicit-argument ABI");
+            return nullptr;
+        }
+        return function;
+    }
+
     llvm::Value* GenerateCudaWorldRead(
         const VariableInfo& variable)
     {
@@ -765,16 +822,20 @@ struct LlvmIrCodegen::Impl {
         if (joints == nullptr) {
             return nullptr;
         }
-        auto* matrix = llvm::ArrayType::get(
-            builder_.getDoubleTy(), 16);
-        auto function = module_->getOrInsertFunction(
-            "joint_world_matrix",
-            llvm::FunctionType::get(
-                matrix, {builder_.getPtrTy(), builder_.getInt64Ty()},
-                false));
-        return builder_.CreateCall(function, {
-            joints, HandleSlotLane(variable.view_handle)},
-            "cuda.world.read");
+        std::vector<llvm::Value*> arguments{
+            joints, HandleSlotLane(variable.view_handle)};
+        if (!AppendRuntimeContextArguments(
+                arguments, "joint_world_matrix"))
+        {
+            return nullptr;
+        }
+        auto* function = FindCudaHelper(
+            "joint_world_matrix", arguments);
+        if (function == nullptr) {
+            return nullptr;
+        }
+        return builder_.CreateCall(
+            function, arguments, "cuda.world.read");
     }
 
     llvm::Value* GenerateCudaWorldWrite(
@@ -797,15 +858,26 @@ struct LlvmIrCodegen::Impl {
         if (value == nullptr) {
             return nullptr;
         }
-        auto function = module_->getOrInsertFunction(
-            "joint_write_world_matrix",
-            llvm::FunctionType::get(
-                builder_.getInt64Ty(),
-                {builder_.getPtrTy(), builder_.getInt64Ty(), matrix},
-                false));
-        builder_.CreateCall(function, {
-            joints, HandleSlotLane(variable.view_handle), value},
-            "cuda.world.write");
+        auto* storage = CreateEntryAlloca(
+            "cuda.world.write", matrix);
+        builder_.CreateStore(value, storage);
+        auto* world_address = builder_.CreateInBoundsGEP(
+            matrix, storage,
+            {builder_.getInt64(0), builder_.getInt64(0)},
+            "cuda.world.write.address");
+        std::vector<llvm::Value*> arguments{
+            joints, HandleSlotLane(variable.view_handle), world_address};
+        if (!AppendRuntimeContextArguments(
+                arguments, "joint_write_world_matrix"))
+        {
+            return nullptr;
+        }
+        auto* function = FindCudaHelper(
+            "joint_write_world_matrix", arguments);
+        if (function == nullptr) {
+            return nullptr;
+        }
+        builder_.CreateCall(function, arguments, "cuda.world.write");
         return value;
     }
 

@@ -168,10 +168,18 @@ bool SceneInputCatalog::make_interface_port(const orlgraph::StableId& id,
 bool SceneInputCatalog::set_cuda_evaluation(bool enabled)
 {
     if (cuda_evaluation == enabled) {
+        if (!enabled) {
+            clear_computed_joints_device();
+            clear_computed_locators_device();
+        }
         return true;
     }
     cuda_evaluation = enabled;
     packed_solver_inputs.ready = false;
+    if (!enabled) {
+        clear_computed_joints_device();
+        clear_computed_locators_device();
+    }
     return true;
 }
 
@@ -189,28 +197,52 @@ orlrig::HandleViewContext& SceneInputCatalog::handle_view_context()
     if (cuda_evaluation) {
         ensure_cuda_inputs();
     }
-    if (packed_solver_inputs.ready) {
+    // The packed arena is the CUDA ownership path. CPU evaluation must use
+    // the ordinary host buffers directly; otherwise CPU handle writes land
+    // in the staging copy and the component writeback would observe stale
+    // locator data.
+    const auto joint_device_ptr =
+        handle_view_context_.joints.device_ptr;
+    const auto joint_device_bytes =
+        handle_view_context_.joints.device_bytes;
+    const auto locator_device_ptr =
+        handle_view_context_.locators.device_ptr;
+    const auto locator_device_bytes =
+        handle_view_context_.locators.device_bytes;
+    if (cuda_evaluation && packed_solver_inputs.ready) {
         handle_view_context_.joints = {
             packed_solver_inputs.storage.data()
                 + packed_solver_inputs.joints_offset,
             packed_solver_inputs.joint_ids.size(),
             orlrig::kJointStride,
             true,
+            joint_device_ptr,
+            joint_device_bytes,
         };
         handle_view_context_.locators = {
             packed_solver_inputs.storage.data()
                 + packed_solver_inputs.locators_offset,
             packed_solver_inputs.locator_ids.size(),
             orlrig::kLocatorStride,
-            false,
+            true,
+            locator_device_ptr,
+            locator_device_bytes,
         };
     } else {
         handle_view_context_.joints = {
-            joints_.data(), joints_.count(), orlrig::kJointStride, true};
+            const_cast<void*>(
+                static_cast<const OrlBuffer&>(joints_).data()),
+            joints_.count(), orlrig::kJointStride, true,
+            joint_device_ptr, joint_device_bytes};
         handle_view_context_.locators = {
-            locators_.data(), locators_.count(), orlrig::kLocatorStride, false};
+            const_cast<void*>(
+                static_cast<const OrlBuffer&>(locators_).data()),
+            locators_.count(), orlrig::kLocatorStride, true,
+            locator_device_ptr, locator_device_bytes};
     }
     handle_view_context_.topology_revision = revision_ == 0 ? 1 : revision_;
+    handle_view_context_.joints_revision = joints_.version();
+    handle_view_context_.locators_revision = locators_.version();
     return handle_view_context_;
 }
 
@@ -407,6 +439,13 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
         if (!pack_joints()) {
             return set_error(error, "Unable to pack scene joints");
         }
+        if (computed_joints_device_.has_value()) {
+            binding.kind = exec::ParameterKind::Buffer;
+            binding.device_ptr = computed_joints_device_->device_ptr;
+            binding.bytes = computed_joints_device_->bytes;
+            binding.element_count = computed_joints_device_count_;
+            return true;
+        }
         if (cuda_evaluation
             && bind_packed(
                 packed_solver_inputs.joints_offset,
@@ -459,6 +498,13 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
         return true;
     }
     case SourceKind::Locators:
+        if (computed_locators_device_.has_value()) {
+            binding.kind = exec::ParameterKind::Buffer;
+            binding.device_ptr = computed_locators_device_->device_ptr;
+            binding.bytes = computed_locators_device_->bytes;
+            binding.element_count = computed_locators_device_count_;
+            return true;
+        }
         if (!pack_locators()) {
             return set_error(error, "Unable to pack scene locators");
         }
@@ -499,6 +545,22 @@ bool SceneInputCatalog::resolve(const orlgraph::InterfacePort& port,
     case SourceKind::LocatorXform:
         if (!pack_locator(source->second.component, key)) {
             return set_error(error, "Unable to pack locator transform for '" + key + "'");
+        }
+        if (computed_locators_device_.has_value()) {
+            const auto found_id = std::find(
+                locator_ids_.begin(), locator_ids_.end(),
+                source->second.component);
+            if (found_id != locator_ids_.end()) {
+                binding.kind = exec::ParameterKind::Buffer;
+                binding.device_ptr =
+                    computed_locators_device_->device_ptr
+                    + static_cast<std::uint64_t>(
+                        std::distance(locator_ids_.begin(), found_id))
+                        * orlrig::kLocatorStride;
+                binding.bytes = orlrig::kLocatorStride;
+                binding.element_count = 1;
+                return true;
+            }
         }
         if (cuda_evaluation) {
             const auto found_id = std::find(
@@ -645,12 +707,70 @@ void SceneInputCatalog::set_computed_joints_device(
 {
     computed_joints_device_ = view;
     computed_joints_device_count_ = view.has_value() ? element_count : 0;
+    handle_view_context_.joints.device_ptr =
+        view.has_value() ? view->device_ptr : 0;
+    handle_view_context_.joints.device_bytes =
+        view.has_value() ? view->bytes : 0;
+    if (view.has_value() && joints_.byte_size() != 0) {
+        const auto& host = static_cast<const exec::OrlBuffer&>(joints_);
+        const auto* data = static_cast<const std::byte*>(host.data());
+        packed_solver_inputs.device_host_joints_snapshot.assign(
+            data, data + host.byte_size());
+    } else {
+        packed_solver_inputs.device_host_joints_snapshot.clear();
+    }
 }
 
 void SceneInputCatalog::clear_computed_joints_device()
 {
     computed_joints_device_.reset();
     computed_joints_device_count_ = 0;
+    computed_solver_context_device_.reset();
+    handle_view_context_.joints.device_ptr = 0;
+    handle_view_context_.joints.device_bytes = 0;
+    packed_solver_inputs.device_host_joints_snapshot.clear();
+}
+
+void SceneInputCatalog::set_computed_locators_device(
+    std::optional<exec::DeviceBufferView> view,
+    std::size_t element_count)
+{
+    computed_locators_device_ = view;
+    computed_locators_device_count_ =
+        view.has_value() ? element_count : 0;
+    handle_view_context_.locators.device_ptr =
+        view.has_value() ? view->device_ptr : 0;
+    handle_view_context_.locators.device_bytes =
+        view.has_value() ? view->bytes : 0;
+    if (view.has_value() && locators_.byte_size() != 0) {
+        const auto& host = static_cast<const exec::OrlBuffer&>(locators_);
+        const auto* data = static_cast<const std::byte*>(host.data());
+        packed_solver_inputs.device_host_locators_snapshot.assign(
+            data, data + host.byte_size());
+    } else {
+        packed_solver_inputs.device_host_locators_snapshot.clear();
+    }
+}
+
+void SceneInputCatalog::clear_computed_locators_device()
+{
+    computed_locators_device_.reset();
+    computed_locators_device_count_ = 0;
+    computed_solver_context_device_.reset();
+    handle_view_context_.locators.device_ptr = 0;
+    handle_view_context_.locators.device_bytes = 0;
+    packed_solver_inputs.device_host_locators_snapshot.clear();
+}
+
+void SceneInputCatalog::set_computed_solver_context_device(
+    std::optional<exec::DeviceBufferView> view)
+{
+    computed_solver_context_device_ = view;
+}
+
+void SceneInputCatalog::clear_computed_solver_context_device()
+{
+    computed_solver_context_device_.reset();
 }
 
 bool SceneInputCatalog::bind_graph_inputs(exec::OrlGraphExecution& execution,
@@ -675,12 +795,34 @@ bool SceneInputCatalog::bind_solver_context(
         return set_error(error,
             "Unable to prepare packed solver context storage");
     }
+    if (execution.backend() == exec::Backend::Cuda
+        && computed_solver_context_device_.has_value())
+    {
+        const auto& device = *computed_solver_context_device_;
+        if (device.device_ptr == 0
+            || device.bytes < packed_solver_inputs.storage.size())
+        {
+            return set_error(error,
+                "Published solver context device storage is invalid");
+        }
+        if (!execution.bind_device_buffer(
+                orlcomp::kSolverContextParameterName,
+                device.device_ptr, device.bytes))
+        {
+            return set_error(error,
+                execution.errors().empty()
+                    ? "Unable to bind published solver context device storage"
+                    : execution.errors().front());
+        }
+        return true;
+    }
     const auto view = exec::PackedBufferView{
         packed_solver_inputs.storage.data(),
         packed_solver_inputs.storage.size(),
         0,
         packed_solver_inputs.storage.size(),
-        packed_solver_inputs.version};
+        packed_solver_inputs.version,
+        packed_solver_inputs.dirty_ranges};
     if (!execution.bind_solver_context(view)) {
         return set_error(error,
             execution.errors().empty()
@@ -725,6 +867,23 @@ SceneInputCatalog::solver_joints_device_view(
             * orlrig::kJointStride};
 }
 
+std::optional<exec::DeviceBufferView>
+SceneInputCatalog::solver_locators_device_view(
+    exec::OrlGraphExecution& execution) const
+{
+    const auto context = solver_context();
+    const auto base = execution.device_buffer_view(
+        orlcomp::kSolverContextParameterName);
+    if (!base.has_value() || context.locator_count <= 0) {
+        return std::nullopt;
+    }
+    return exec::DeviceBufferView{
+        base->device_ptr + static_cast<std::uint64_t>(
+            context.locators_offset),
+        static_cast<std::size_t>(context.locator_count)
+            * orlrig::kLocatorStride};
+}
+
 bool SceneInputCatalog::commit_joints(
     bool host_readback_complete, std::string* error)
 {
@@ -746,7 +905,8 @@ bool SceneInputCatalog::commit_joints(
         joints_.count() != current_joints.size()
         || (!current_joints.empty()
             && std::memcmp(
-                joints_.data(), current_joints.data(),
+                static_cast<const OrlBuffer&>(joints_).data(),
+                current_joints.data(),
                 current_joints.size() * orlrig::kJointStride) != 0);
     if (!host_buffer_was_edited
         && packed_solver_inputs.ready
@@ -773,6 +933,43 @@ bool SceneInputCatalog::commit_joints(
             continue;
         }
         *destination = source[index];
+    }
+
+    const auto& locator_ids = locator_ids_;
+    if (locators_.count() < locator_ids.size()) {
+        return set_error(error,
+            "Packed locator buffer has fewer elements than the component store");
+    }
+    const std::byte* locator_source_bytes = nullptr;
+    if (cuda_evaluation
+        && packed_solver_inputs.ready
+        && packed_solver_inputs.storage.size()
+            >= packed_solver_inputs.locators_offset
+                + locator_ids.size() * orlrig::kLocatorStride)
+    {
+        locator_source_bytes = packed_solver_inputs.storage.data()
+            + packed_solver_inputs.locators_offset;
+    } else {
+        locator_source_bytes = static_cast<const std::byte*>(
+            static_cast<const OrlBuffer&>(locators_).data());
+    }
+    if (locator_source_bytes == nullptr && !locator_ids.empty()) {
+        return set_error(error, "Packed locator buffer has no host data");
+    }
+    const auto* locator_source =
+        reinterpret_cast<const double*>(locator_source_bytes);
+    for (std::size_t index = 0; index < locator_ids.size(); ++index) {
+        auto* destination = components_.locator(locator_ids[index]);
+        if (destination == nullptr) {
+            continue;
+        }
+        const double* matrix = locator_source + index * 16;
+        for (int row = 0; row < 4; ++row) {
+            for (int column = 0; column < 4; ++column) {
+                destination->xform[column][row] = static_cast<float>(
+                    matrix[row * 4 + column]);
+            }
+        }
     }
     return true;
 }
@@ -1120,6 +1317,21 @@ bool SceneInputCatalog::prepare_packed_inputs()
         || packed_solver_inputs.joint_ids != joint_ids_
         || packed_solver_inputs.locator_ids != locator_ids_
         || packed_solver_inputs.controller_ids != controller_ids_;
+    if (layout_changed) {
+        // Any offset/count change invalidates published views into the old
+        // packed allocation. Clear the borrowed device state before the
+        // storage is resized or rebound.
+        clear_computed_joints_device();
+        clear_computed_locators_device();
+    }
+
+    const orlrig::SolverContext context{
+        static_cast<std::int64_t>(joint_ids_.size()),
+        static_cast<std::int64_t>(controller_ids_.size()),
+        static_cast<std::int64_t>(locator_ids_.size()),
+        static_cast<std::int64_t>(joints_offset),
+        static_cast<std::int64_t>(controllers_offset),
+        static_cast<std::int64_t>(locators_offset)};
 
     if (layout_changed) {
         packed_solver_inputs.storage.resize(offset);
@@ -1129,44 +1341,143 @@ bool SceneInputCatalog::prepare_packed_inputs()
         packed_solver_inputs.joints_offset = joints_offset;
         packed_solver_inputs.locators_offset = locators_offset;
         packed_solver_inputs.controllers_offset = controllers_offset;
+        packed_solver_inputs.device_host_joints_snapshot.clear();
+        packed_solver_inputs.device_host_locators_snapshot.clear();
     }
 
     if (packed_solver_inputs.storage.size() < sizeof(orlrig::SolverContext)) {
         return false;
     }
-    const orlrig::SolverContext context{
-        static_cast<std::int64_t>(joint_ids_.size()),
-        static_cast<std::int64_t>(controller_ids_.size()),
-        static_cast<std::int64_t>(locator_ids_.size()),
-        static_cast<std::int64_t>(joints_offset),
-        static_cast<std::int64_t>(controllers_offset),
-        static_cast<std::int64_t>(locators_offset)};
-    std::memcpy(
-        packed_solver_inputs.storage.data(),
-        &context,
-        sizeof(context));
 
-    const auto copy_buffer = [](
-        const exec::OrlBuffer& source,
-        std::vector<std::byte>& destination,
-        std::size_t destination_offset)
-    {
-        if (source.byte_size() == 0) {
-            return;
+    packed_solver_inputs.dirty_ranges.clear();
+    const auto mark_dirty = [&](std::size_t range_offset,
+        std::size_t range_bytes) {
+        if (range_bytes != 0) {
+            packed_solver_inputs.dirty_ranges.push_back({
+                range_offset, range_bytes});
+        }
+    };
+    const auto source_bytes = [](
+        const exec::OrlBuffer& source) -> const std::byte* {
+        return static_cast<const std::byte*>(
+            static_cast<const exec::OrlBuffer&>(source).data());
+    };
+    const auto copy_if_changed = [&](const exec::OrlBuffer& source,
+        std::size_t destination_offset, bool preserve_device_state,
+        const std::vector<std::byte>& device_host_snapshot) {
+        const auto bytes = source.byte_size();
+        if (bytes == 0) {
+            return false;
+        }
+        const auto* source_data = source_bytes(source);
+        const bool host_matches_device_snapshot =
+            preserve_device_state
+            && device_host_snapshot.size() == bytes
+            && std::memcmp(
+                source_data, device_host_snapshot.data(), bytes) == 0;
+        if (host_matches_device_snapshot) {
+            // The device arena is authoritative for this section. In
+            // particular, do not copy the stale host mirror over a solver
+            // result merely because another packed section changed.
+            return false;
+        }
+        if (std::memcmp(
+                packed_solver_inputs.storage.data() + destination_offset,
+                source_data, bytes) == 0)
+        {
+            return false;
         }
         std::memcpy(
-            destination.data() + destination_offset,
-            source.data(),
-            source.byte_size());
+            packed_solver_inputs.storage.data() + destination_offset,
+            source_data, bytes);
+        mark_dirty(destination_offset, bytes);
+        return true;
     };
-    copy_buffer(joints_, packed_solver_inputs.storage, joints_offset);
-    copy_buffer(locators_, packed_solver_inputs.storage, locators_offset);
-    copy_buffer(
-        controllers_,
-        packed_solver_inputs.storage,
-        controllers_offset);
 
-    ++packed_solver_inputs.version;
+    bool content_changed = layout_changed;
+    if (layout_changed
+        || std::memcmp(
+            packed_solver_inputs.storage.data(), &context,
+            sizeof(context)) != 0)
+    {
+        std::memcpy(
+            packed_solver_inputs.storage.data(), &context,
+            sizeof(context));
+        mark_dirty(0, sizeof(context));
+        content_changed = true;
+    }
+
+    const bool preserve_joints =
+        computed_joints_device_.has_value() && !layout_changed;
+    const bool preserve_locators =
+        computed_locators_device_.has_value() && !layout_changed;
+    const bool joints_host_changed =
+        preserve_joints
+        && joints_.byte_size() != 0
+        && packed_solver_inputs.device_host_joints_snapshot.size()
+            == joints_.byte_size()
+        && std::memcmp(
+            source_bytes(joints_),
+            packed_solver_inputs.device_host_joints_snapshot.data(),
+            joints_.byte_size()) != 0;
+    const bool locators_host_changed =
+        preserve_locators
+        && locators_.byte_size() != 0
+        && packed_solver_inputs.device_host_locators_snapshot.size()
+            == locators_.byte_size()
+        && std::memcmp(
+            source_bytes(locators_),
+            packed_solver_inputs.device_host_locators_snapshot.data(),
+            locators_.byte_size()) != 0;
+    if (joints_host_changed) {
+        clear_computed_joints_device();
+    }
+    if (locators_host_changed) {
+        clear_computed_locators_device();
+    }
+    const bool joints_changed = copy_if_changed(
+        joints_, joints_offset, preserve_joints,
+        packed_solver_inputs.device_host_joints_snapshot);
+    const bool locators_changed = copy_if_changed(
+        locators_, locators_offset, preserve_locators,
+        packed_solver_inputs.device_host_locators_snapshot);
+    const bool controllers_changed = copy_if_changed(
+        controllers_, controllers_offset, false, {});
+    content_changed = content_changed
+        || joints_changed || locators_changed || controllers_changed;
+
+    if (layout_changed) {
+        mark_dirty(joints_offset, joint_bytes);
+        mark_dirty(locators_offset, locator_bytes);
+        mark_dirty(controllers_offset, controller_bytes);
+    }
+
+    if (computed_joints_device_.has_value()) {
+        const auto* data = source_bytes(joints_);
+        if (joint_bytes != 0) {
+            packed_solver_inputs.device_host_joints_snapshot.assign(
+                data, data + joint_bytes);
+        } else {
+            packed_solver_inputs.device_host_joints_snapshot.clear();
+        }
+    } else {
+        packed_solver_inputs.device_host_joints_snapshot.clear();
+    }
+    if (computed_locators_device_.has_value()) {
+        const auto* data = source_bytes(locators_);
+        if (locator_bytes != 0) {
+            packed_solver_inputs.device_host_locators_snapshot.assign(
+                data, data + locator_bytes);
+        } else {
+            packed_solver_inputs.device_host_locators_snapshot.clear();
+        }
+    } else {
+        packed_solver_inputs.device_host_locators_snapshot.clear();
+    }
+
+    if (content_changed) {
+        ++packed_solver_inputs.version;
+    }
     packed_solver_inputs.ready = true;
     return true;
 }
@@ -1179,7 +1490,8 @@ exec::PackedBufferView SceneInputCatalog::packed_view(
         packed_solver_inputs.storage.size(),
         offset,
         bytes,
-        packed_solver_inputs.version};
+        packed_solver_inputs.version,
+        packed_solver_inputs.dirty_ranges};
 }
 
 bool SceneInputCatalog::pack_joints() {
@@ -1214,6 +1526,7 @@ bool SceneInputCatalog::pack_locators() {
     locator_ids_ = components_.packed_locator_ids();
     if (locator_ids_ != previous_ids) {
         ++revision_;
+        clear_computed_locators_device();
     }
     const auto packed = components_.packed_locators();
     if (!locators_.resize(packed.size())) {

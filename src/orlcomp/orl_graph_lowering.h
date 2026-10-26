@@ -46,6 +46,17 @@ struct GraphLoweringOptions {
     RuntimeHandleIndexExpressionResolver runtime_handle_index_expression;
     // Revision of the scene snapshot used by runtime output resolvers.
     std::size_t scene_revision = 0;
+    // Optional validated schedule supplied by a stage evaluator. When
+    // present, lowering verifies that it is a permutation of the module's
+    // nodes and emits calls in this order instead of relying on map/lexical
+    // order.
+    std::vector<orlgraph::StableId> execution_order;
+    // Optional device-resident selection buffer used by a fused solver
+    // entry. Each mapped node is emitted behind
+    // `dispatch_parameter[dispatch_index] != 0`. The caller owns and binds
+    // the buffer; it is deliberately not a graph input.
+    std::string dispatch_parameter;
+    std::map<orlgraph::StableId, std::size_t> dispatch_indices;
 };
 
 // Describes how one logical graph output is represented by the lowered ORL

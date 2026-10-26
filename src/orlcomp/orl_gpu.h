@@ -92,6 +92,11 @@ public:
     std::optional<OrlGpuBufferView> DeviceBufferView(OrlGpuBuffer buffer);
     std::optional<std::uint64_t> DeviceBufferPointer(OrlGpuBuffer buffer);
     bool UploadBuffer(OrlGpuBuffer buffer, const void *source, std::size_t bytes);
+    // Upload only a byte range of an existing allocation. This is used by
+    // packed solver arenas so a host-authored controller/locator edit does
+    // not overwrite device-only joint state in neighboring ranges.
+    bool UploadBufferRange(OrlGpuBuffer buffer, std::size_t offset,
+                           const void *source, std::size_t bytes);
     bool DownloadBuffer(OrlGpuBuffer buffer, void *destination, std::size_t bytes);
     bool FreeBuffer(OrlGpuBuffer buffer);
     bool Synchronize();

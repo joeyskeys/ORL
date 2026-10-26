@@ -555,6 +555,19 @@ NodeImportResult import_node_definitions(const AnalysisResult& analysis,
         definition.pure = function.pure;
         definition.stateful = function.stateful
             || metadata_flag(function, "stateful");
+        const bool scalar_fusable =
+            !function.has_parallel_for
+            && !function.has_external_call
+            && !definition.stateful;
+        definition.fusion = orlgraph::FusionCapability{
+            scalar_fusable,
+            scalar_fusable,
+            definition.stateful,
+            function.has_parallel_for,
+            false,
+            definition.stateful,
+            scalar_fusable,
+        };
         std::string footprint_error;
         if (!add_partial_footprint(
                 function, &definition, &footprint_error))
@@ -571,6 +584,9 @@ NodeImportResult import_node_definitions(const AnalysisResult& analysis,
         definition.capabilities.push_back("cpu");
         if (function.has_parallel_for) {
             definition.capabilities.push_back("cuda");
+            definition.capabilities.push_back("cuda_parallel");
+        } else if (scalar_fusable) {
+            definition.capabilities.push_back("cuda_fusable_scalar");
         }
 
         for (const auto& parameter : function.parameters) {

@@ -16,6 +16,7 @@
 #include "asset_mgr/drawable_mgr.h"
 #include "comps/joint.hpp"
 #include "concepts/mesh.h"
+#include "orlgraph/graph_schedule.hpp"
 #include "orlrig/graph_resources.hpp"
 #include "runtime_config.hpp"
 #include "vk_ins/context.hpp"
@@ -48,6 +49,119 @@ exec::Backend backend_from_config() {
 
 bool known_type(std::string_view name) {
     return name == "lbs";
+}
+
+bool rebuildable_scene_runtime(const orlgraph::NodeDefinition& definition) {
+    if (definition.implementation.kind
+            != orlgraph::ImplementationKind::Runtime)
+    {
+        return false;
+    }
+    const auto& runtime_name = definition.implementation.runtime_name;
+    return runtime_name.rfind("orlrig.input.", 0) == 0
+        || runtime_name
+            == std::string{orlrig::kComputedJointsNodeDefinition};
+}
+
+struct FusionAssessment {
+    bool eligible = false;
+    std::vector<orlgraph::StableId> region_order;
+    std::string diagnostic;
+};
+
+FusionAssessment assess_solver_fusion(
+    const orlgraph::GraphModule& graph,
+    const orlgraph::NodeRegistry& registry,
+    const orlrig::EvaluationPlan& plan)
+{
+    FusionAssessment result;
+    if (plan.stateful_evaluation_required) {
+        result.diagnostic =
+            "evaluation plan contains stateful solver regions";
+        return result;
+    }
+
+    for (const auto& connection : graph.connections()) {
+        if (connection.feedback) {
+            result.diagnostic =
+                "graph contains feedback; fused execution has no "
+                "iteration contract";
+            return result;
+        }
+    }
+
+    for (const auto& [node_id, instance] : graph.nodes()) {
+        const auto* definition = registry.find(instance.definition);
+        if (definition == nullptr) {
+            result.diagnostic =
+                "node '" + node_id.value + "' has no definition";
+            return result;
+        }
+        if (definition->implementation.kind
+            == orlgraph::ImplementationKind::OrlFunction)
+        {
+            if (!definition->fusion.has_value()) {
+                result.diagnostic =
+                    "node '" + node_id.value
+                    + "' has no scalar/device fusion contract";
+                return result;
+            }
+            const auto& capability = *definition->fusion;
+            if (!capability.scalar_safe || !capability.device_safe) {
+                result.diagnostic =
+                    "node '" + node_id.value
+                    + "' is not scalar/device safe for fusion";
+                return result;
+            }
+            if (capability.stateful || capability.parallel_domain
+                || capability.host_adapter || capability.requires_barrier)
+            {
+                result.diagnostic =
+                    "node '" + node_id.value
+                    + "' requires a fusion barrier or separate launch";
+                return result;
+            }
+            continue;
+        }
+        if (definition->operation == "identity"
+            || definition->operation == "static_value"
+            || rebuildable_scene_runtime(*definition))
+        {
+            continue;
+        }
+        result.diagnostic =
+            "node '" + node_id.value
+            + "' requires a host/runtime execution boundary";
+        return result;
+    }
+
+    std::set<orlgraph::StableId> seen;
+    for (const auto& batch : plan.batches) {
+        for (const auto& node_id : batch) {
+            if (plan.region(node_id) != nullptr
+                && seen.insert(node_id).second)
+            {
+                result.region_order.push_back(node_id);
+            }
+        }
+    }
+    // A plan produced by an older compiler may not have batches populated,
+    // so retain its validated order as a compatibility fallback.
+    for (const auto& node_id : plan.order) {
+        if (plan.region(node_id) != nullptr
+            && seen.insert(node_id).second)
+        {
+            result.region_order.push_back(node_id);
+        }
+    }
+    if (result.region_order.size() != plan.regions.size()) {
+        result.diagnostic =
+            "evaluation plan does not provide a complete ordered solver "
+            "region permutation";
+        return result;
+    }
+    result.eligible = true;
+    return result;
 }
 
 void print_runner_errors(const std::vector<std::string>& errors) {
@@ -275,6 +389,18 @@ GraphSceneRuntime::GraphSceneRuntime(SceneGraphContext& graph_context,
     register_runtime_adapters();
 }
 
+GraphSceneRuntime::~GraphSceneRuntime()
+{
+    // SceneInputCatalog stores borrowed device views. Clear them while this
+    // solver runtime still owns the allocations in orl_segments_.
+    if (stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver)
+    {
+        graph_context_.clear_computed_joints_device();
+        graph_context_.clear_computed_locators_device();
+    }
+}
+
 orlgraph::GraphModule& GraphSceneRuntime::active_graph() {
     return stage_.has_value()
         ? graph_context_.stage_graph(*stage_)
@@ -353,10 +479,16 @@ void GraphSceneRuntime::unbind() {
     }
     execution_plan_ready_ = false;
     execution_plan_.clear();
+    graph_context_.clear_computed_joints_device();
+    graph_context_.clear_computed_locators_device();
     orl_segments_.clear();
     graph_active_ = false;
     logged_rest = false;
     logged_move = false;
+    logged_fused_execution = false;
+    reportedPlanError.clear();
+    reportedPlanRevision = 0;
+    reportedEvaluationRevision = 0;
 }
 
 void GraphSceneRuntime::on_update(vkkk::Context& context) {
@@ -366,6 +498,7 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
         graph_context_.scene_inputs().set_cuda_evaluation(false);
         if (solver_stage) {
             graph_context_.clear_computed_joints_device();
+            graph_context_.clear_computed_locators_device();
         }
         return;
     }
@@ -375,6 +508,7 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
         if (!graph_context_.ensure_hierarchy_plan(&hierarchy_error)) {
             report_compile_error("Solver: " + hierarchy_error);
             graph_context_.clear_computed_joints_device();
+            graph_context_.clear_computed_locators_device();
             return;
         }
     }
@@ -391,6 +525,10 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
             graph_context_.evaluation_revision();
         execution_plan_ready_ = false;
         execution_plan_.clear();
+        if (solver_stage) {
+            graph_context_.clear_computed_joints_device();
+            graph_context_.clear_computed_locators_device();
+        }
         orl_segments_.clear();
         graph_active_ = true;
     }
@@ -404,6 +542,8 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
             && graph.inputs().empty()
             && graph.outputs().empty())
         {
+            graph_context_.clear_computed_joints_device();
+            graph_context_.clear_computed_locators_device();
             graph_active_ = false;
             return;
         }
@@ -417,6 +557,8 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
             return;
         }
         if (graph_active_ && !dispatch_graph(context, false)) {
+            graph_context_.clear_computed_joints_device();
+            graph_context_.clear_computed_locators_device();
             graph_active_ = false;
         }
         return;
@@ -735,9 +877,17 @@ bool GraphSceneRuntime::dispatch_graph(vkkk::Context& context, bool capture)
         }
 
         const auto* instance = active_graph().node(step.node_id);
-        if (instance == nullptr
-            || !execute_runtime_node(context, *instance, capture))
-        {
+        if (instance == nullptr) {
+            report_evaluation_failure(
+                std::string{label}
+                + ": graph runtime node is unavailable");
+            return false;
+        }
+        if (!execute_runtime_node(context, *instance, capture)) {
+            report_evaluation_failure(
+                std::string{label}
+                + ": graph runtime node '" + instance->name
+                + "' failed");
             return false;
         }
         const auto* definition =
@@ -755,24 +905,45 @@ bool GraphSceneRuntime::dispatch_graph(vkkk::Context& context, bool capture)
         && ((capture && !saw_capture) || !saw_evaluate)) {
         std::cerr << "Deformer: active graph does not contain the required "
                      "LBS capture/deform nodes\n";
+        report_evaluation_failure(
+            "Deformer: active graph does not contain the required "
+            "LBS capture/deform nodes");
         return false;
     }
     reportedPlanError.clear();
     reportedPlanRevision = 0;
+    reportedEvaluationRevision = 0;
     return true;
 }
 
 void GraphSceneRuntime::report_compile_error(const std::string& message)
 {
     std::cerr << message << '\n';
-    const std::size_t revision = graph_context_.graph_edit_revision();
-    if (message == reportedPlanError && revision == reportedPlanRevision) {
+    const std::size_t graph_revision =
+        graph_context_.graph_edit_revision();
+    const std::size_t evaluation_revision =
+        graph_context_.evaluation_revision();
+    if (message == reportedPlanError
+        && graph_revision == reportedPlanRevision
+        && evaluation_revision == reportedEvaluationRevision)
+    {
         return;
     }
     reportedPlanError = message;
-    reportedPlanRevision = revision;
+    reportedPlanRevision = graph_revision;
+    reportedEvaluationRevision = evaluation_revision;
 #if ORL_USE_QT6
     QMessageBox::warning(nullptr, QStringLiteral("ORL evaluation"),
+        QString::fromStdString(message));
+#endif
+}
+
+void GraphSceneRuntime::report_evaluation_failure(
+    const std::string& message)
+{
+    std::cerr << message << '\n';
+#if ORL_USE_QT6
+    QMessageBox::warning(nullptr, QStringLiteral("ORL evaluation failed"),
         QString::fromStdString(message));
 #endif
 }
@@ -886,6 +1057,7 @@ std::size_t GraphSceneRuntime::graph_fingerprint() const
                << connection.destination.port.value << ':'
                << connection.conversion << ':'
                << (connection.feedback ? 1 : 0);
+        stream << ':' << (connection.sequence ? 1 : 0);
     }
     for (const auto& [id, input] : graph.inputs()) {
         stream << "|input:" << id.value << ':' << input.name << ':'
@@ -1226,7 +1398,11 @@ bool GraphSceneRuntime::add_segment_connection(
         if (node_ids.find(connection.source.owner) == node_ids.end()) {
             if (error != nullptr) {
                 *error = "Graph segment has a data dependency across a "
-                         "runtime execution boundary";
+                         "runtime execution boundary from '"
+                    + connection.source.owner.value + ":"
+                    + connection.source.port.value + "' to '"
+                    + connection.destination.owner.value + ":"
+                    + connection.destination.port.value + "'";
             }
             return false;
         }
@@ -1243,15 +1419,93 @@ bool GraphSceneRuntime::add_segment_connection(
 bool GraphSceneRuntime::build_orl_segment(
     const std::vector<orlgraph::StableId>& node_ids,
     std::size_t segment_index,
+    const std::vector<orlgraph::StableId>& evaluation_region_order,
+    bool fused_solver,
     std::string* error)
 {
     if (node_ids.empty()) {
         return true;
     }
 
+    std::ostringstream segment_label;
+    segment_label << "ORL segment " << segment_index << " (";
+    for (std::size_t index = 0; index < node_ids.size(); ++index) {
+        if (index != 0) {
+            segment_label << ", ";
+        }
+        segment_label << node_ids[index].value;
+    }
+    segment_label << ")";
+    const auto set_segment_error = [&](std::string detail) {
+        if (error != nullptr) {
+            *error = segment_label.str() + ": " + std::move(detail);
+        }
+        return false;
+    };
+
     std::set<orlgraph::StableId> node_set(
         node_ids.begin(), node_ids.end());
     const auto& source_graph = active_graph();
+    const auto can_rebuild_in_each_segment =
+        [this](const orlgraph::NodeDefinition& definition) {
+        if (definition.operation == "identity"
+            || definition.operation == "static_value")
+        {
+            return true;
+        }
+        if (definition.implementation.kind
+                != orlgraph::ImplementationKind::Runtime)
+        {
+            return false;
+        }
+        const auto& runtime_name =
+            definition.implementation.runtime_name;
+        return runtime_name.rfind("orlrig.input.", 0) == 0
+            || runtime_name
+                == std::string{orlrig::kComputedJointsNodeDefinition};
+    };
+    // A scene-input/value node can be evaluated independently in every
+    // segment.  This is required when two ordered solver regions share a
+    // find_* or computed-joints node: assigning that node to the first batch
+    // alone would leave a dangling data dependency in later segments.
+    std::vector<orlgraph::StableId> expanded_node_ids(
+        node_ids.begin(), node_ids.end());
+    for (std::size_t index = 0;
+         index < expanded_node_ids.size(); ++index)
+    {
+        const auto current = expanded_node_ids[index];
+        for (const auto& connection : source_graph.connections()) {
+            if (connection.sequence
+                || connection.destination.kind
+                    != orlgraph::EndpointKind::NodePort
+                || connection.destination.owner != current
+                || connection.source.kind
+                    != orlgraph::EndpointKind::NodePort
+                || node_set.contains(connection.source.owner))
+            {
+                continue;
+            }
+            const auto* source_node =
+                source_graph.node(connection.source.owner);
+            const auto* source_definition = source_node == nullptr
+                ? nullptr
+                : graph_context_.registry().find(
+                    source_node->definition);
+            if (source_definition == nullptr
+                || !can_rebuild_in_each_segment(*source_definition))
+            {
+                return set_segment_error(
+                    "Graph segment has a data dependency across a "
+                    "runtime execution boundary from '"
+                    + connection.source.owner.value + ":"
+                    + connection.source.port.value + "' to '"
+                    + connection.destination.owner.value + ":"
+                    + connection.destination.port.value + "'");
+            }
+            node_set.insert(connection.source.owner);
+            expanded_node_ids.push_back(connection.source.owner);
+        }
+    }
     OrlSegment segment;
     segment.graph.module_id = source_graph.module_id
         + ".runtime_segment." + std::to_string(segment_index);
@@ -1261,7 +1515,7 @@ bool GraphSceneRuntime::build_orl_segment(
             return false;
         }
     }
-    for (const auto& node_id : node_ids) {
+    for (const auto& node_id : expanded_node_ids) {
         const auto* node = source_graph.node(node_id);
         if (node == nullptr || !segment.graph.add_node(*node, error)) {
             return false;
@@ -1283,7 +1537,10 @@ bool GraphSceneRuntime::build_orl_segment(
                     source_graph, segment.graph,
                     connection, node_set, error))
             {
-                return false;
+                return set_segment_error(
+                    error != nullptr && !error->empty()
+                    ? *error
+                    : "Unable to add a graph segment connection");
             }
             continue;
         }
@@ -1313,10 +1570,114 @@ bool GraphSceneRuntime::build_orl_segment(
         }
     }
 
+    // The evaluation plan contains dependencies that are not represented by
+    // graph dataflow (implicit handle footprints and hierarchy writers).
+    // Carry that order into the temporary lowered graph as ordering-only
+    // edges.  They are intentionally given no real port and are never
+    // emitted as ORL arguments.
+    for (std::size_t index = 1;
+         index < evaluation_region_order.size(); ++index)
+    {
+        const auto& before = evaluation_region_order[index - 1];
+        const auto& after = evaluation_region_order[index];
+        if (!node_set.contains(before) || !node_set.contains(after)) {
+            return set_segment_error(
+                "fused evaluation order references a node outside the "
+                "segment");
+        }
+        orlgraph::Connection sequence;
+        sequence.source = orlgraph::Endpoint::node_port(
+            before, orlgraph::StableId{"__orl_fused_sequence"});
+        sequence.destination = orlgraph::Endpoint::node_port(
+            after, orlgraph::StableId{"__orl_fused_sequence"});
+        sequence.sequence = true;
+        sequence.provenance.description =
+            "EvaluationPlan solver order";
+        if (!segment.graph.add_connection(std::move(sequence), error)) {
+            return set_segment_error(
+                error != nullptr && !error->empty()
+                ? *error : "Unable to add fused evaluation order");
+        }
+    }
+
+    const auto segment_schedule =
+        orlgraph::topological_schedule(segment.graph);
+    if (!segment_schedule.ok) {
+        return set_segment_error(
+            segment_schedule.errors.empty()
+            ? "Fused evaluation order is not topologically valid"
+            : segment_schedule.errors.front());
+    }
+
     orlcomp::GraphLoweringOptions options;
     options.entry_function = "orl_graph_segment_"
         + std::to_string(segment_index);
+    options.execution_order = segment_schedule.order;
     options.scene_revision = graph_context_.scene_input_revision();
+    bool device_dispatch = false;
+    if (stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver
+        && runner_.backend() == exec::Backend::Cuda
+        && evaluation_plan_ != nullptr
+        && !evaluation_region_order.empty())
+    {
+        device_dispatch = true;
+        for (const auto& node_id : evaluation_region_order) {
+            const auto* node = source_graph.node(node_id);
+            const auto* definition = node == nullptr
+                ? nullptr
+                : graph_context_.registry().find(node->definition);
+            const auto* region = evaluation_plan_->region(node_id);
+            if (definition == nullptr || region == nullptr
+                || !definition->fusion.has_value()
+                || !definition->fusion->supports_device_dispatch)
+            {
+                device_dispatch = false;
+                break;
+            }
+            const bool has_consumed_output = std::any_of(
+                definition->outputs.begin(), definition->outputs.end(),
+                [&](const orlgraph::Port& output) {
+                    return std::any_of(
+                        source_graph.connections().begin(),
+                        source_graph.connections().end(),
+                        [&](const orlgraph::Connection& connection) {
+                            return connection.source.kind
+                                    == orlgraph::EndpointKind::NodePort
+                                && connection.source.owner == node_id
+                                && (connection.source.port == output.id
+                                    || connection.source.port.value
+                                        == output.name);
+                        });
+                });
+            if (has_consumed_output) {
+                device_dispatch = false;
+                break;
+            }
+        }
+        if (device_dispatch) {
+            options.dispatch_parameter = "__orl_solver_dispatch";
+            for (const auto& node_id : evaluation_region_order) {
+                const auto found = std::find_if(
+                    evaluation_plan_->regions.begin(),
+                    evaluation_plan_->regions.end(),
+                    [&](const orlrig::SolverRegion& region) {
+                        return region.node_id == node_id;
+                    });
+                if (found == evaluation_plan_->regions.end()) {
+                    device_dispatch = false;
+                    options.dispatch_parameter.clear();
+                    options.dispatch_indices.clear();
+                    break;
+                }
+                options.dispatch_indices.emplace(
+                    node_id,
+                    static_cast<std::size_t>(
+                        std::distance(
+                            evaluation_plan_->regions.begin(), found)));
+            }
+        }
+    }
     options.runtime_output_expression =
         [expressions = std::move(expressions), this](
             const orlgraph::NodeInstance& node,
@@ -1333,25 +1694,30 @@ bool GraphSceneRuntime::build_orl_segment(
     auto program = exec::OrlGraphProgram::Compile(
         segment.graph, graph_context_.registry(), std::move(options));
     if (!program.valid()) {
-        if (error != nullptr) {
-            *error = program.errors().empty()
+        return set_segment_error(program.errors().empty()
                 ? "ORL graph segment compilation failed"
-                : program.errors().front();
-        }
-        return false;
+                : program.errors().front());
     }
     auto execution = exec::OrlGraphExecution::Create(
         program, runner_.backend());
     if (!execution.valid()) {
-        if (error != nullptr) {
-            *error = execution.errors().empty()
+        return set_segment_error(execution.errors().empty()
                 ? "ORL graph segment execution creation failed"
-                : execution.errors().front();
-        }
-        return false;
+                : execution.errors().front());
     }
     segment.program = std::move(program);
     segment.execution = std::move(execution);
+    segment.fused_solver =
+        fused_solver
+        && stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver
+        && !evaluation_region_order.empty();
+    segment.device_dispatch = device_dispatch;
+    if (segment.device_dispatch) {
+        segment.dispatch_selection.emplace(
+            orlrig::kSolverDispatchDataOrlType,
+            orlrig::kSolverDispatchDataStride);
+    }
     orl_segments_.push_back(std::move(segment));
     return true;
 }
@@ -1364,10 +1730,17 @@ bool GraphSceneRuntime::ensure_execution_plan(
     const auto current_scene_revision =
         graph_context_.scene_input_revision();
     const auto current_fingerprint = graph_fingerprint();
+    const auto current_evaluation_dependency_revision =
+        evaluation_plan_ == nullptr
+        ? std::uint64_t{0}
+        : evaluation_plan_->dependency_revision
+            ^ evaluation_plan_->topology_revision;
     if (execution_plan_ready_
         && planned_graph_revision_ == current_graph_revision
         && planned_scene_revision_ == current_scene_revision
         && planned_graph_fingerprint_ == current_fingerprint
+        && planned_evaluation_dependency_revision_
+            == current_evaluation_dependency_revision
         && planned_backend_ == runner_.backend())
     {
         return true;
@@ -1383,25 +1756,125 @@ bool GraphSceneRuntime::ensure_execution_plan(
                 || !solver_graph.inputs().empty()
                 || !solver_graph.outputs().empty();
         }();
-    if (!stage_.has_value()
+    if (stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver)
+    {
+        // The old execution owns the published CUDA arenas. Clear their
+        // borrowed views before destroying it so a failed rebuild cannot
+        // leave the deformer bound to freed storage.
+        graph_context_.clear_computed_joints_device();
+        graph_context_.clear_computed_locators_device();
+    } else if (!stage_.has_value()
         || *stage_ != orlgraph::GraphStage::Deformer
         || !has_solver_graph) {
         graph_context_.clear_computed_joints_device();
+        graph_context_.clear_computed_locators_device();
     }
     execution_plan_.clear();
     orl_segments_.clear();
+    fusion_diagnostic_.clear();
+    logged_fused_execution = false;
 
     const bool contains_orl = has_orl_nodes();
     const auto& source_graph = active_graph();
+
+    if (contains_orl
+        && stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver
+        && runner_.backend() == exec::Backend::Cuda
+        && evaluation_plan_ != nullptr)
+    {
+        const auto assessment = assess_solver_fusion(
+            source_graph, graph_context_.registry(), *evaluation_plan_);
+        if (assessment.eligible) {
+            std::vector<orlgraph::StableId> fused_nodes;
+            fused_nodes.reserve(validation.schedule.order.size());
+            for (const auto& node_id : validation.schedule.order) {
+                fused_nodes.push_back(node_id);
+            }
+            const std::size_t segment_index = orl_segments_.size();
+            std::string fused_error;
+            if (!build_orl_segment(
+                    fused_nodes, segment_index,
+                    assessment.region_order, true, &fused_error))
+            {
+                fusion_diagnostic_ =
+                    "fused artifact construction failed: " + fused_error;
+                std::cerr << "Solver: fused CUDA path unavailable; using "
+                             "segmented fallback: "
+                          << fusion_diagnostic_ << '\n';
+                orl_segments_.clear();
+                execution_plan_.clear();
+            } else {
+                for (const auto& node_id : fused_nodes) {
+                    if (evaluation_plan_->region(node_id) != nullptr) {
+                        orl_segments_.back().region_nodes.push_back(node_id);
+                    }
+                }
+                execution_plan_.push_back(ExecutionStep{
+                    ExecutionStep::Kind::OrlSegment,
+                    segment_index,
+                    {},
+                });
+                planned_graph_revision_ = current_graph_revision;
+                planned_scene_revision_ = current_scene_revision;
+                planned_graph_fingerprint_ = current_fingerprint;
+                planned_evaluation_dependency_revision_ =
+                    current_evaluation_dependency_revision;
+                planned_backend_ = runner_.backend();
+                execution_plan_ready_ = true;
+                return true;
+            }
+        }
+        if (!assessment.eligible) {
+            fusion_diagnostic_ = assessment.diagnostic;
+            std::cerr << "Solver: fused CUDA path unavailable; using "
+                         "segmented fallback: "
+                      << fusion_diagnostic_ << '\n';
+        }
+    }
+
     std::vector<orlgraph::StableId> segment_nodes;
     bool segment_has_orl = false;
+    const auto evaluation_order_for_nodes =
+        [this](const std::vector<orlgraph::StableId>& nodes) {
+        std::vector<orlgraph::StableId> result;
+        if (evaluation_plan_ == nullptr) {
+            return result;
+        }
+        const std::set<orlgraph::StableId> node_set(
+            nodes.begin(), nodes.end());
+        const auto append_if_present = [&](const auto& id) {
+            if (node_set.contains(id)
+                && evaluation_plan_->region(id) != nullptr
+                && std::find(result.begin(), result.end(), id)
+                    == result.end())
+            {
+                result.push_back(id);
+            }
+        };
+        for (const auto& batch : evaluation_plan_->batches) {
+            for (const auto& id : batch) {
+                append_if_present(id);
+            }
+        }
+        for (const auto& id : evaluation_plan_->order) {
+            append_if_present(id);
+        }
+        return result;
+    };
     const auto flush_segment = [&]() -> bool {
         if (!segment_has_orl) {
             segment_nodes.clear();
             return true;
         }
         const std::size_t segment_index = orl_segments_.size();
-        if (!build_orl_segment(segment_nodes, segment_index, error)) {
+        const auto fallback_order =
+            evaluation_order_for_nodes(segment_nodes);
+        if (!build_orl_segment(
+                segment_nodes, segment_index, fallback_order,
+                false, error))
+        {
             return false;
         }
         if (stage_.has_value()
@@ -1437,13 +1910,36 @@ bool GraphSceneRuntime::ensure_execution_plan(
             }
         }
     }
-    std::optional<std::size_t> segment_batch;
-    std::map<std::size_t, std::vector<orlgraph::StableId>> stashed_inputs;
-    const auto consumer_batch = [&](const orlgraph::StableId& id)
-        -> std::optional<std::size_t> {
+    const auto is_segmentable = [this](
+        const orlgraph::NodeDefinition& definition) {
+        if (definition.implementation.kind
+                == orlgraph::ImplementationKind::OrlFunction
+            || definition.operation == "identity"
+            || definition.operation == "static_value")
+        {
+            return true;
+        }
+        if (definition.implementation.kind
+                != orlgraph::ImplementationKind::Runtime)
+        {
+            return false;
+        }
+        const auto& runtime_name =
+            definition.implementation.runtime_name;
+        return runtime_name.rfind("orlrig.input.", 0) == 0
+            || runtime_name
+                == std::string{orlrig::kComputedJointsNodeDefinition};
+    };
+    std::map<orlgraph::StableId, std::size_t> node_batches =
+        region_batches;
+    const auto direct_consumer_batch =
+        [&](const orlgraph::StableId& id)
+            -> std::optional<std::size_t> {
         std::optional<std::size_t> batch;
         for (const auto& connection : source_graph.connections()) {
-            if (connection.source.kind != orlgraph::EndpointKind::NodePort
+            if (connection.sequence
+                || connection.source.kind
+                    != orlgraph::EndpointKind::NodePort
                 || connection.source.owner != id
                 || connection.destination.kind
                     != orlgraph::EndpointKind::NodePort)
@@ -1453,6 +1949,146 @@ bool GraphSceneRuntime::ensure_execution_plan(
             const auto found = region_batches.find(
                 connection.destination.owner);
             if (found == region_batches.end()) {
+                continue;
+            }
+            if (!batch.has_value() || found->second < *batch) {
+                batch = found->second;
+            }
+        }
+        return batch;
+    };
+    // Give non-region value/scene-input nodes the batch of their first
+    // region consumer. Walking the schedule backwards also covers chains
+    // such as scene input -> identity -> solver node.
+    for (std::size_t pass = 0;
+         pass < validation.schedule.order.size();
+         ++pass)
+    {
+        bool changed = false;
+        for (auto reverse = validation.schedule.order.rbegin();
+             reverse != validation.schedule.order.rend(); ++reverse)
+        {
+            if (node_batches.contains(*reverse)) {
+                continue;
+            }
+            const auto* node = source_graph.node(*reverse);
+            const auto* definition = node == nullptr
+                ? nullptr : graph_context_.registry().find(
+                    node->definition);
+            if (definition == nullptr || !is_segmentable(*definition)) {
+                continue;
+            }
+            std::optional<std::size_t> batch =
+                direct_consumer_batch(*reverse);
+            for (const auto& connection : source_graph.connections()) {
+                if (connection.sequence
+                    || connection.source.kind
+                        != orlgraph::EndpointKind::NodePort
+                    || connection.source.owner != *reverse
+                    || connection.destination.kind
+                        != orlgraph::EndpointKind::NodePort)
+                {
+                    continue;
+                }
+                const auto found = node_batches.find(
+                    connection.destination.owner);
+                if (found != node_batches.end()
+                    && (!batch.has_value() || found->second < *batch))
+                {
+                    batch = found->second;
+                }
+            }
+            if (batch.has_value()) {
+                node_batches.emplace(*reverse, *batch);
+                changed = true;
+            }
+        }
+        if (!changed) {
+            break;
+        }
+    }
+    // A host-readback fallback cannot carry an arbitrary ORL value from one
+    // segment to another. Coalesce every segmentable data dependency into a
+    // common batch before lowering; explicit sequence edges remain barriers.
+    std::map<orlgraph::StableId, orlgraph::StableId> dataflow_parent;
+    for (const auto& [id, _] : node_batches) {
+        dataflow_parent.emplace(id, id);
+    }
+    const auto find_dataflow_root =
+        [&](auto&& self, const orlgraph::StableId& id)
+            -> orlgraph::StableId {
+        auto found = dataflow_parent.find(id);
+        if (found == dataflow_parent.end() || found->second == id) {
+            return id;
+        }
+        found->second = self(self, found->second);
+        return found->second;
+    };
+    const auto unite_dataflow =
+        [&](const orlgraph::StableId& left,
+            const orlgraph::StableId& right) {
+        const auto left_root = find_dataflow_root(
+            find_dataflow_root, left);
+        const auto right_root = find_dataflow_root(
+            find_dataflow_root, right);
+        if (left_root != right_root) {
+            dataflow_parent[right_root] = left_root;
+        }
+    };
+    for (const auto& connection : source_graph.connections()) {
+        if (connection.sequence
+            || connection.source.kind != orlgraph::EndpointKind::NodePort
+            || connection.destination.kind
+                != orlgraph::EndpointKind::NodePort)
+        {
+            continue;
+        }
+        if (node_batches.contains(connection.source.owner)
+            && node_batches.contains(connection.destination.owner))
+        {
+            unite_dataflow(
+                connection.source.owner,
+                connection.destination.owner);
+        }
+    }
+    std::map<orlgraph::StableId, std::size_t> group_batches;
+    for (const auto& [id, batch] : node_batches) {
+        const auto root = find_dataflow_root(find_dataflow_root, id);
+        const auto found = group_batches.find(root);
+        if (found == group_batches.end() || batch < found->second) {
+            group_batches[root] = batch;
+        }
+    }
+    for (auto& [id, batch] : node_batches) {
+        batch = group_batches.at(
+            find_dataflow_root(find_dataflow_root, id));
+    }
+    for (auto& [id, batch] : region_batches) {
+        const auto found = node_batches.find(id);
+        if (found != node_batches.end()) {
+            batch = found->second;
+        }
+    }
+    std::optional<std::size_t> segment_batch;
+    std::map<std::size_t, std::vector<orlgraph::StableId>> stashed_inputs;
+    const auto consumer_batch = [&](const orlgraph::StableId& id)
+        -> std::optional<std::size_t> {
+        const auto node_batch = node_batches.find(id);
+        if (node_batch != node_batches.end()) {
+            return node_batch->second;
+        }
+        std::optional<std::size_t> batch;
+        for (const auto& connection : source_graph.connections()) {
+            if (connection.source.kind != orlgraph::EndpointKind::NodePort
+                || connection.source.owner != id
+                || connection.destination.kind
+                    != orlgraph::EndpointKind::NodePort)
+            {
+                continue;
+            }
+            const auto found = node_batches.find(
+                connection.destination.owner);
+            if (found == node_batches.end()) {
                 continue;
             }
             if (!batch.has_value() || found->second < *batch) {
@@ -1496,11 +2132,45 @@ bool GraphSceneRuntime::ensure_execution_plan(
             return false;
         }
 
+        const bool has_sequence_predecessor =
+            std::any_of(source_graph.connections().begin(),
+                source_graph.connections().end(),
+                [&](const orlgraph::Connection& connection) {
+                return connection.sequence
+                    && connection.destination.kind
+                        == orlgraph::EndpointKind::NodePort
+                    && connection.destination.owner == node_id;
+            });
+        const bool has_data_predecessor_in_segment =
+            std::any_of(source_graph.connections().begin(),
+                source_graph.connections().end(),
+                [&](const orlgraph::Connection& connection) {
+                return !connection.sequence
+                    && connection.source.kind
+                        == orlgraph::EndpointKind::NodePort
+                    && connection.destination.kind
+                        == orlgraph::EndpointKind::NodePort
+                    && connection.destination.owner == node_id
+                    && std::find(
+                        segment_nodes.begin(), segment_nodes.end(),
+                        connection.source.owner)
+                        != segment_nodes.end();
+            });
+        if (has_sequence_predecessor
+            && segment_has_orl
+            && !has_data_predecessor_in_segment)
+        {
+            if (!flush_segment()) {
+                return false;
+            }
+            segment_batch.reset();
+        }
+
         if (definition->implementation.kind
             == orlgraph::ImplementationKind::OrlFunction)
         {
-            const auto found = region_batches.find(node_id);
-            if (found != region_batches.end()
+            const auto found = node_batches.find(node_id);
+            if (found != node_batches.end()
                 && !begin_batch(found->second))
             {
                 return false;
@@ -1611,6 +2281,8 @@ bool GraphSceneRuntime::ensure_execution_plan(
     planned_graph_revision_ = current_graph_revision;
     planned_scene_revision_ = current_scene_revision;
     planned_graph_fingerprint_ = current_fingerprint;
+    planned_evaluation_dependency_revision_ =
+        current_evaluation_dependency_revision;
     planned_backend_ = runner_.backend();
     execution_plan_ready_ = true;
     return true;
@@ -1647,11 +2319,18 @@ bool GraphSceneRuntime::execute_orl_segment(
     vkkk::Context& context, std::size_t segment_index)
 {
     (void)context;
+    const std::string stage_label =
+        stage_.has_value() && *stage_ == orlgraph::GraphStage::Solver
+        ? "Solver" : "Deformer";
+    const auto report_failure = [this, &stage_label](
+                                    std::string detail) {
+        report_evaluation_failure(stage_label + ": " + std::move(detail));
+        return false;
+    };
     if (segment_index >= orl_segments_.size()
         || !orl_segments_[segment_index].execution.has_value())
     {
-        std::cerr << "Deformer: ORL graph segment is unavailable\n";
-        return false;
+        return report_failure("ORL graph segment is unavailable");
     }
     if (segment_is_clean(segment_index)) {
         return true;
@@ -1665,7 +2344,11 @@ bool GraphSceneRuntime::execute_orl_segment(
             std::cerr << "Deformer: graph input binding: "
                       << error << '\n';
         }
-        return false;
+        return report_failure(
+            "graph input binding failed: "
+            + (execution.errors().empty()
+                ? std::string{"unknown binding error"}
+                : execution.errors().front()));
     }
     std::string hierarchy_error;
     if (!graph_context_.ensure_hierarchy_plan(&hierarchy_error)
@@ -1681,7 +2364,13 @@ bool GraphSceneRuntime::execute_orl_segment(
                           : execution.errors().front())
                       : hierarchy_error)
                   << '\n';
-        return false;
+        return report_failure(
+            "hierarchy binding failed: "
+            + (hierarchy_error.empty()
+                ? (execution.errors().empty()
+                    ? std::string{"unknown hierarchy binding error"}
+                    : execution.errors().front())
+                : hierarchy_error));
     }
 
     if (!execution.bind_handle_view_context(
@@ -1691,56 +2380,155 @@ bool GraphSceneRuntime::execute_orl_segment(
             std::cerr << "Deformer: handle-view binding: "
                       << error << '\n';
         }
-        return false;
+        return report_failure(
+            "handle-view binding failed: "
+            + (execution.errors().empty()
+                ? std::string{"unknown handle-view binding error"}
+                : execution.errors().front()));
+    }
+
+    if (segment.device_dispatch) {
+        if (evaluation_plan_ == nullptr
+            || !segment.dispatch_selection.has_value()
+            || evaluation_plan_->regions.empty())
+        {
+            return report_failure(
+                "fused device dispatch selection is unavailable");
+        }
+        auto& selection = *segment.dispatch_selection;
+        if (!selection.resize(evaluation_plan_->regions.size())) {
+            return report_failure(
+                "unable to resize fused device dispatch selection");
+        }
+        auto* selected = static_cast<std::int64_t*>(selection.data());
+        std::fill(
+            selected,
+            selected + evaluation_plan_->regions.size(),
+            std::int64_t{0});
+        for (const std::size_t region_index :
+             active_dispatch_.region_indices)
+        {
+            if (region_index < evaluation_plan_->regions.size()) {
+                selected[region_index] = 1;
+            }
+        }
+        if (!execution.bind_buffer(
+                "__orl_solver_dispatch", selection))
+        {
+            return report_failure(
+                "fused device dispatch binding failed: "
+                + (execution.errors().empty()
+                    ? std::string{"unknown dispatch binding error"}
+                    : execution.errors().front()));
+        }
     }
 
     const bool solver_device_evaluation =
         stage_.has_value()
         && *stage_ == orlgraph::GraphStage::Solver
         && execution.backend() == exec::Backend::Cuda;
+    // Only the explicitly fused solver artifact is allowed to keep its
+    // handle arenas device-only. A CUDA segment produced by the conservative
+    // fallback may still be a single segment, but it must retain the
+    // host-readback/write-through behavior of that fallback.
+    const bool fused_device_evaluation =
+        solver_device_evaluation && segment.fused_solver;
     std::optional<exec::GraphEvaluationResult> result;
-    if (solver_device_evaluation) {
+    if (fused_device_evaluation) {
         if (!execution.evaluate_device()) {
             for (const auto& error : execution.errors()) {
                 std::cerr << "Solver: ORL graph evaluation: "
                           << error << '\n';
             }
-            return false;
+            return report_failure(
+                "ORL graph evaluation failed: "
+                + (execution.errors().empty()
+                    ? std::string{"unknown evaluation error"}
+                    : execution.errors().front()));
+        }
+        const auto telemetry = execution.last_execution_telemetry();
+        if (telemetry.download_calls != 0
+            || telemetry.download_bytes != 0)
+        {
+            return report_failure(
+                "fused CUDA solver performed an unexpected host readback");
+        }
+        if (!logged_fused_execution) {
+            std::cout << "Solver: fused CUDA execution launch "
+                      << telemetry.evaluation_count
+                      << " completed with zero host readback\n";
+            logged_fused_execution = true;
         }
     } else {
+        // Each OrlGraphExecution owns its CUDA handle arena.  When explicit
+        // ordering splits a solver into multiple segments, force a
+        // readback/write-through at the boundary so the next execution sees
+        // the previous segment's Joint writes instead of uploading stale
+        // host data into a fresh device arena.
         result = execution.evaluate_result();
         if (!result->ok) {
             for (const auto& error : result->errors) {
-                std::cerr << "Deformer: ORL graph evaluation: "
+                std::cerr << (stage_.has_value()
+                        && *stage_ == orlgraph::GraphStage::Solver
+                        ? "Solver: ORL graph evaluation: "
+                        : "Deformer: ORL graph evaluation: ")
                           << error << '\n';
             }
-            return false;
+            return report_failure(
+                "ORL graph evaluation failed: "
+                + (result->errors.empty()
+                    ? std::string{"unknown evaluation error"}
+                    : result->errors.front()));
         }
     }
 
     // Typed solver views write the internal Joint arena directly. Keep that
     // device allocation available to the deformer without forcing a
     // graph-level joints socket or a host readback.
-    if (solver_device_evaluation) {
+    if (solver_device_evaluation
+        && segment_index + 1 == orl_segments_.size())
+    {
         auto device = execution.handle_joint_device_view();
+        if (!device.has_value()) {
+            // Scalar solver functions that use solver_context.joints rather
+            // than typed handle views publish the same state through the
+            // packed SolverContext allocation.
+            device = graph_context_.scene_inputs()
+                .solver_joints_device_view(execution);
+        }
         if (!device.has_value()) {
             std::cerr << "Deformer: typed solver Joint device buffer is "
                          "unavailable\n";
-            return false;
+            return report_failure(
+                "typed solver Joint device buffer is unavailable");
         }
         graph_context_.set_computed_joints_device(
             device, graph_context_.scene_inputs()
                 .computed_joints_buffer().count());
-    } else if (stage_.has_value()
+        const auto locator_device =
+            execution.handle_locator_device_view();
+        const auto published_locator_device = locator_device.has_value()
+            ? locator_device
+            : graph_context_.scene_inputs()
+                .solver_locators_device_view(execution);
+        const auto locator_count =
+            graph_context_.scene_inputs().handle_view_context()
+                .locators.count;
+        graph_context_.set_computed_locators_device(
+            published_locator_device, locator_count);
+        graph_context_.set_computed_solver_context_device(
+            execution.device_buffer_view(
+                orlcomp::kSolverContextParameterName));
+    } else if (!solver_device_evaluation && stage_.has_value()
         && *stage_ == orlgraph::GraphStage::Solver)
     {
         graph_context_.clear_computed_joints_device();
+        graph_context_.clear_computed_locators_device();
     }
 
-    if (solver_device_evaluation) {
+    if (fused_device_evaluation) {
         // The solver result remains in CUDA/Vulkan-shared storage. Reading it
-        // back here would defeat the device-only path and is unnecessary for
-        // the deformer or GPU joint rendering.
+        // back here is unnecessary for the single fused segment.
         return true;
     }
 
@@ -1748,7 +2536,8 @@ bool GraphSceneRuntime::execute_orl_segment(
     if (!graph_context_.commit_scene_writes(*result, true, &error)) {
         std::cerr << "Deformer: graph scene writeback failed: "
                   << error << '\n';
-        return false;
+        return report_failure(
+            "graph scene writeback failed: " + error);
     }
     return true;
 }
@@ -1856,8 +2645,22 @@ bool GraphSceneRuntime::execute_lbs_evaluate_adapter(
         return false;
     }
     const bool device_only = runner_.backend() == exec::Backend::Cuda;
-    const auto status = runner_.evaluate(
-        *deformer, *weight, packed, device_only);
+    orlrig::RunnerStatus status;
+    if (device_only) {
+        const auto device_joints =
+            graph_context_.computed_joints_device();
+        if (device_joints.has_value()) {
+            status = runner_.evaluate_device(
+                *deformer, *weight, *device_joints,
+                graph_context_.computed_joints_device_count());
+        } else {
+            status = runner_.evaluate(
+                *deformer, *weight, packed, true);
+        }
+    } else {
+        status = runner_.evaluate(
+            *deformer, *weight, packed, false);
+    }
     if (!status) {
         print_runner_errors(status.errors);
         return false;

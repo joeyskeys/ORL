@@ -125,6 +125,7 @@ private:
         int source_port = -1;
         int destination_node = -1;
         int destination_port = -1;
+        bool sequence = false;
     };
 
     struct Socket {
@@ -213,6 +214,12 @@ private:
     Socket resolve_socket(const Socket& socket, const Socket* other = nullptr) const;
     bool sockets_compatible(const Socket& first, const Socket& second) const;
     bool add_connection(const Socket& first, const Socket& second);
+    bool is_orderable_node(int index) const;
+    void show_node_context_menu(int node_index, const QPoint& anchor);
+    bool add_execution_order(
+        const QString& before_id, const QString& after_id);
+    bool remove_execution_order(
+        const QString& before_id, const QString& after_id);
     void move_frame(int index, const QPointF& delta);
     void toggle_frame_collapsed(int index);
     void draw_grid(QPainter& painter) const;

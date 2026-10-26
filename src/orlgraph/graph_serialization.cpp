@@ -289,6 +289,24 @@ Json partial_footprint_value(
     return result;
 }
 
+Json fusion_capability_value(
+    const FusionCapability& capability,
+    Allocator& allocator)
+{
+    Json result(rapidjson::kObjectType);
+    add(result, "scalar_safe", Json(capability.scalar_safe), allocator);
+    add(result, "device_safe", Json(capability.device_safe), allocator);
+    add(result, "stateful", Json(capability.stateful), allocator);
+    add(result, "parallel_domain",
+        Json(capability.parallel_domain), allocator);
+    add(result, "host_adapter", Json(capability.host_adapter), allocator);
+    add(result, "requires_barrier",
+        Json(capability.requires_barrier), allocator);
+    add(result, "supports_device_dispatch",
+        Json(capability.supports_device_dispatch), allocator);
+    return result;
+}
+
 Json definition_value(const NodeDefinition& definition, Allocator& allocator) {
     Json result(rapidjson::kObjectType);
     add(result, "id", string_value(definition.id.value, allocator), allocator);
@@ -346,6 +364,11 @@ Json definition_value(const NodeDefinition& definition, Allocator& allocator) {
     if (definition.partial_footprint.has_value()) {
         add(result, "partial_footprint",
             partial_footprint_value(*definition.partial_footprint, allocator),
+            allocator);
+    }
+    if (definition.fusion.has_value()) {
+        add(result, "fusion",
+            fusion_capability_value(*definition.fusion, allocator),
             allocator);
     }
     add(result, "provenance", provenance_value(definition.provenance, allocator), allocator);
@@ -1235,6 +1258,36 @@ bool parse_effect(const Json& value, ResourceEffect* output,
     return true;
 }
 
+bool parse_fusion_capability(const Json& value,
+    FusionCapability* output,
+    std::vector<Diagnostic>* diagnostics)
+{
+    if (!value.IsObject()) {
+        diagnostics->push_back({
+            DiagnosticSeverity::Error,
+            "ORLGRAPH_INVALID_FUSION_CAPABILITY",
+            "Fusion capability is not an object",
+            {}, {}, {},
+        });
+        return false;
+    }
+    read_bool(value, "scalar_safe", &output->scalar_safe,
+        diagnostics, false);
+    read_bool(value, "device_safe", &output->device_safe,
+        diagnostics, false);
+    read_bool(value, "stateful", &output->stateful,
+        diagnostics, false);
+    read_bool(value, "parallel_domain", &output->parallel_domain,
+        diagnostics, false);
+    read_bool(value, "host_adapter", &output->host_adapter,
+        diagnostics, false);
+    read_bool(value, "requires_barrier", &output->requires_barrier,
+        diagnostics, false);
+    read_bool(value, "supports_device_dispatch",
+        &output->supports_device_dispatch, diagnostics, false);
+    return true;
+}
+
 bool parse_definition(const Json& value, NodeDefinition* output,
     std::vector<Diagnostic>* diagnostics)
 {
@@ -1328,6 +1381,15 @@ bool parse_definition(const Json& value, NodeDefinition* output,
                 diagnostics))
         {
             output->partial_footprint.reset();
+        }
+    }
+    const Json* fusion = member(value, "fusion");
+    if (fusion != nullptr) {
+        output->fusion = FusionCapability{};
+        if (!parse_fusion_capability(
+                *fusion, &*output->fusion, diagnostics))
+        {
+            output->fusion.reset();
         }
     }
     const Json* provenance = member(value, "provenance");

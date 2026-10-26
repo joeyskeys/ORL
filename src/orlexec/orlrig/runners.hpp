@@ -40,6 +40,14 @@ public:
         WeightData& weights,
         ORL::exec::OrlBuffer& joints,
         bool device_only = false);
+    // Uses an already published CUDA Joint view from a preceding solver
+    // execution. The view is borrowed and must remain alive through the
+    // deformer evaluation.
+    RunnerStatus evaluate_device(
+        DeformerData& deformer,
+        WeightData& weights,
+        ORL::exec::DeviceBufferView joints,
+        std::size_t joint_count);
     RunnerStatus readback();
 
     ORL::exec::Backend backend() const { return compute_backend; }
@@ -54,6 +62,12 @@ private:
         DeformerData& deformer,
         WeightData& weights,
         std::int64_t vertex_count);
+    RunnerStatus bind_deform_device(
+        ORL::exec::DeviceBufferView joints,
+        std::size_t joint_count,
+        DeformerData& deformer,
+        WeightData& weights,
+        std::int64_t vertex_count);
 
     ORL::exec::Backend compute_backend;
     std::string compiled_type;
@@ -61,12 +75,15 @@ private:
     std::optional<ORL::exec::OrlExecution> capture_execution;
     std::optional<ORL::exec::OrlProgram> deform_program;
     std::optional<ORL::exec::OrlExecution> deform_execution;
+    std::optional<ORL::exec::OrlProgram> deform_device_program;
+    std::optional<ORL::exec::OrlExecution> deform_device_execution;
     ORL::exec::OrlBuffer joints;
     ORL::exec::OrlBuffer solver_locators;
     ORL::exec::OrlBuffer solver_controllers;
     ORL::exec::OrlBuffer solver_context_storage;
     ORL::exec::OrlBuffer output;
     std::int64_t last_vertex_count = 0;
+    bool last_evaluation_used_device_joints = false;
 };
 
 class AutoWeightRunner {

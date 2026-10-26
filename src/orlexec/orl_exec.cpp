@@ -295,6 +295,8 @@ struct KernelTiming {
     double total_ms = 0;
     std::size_t upload_calls = 0;
     std::size_t upload_bytes = 0;
+    std::size_t download_calls = 0;
+    std::size_t download_bytes = 0;
 };
 
 struct ExecStats {
@@ -621,6 +623,9 @@ struct OrlExecution::Impl {
     struct PackedBinding {
         std::size_t offset = 0;
         std::size_t bytes = 0;
+        std::uint64_t version = 0;
+        std::vector<PackedBufferRange> dirty_ranges;
+        std::uint64_t uploaded_version = 0;
     };
 
     struct PackedStorage {
@@ -657,12 +662,86 @@ struct OrlExecution::Impl {
     orlcomp::OrlGpuBuffer handle_context_device = 0;
     orlcomp::OrlGpuBuffer handle_joint_device = 0;
     orlcomp::OrlGpuBuffer handle_locator_device = 0;
+    bool handle_arenas_alias_packed = false;
+    bool handle_joint_external = false;
+    bool handle_locator_external = false;
+    std::size_t handle_joint_offset = 0;
+    std::size_t handle_locator_offset = 0;
     std::size_t handle_joint_bytes = 0;
     std::size_t handle_locator_bytes = 0;
+    void* uploaded_joint_data = nullptr;
+    void* uploaded_locator_data = nullptr;
+    std::size_t uploaded_joint_count = 0;
+    std::size_t uploaded_locator_count = 0;
+    std::size_t uploaded_joint_stride = 0;
+    std::size_t uploaded_locator_stride = 0;
+    std::uint64_t uploaded_joint_device_ptr = 0;
+    std::uint64_t uploaded_locator_device_ptr = 0;
+    std::uint64_t uploaded_joint_revision = 0;
+    std::uint64_t uploaded_locator_revision = 0;
+    std::uint64_t uploaded_handle_topology_revision = 0;
+    orlcomp::HandleDeviceContext uploaded_handle_context{};
+    bool handle_context_uploaded = false;
     std::vector<std::string> errors;
     std::string ir;
     bool initialized = false;
     ExecStats exec_stats;
+    ExecutionTelemetry last_telemetry;
+
+    void release_handle_arena_devices() {
+        if (handle_arenas_alias_packed) {
+            handle_joint_device = 0;
+            handle_locator_device = 0;
+            handle_joint_external = false;
+            handle_locator_external = false;
+            handle_joint_offset = 0;
+            handle_locator_offset = 0;
+            handle_joint_bytes = 0;
+            handle_locator_bytes = 0;
+            uploaded_joint_data = nullptr;
+            uploaded_locator_data = nullptr;
+            uploaded_joint_count = 0;
+            uploaded_locator_count = 0;
+            uploaded_joint_stride = 0;
+            uploaded_locator_stride = 0;
+            uploaded_joint_device_ptr = 0;
+            uploaded_locator_device_ptr = 0;
+            uploaded_joint_revision = 0;
+            uploaded_locator_revision = 0;
+            uploaded_handle_topology_revision = 0;
+            handle_arenas_alias_packed = false;
+            handle_context_uploaded = false;
+            return;
+        }
+        if (gpu != nullptr) {
+            if (handle_joint_device != 0) {
+                gpu->FreeBuffer(handle_joint_device);
+            }
+            if (handle_locator_device != 0) {
+                gpu->FreeBuffer(handle_locator_device);
+            }
+        }
+        handle_joint_device = 0;
+        handle_locator_device = 0;
+        handle_joint_external = false;
+        handle_locator_external = false;
+        handle_joint_offset = 0;
+        handle_locator_offset = 0;
+        handle_joint_bytes = 0;
+        handle_locator_bytes = 0;
+        uploaded_joint_data = nullptr;
+        uploaded_locator_data = nullptr;
+        uploaded_joint_count = 0;
+        uploaded_locator_count = 0;
+        uploaded_joint_stride = 0;
+        uploaded_locator_stride = 0;
+        uploaded_joint_device_ptr = 0;
+        uploaded_locator_device_ptr = 0;
+        uploaded_joint_revision = 0;
+        uploaded_locator_revision = 0;
+        uploaded_handle_topology_revision = 0;
+        handle_context_uploaded = false;
+    }
 
     ~Impl() {
         release_device_bindings();
@@ -670,12 +749,7 @@ struct OrlExecution::Impl {
             if (handle_context_device != 0) {
                 gpu->FreeBuffer(handle_context_device);
             }
-            if (handle_joint_device != 0) {
-                gpu->FreeBuffer(handle_joint_device);
-            }
-            if (handle_locator_device != 0) {
-                gpu->FreeBuffer(handle_locator_device);
-            }
+            release_handle_arena_devices();
             for (const auto& [_, buffer] : device_buffers) {
                 if (buffer.handle != 0) {
                     gpu->FreeBuffer(buffer.handle);
@@ -688,6 +762,9 @@ struct OrlExecution::Impl {
     }
 
     void release_packed_device() {
+        if (handle_arenas_alias_packed) {
+            release_handle_arena_devices();
+        }
         if (gpu != nullptr && packed_device.handle != 0) {
             gpu->FreeBuffer(packed_device.handle);
         }
@@ -838,6 +915,20 @@ struct OrlExecution::Impl {
                     continue;
                 }
                 if (parameter.name == orlcomp::kSolverContextParameterName) {
+                    const auto device =
+                        device_bindings.find(parameter.name);
+                    if (device != device_bindings.end()) {
+                        if (backend != Backend::Cuda
+                            || device->second.bytes
+                                < parameter.element_stride)
+                        {
+                            errors.emplace_back(
+                                "Device SolverContext binding is invalid");
+                            continue;
+                        }
+                        ordered_buffers.push_back(nullptr);
+                        continue;
+                    }
                     if (!solver_context.has_value()) {
                         errors.emplace_back(
                             "Implicit SolverContext storage is unavailable");
@@ -1074,7 +1165,24 @@ struct OrlExecution::Impl {
             packed_device.source_data = packed_storage->data;
         }
 
-        if (packed_device.uploaded_version != packed_storage->version) {
+        std::vector<PackedBufferRange> ranges;
+        bool upload_complete_storage = packed_device.uploaded_version == 0;
+        for (auto& [_, binding] : packed_bindings) {
+            if (binding.version != packed_storage->version
+                || binding.uploaded_version == binding.version)
+            {
+                continue;
+            }
+            if (binding.dirty_ranges.empty()) {
+                upload_complete_storage = true;
+                break;
+            }
+            ranges.insert(
+                ranges.end(),
+                binding.dirty_ranges.begin(),
+                binding.dirty_ranges.end());
+        }
+        if (upload_complete_storage) {
             if (!gpu->UploadBuffer(
                     packed_device.handle,
                     packed_storage->data,
@@ -1089,8 +1197,57 @@ struct OrlExecution::Impl {
             if (upload_bytes != nullptr) {
                 *upload_bytes += packed_storage->bytes;
             }
-            packed_device.uploaded_version = packed_storage->version;
+        } else if (!ranges.empty()) {
+            std::sort(ranges.begin(), ranges.end(),
+                [](const PackedBufferRange& left,
+                    const PackedBufferRange& right) {
+                    return left.offset < right.offset;
+                });
+            std::vector<PackedBufferRange> merged;
+            for (const auto& range : ranges) {
+                if (range.offset > packed_storage->bytes
+                    || range.bytes > packed_storage->bytes - range.offset)
+                {
+                    errors.emplace_back(
+                        "Packed buffer dirty range exceeds storage");
+                    return false;
+                }
+                if (merged.empty()
+                    || range.offset
+                        > merged.back().offset + merged.back().bytes)
+                {
+                    merged.push_back(range);
+                    continue;
+                }
+                const auto end = std::max(
+                    merged.back().offset + merged.back().bytes,
+                    range.offset + range.bytes);
+                merged.back().bytes = end - merged.back().offset;
+            }
+            for (const auto& range : merged) {
+                if (!gpu->UploadBufferRange(
+                        packed_device.handle, range.offset,
+                        static_cast<const std::byte*>(
+                            packed_storage->data) + range.offset,
+                        range.bytes))
+                {
+                    append_errors(errors, gpu->Errors());
+                    return false;
+                }
+                if (upload_calls != nullptr) {
+                    ++*upload_calls;
+                }
+                if (upload_bytes != nullptr) {
+                    *upload_bytes += range.bytes;
+                }
+            }
         }
+        for (auto& [_, binding] : packed_bindings) {
+            if (binding.version == packed_storage->version) {
+                binding.uploaded_version = binding.version;
+            }
+        }
+        packed_device.uploaded_version = packed_storage->version;
         *handle = packed_device.handle;
         return true;
     }
@@ -1104,13 +1261,30 @@ struct OrlExecution::Impl {
             return false;
         }
         const auto upload_arena = [&](const orlrig::HandleStorage& storage,
+            std::uint64_t host_revision,
             orlcomp::OrlGpuBuffer* device_handle,
-            std::size_t* device_bytes) {
-            if (storage.data == nullptr || storage.count == 0
+            std::size_t* device_bytes,
+            void** uploaded_data,
+            std::size_t* uploaded_count,
+            std::size_t* uploaded_stride,
+            std::uint64_t* uploaded_revision,
+            std::uint64_t* uploaded_device_ptr,
+            bool* external) {
+            if ((storage.data == nullptr && storage.device_ptr == 0)
+                || storage.count == 0
                 || storage.stride == 0)
             {
+                if (*device_handle != 0) {
+                    gpu->FreeBuffer(*device_handle);
+                }
                 *device_handle = 0;
                 *device_bytes = 0;
+                *external = false;
+                *uploaded_data = nullptr;
+                *uploaded_count = 0;
+                *uploaded_stride = 0;
+                *uploaded_revision = 0;
+                *uploaded_device_ptr = 0;
                 return true;
             }
             if (storage.count > std::numeric_limits<std::size_t>::max()
@@ -1120,6 +1294,51 @@ struct OrlExecution::Impl {
                 return false;
             }
             const std::size_t bytes = storage.count * storage.stride;
+            if (storage.device_ptr != 0) {
+                if (storage.device_bytes < bytes) {
+                    errors.emplace_back(
+                        "Published handle device storage is too small");
+                    return false;
+                }
+                const bool unchanged =
+                    *external
+                    && *device_handle != 0
+                    && *device_bytes == storage.device_bytes
+                    && *uploaded_device_ptr == storage.device_ptr
+                    && *uploaded_count == storage.count
+                    && *uploaded_stride == storage.stride
+                    && uploaded_handle_topology_revision
+                        == handle_view_context->topology_revision;
+                if (!unchanged) {
+                    if (*device_handle != 0) {
+                        gpu->FreeBuffer(*device_handle);
+                    }
+                    const auto imported = gpu->ImportBuffer(
+                        storage.device_ptr, storage.device_bytes);
+                    if (!imported.has_value()) {
+                        append_errors(errors, gpu->Errors());
+                        return false;
+                    }
+                    *device_handle = *imported;
+                    *device_bytes = storage.device_bytes;
+                    *external = true;
+                    *uploaded_data = storage.data;
+                    *uploaded_count = storage.count;
+                    *uploaded_stride = storage.stride;
+                    *uploaded_revision = host_revision;
+                    *uploaded_device_ptr = storage.device_ptr;
+                }
+                return true;
+            }
+            if (*external) {
+                if (*device_handle != 0) {
+                    gpu->FreeBuffer(*device_handle);
+                }
+                *device_handle = 0;
+                *device_bytes = 0;
+                *external = false;
+                *uploaded_device_ptr = 0;
+            }
             if (*device_handle == 0 || *device_bytes != bytes) {
                 if (*device_handle != 0) {
                     gpu->FreeBuffer(*device_handle);
@@ -1131,28 +1350,184 @@ struct OrlExecution::Impl {
                 }
                 *device_handle = *allocated;
                 *device_bytes = bytes;
+                *uploaded_data = nullptr;
+                *uploaded_count = 0;
+                *uploaded_stride = 0;
+                *uploaded_revision = 0;
+                *uploaded_device_ptr = 0;
             }
-            if (!gpu->UploadBuffer(
-                    *device_handle, storage.data, bytes))
-            {
-                append_errors(errors, gpu->Errors());
-                return false;
-            }
-            if (upload_calls != nullptr) {
-                ++*upload_calls;
-            }
-            if (upload_bytes != nullptr) {
-                *upload_bytes += bytes;
+            const bool unchanged =
+                host_revision != 0
+                && *uploaded_revision == host_revision
+                && *uploaded_data == storage.data
+                && *uploaded_count == storage.count
+                && *uploaded_stride == storage.stride
+                && uploaded_handle_topology_revision
+                    == handle_view_context->topology_revision;
+            if (!unchanged) {
+                if (!gpu->UploadBuffer(
+                        *device_handle, storage.data, bytes))
+                {
+                    append_errors(errors, gpu->Errors());
+                    return false;
+                }
+                if (upload_calls != nullptr) {
+                    ++*upload_calls;
+                }
+                if (upload_bytes != nullptr) {
+                    *upload_bytes += bytes;
+                }
+                *uploaded_data = storage.data;
+                *uploaded_count = storage.count;
+                *uploaded_stride = storage.stride;
+                *uploaded_revision = host_revision;
+                *uploaded_device_ptr = 0;
             }
             return true;
         };
-        if (!upload_arena(handle_view_context->joints,
-                &handle_joint_device, &handle_joint_bytes)
-            || !upload_arena(handle_view_context->locators,
-                &handle_locator_device, &handle_locator_bytes))
-        {
-            return false;
+
+        // A graph may mix a direct SolverContext access with typed Joint or
+        // Locator handles. In that case both access paths must address the
+        // same device state. The packed SolverContext allocation is already
+        // uploaded before this function is reached, so use its joint and
+        // locator ranges instead of creating duplicate typed arenas.
+        const bool has_solver_context_parameter =
+            parameter(orlcomp::kSolverContextParameterName) != nullptr;
+        if (has_solver_context_parameter && !packed_storage.has_value()) {
+            const bool has_published_handle_state =
+                handle_view_context->joints.device_ptr != 0
+                || handle_view_context->locators.device_ptr != 0;
+            if (!has_published_handle_state) {
+                errors.emplace_back(
+                    "Typed handle views require a packed SolverContext "
+                    "binding when mixed with direct solver-context access");
+                return false;
+            }
         }
+        const bool has_published_handle_state =
+            handle_view_context->joints.device_ptr != 0
+            || handle_view_context->locators.device_ptr != 0;
+        if (packed_storage.has_value()
+            && has_solver_context_parameter
+            && !has_published_handle_state) {
+            if (packed_storage->data == nullptr
+                || packed_storage->bytes < sizeof(orlrig::SolverContext))
+            {
+                errors.emplace_back(
+                    "Packed SolverContext storage is unavailable for "
+                    "typed handle views");
+                return false;
+            }
+            const auto* solver_context =
+                static_cast<const orlrig::SolverContext*>(
+                    packed_storage->data);
+            if (solver_context->joints_offset < 0
+                || solver_context->locators_offset < 0
+                || solver_context->joint_count < 0
+                || solver_context->locator_count < 0)
+            {
+                errors.emplace_back(
+                    "Packed SolverContext contains invalid typed-handle "
+                    "ranges");
+                return false;
+            }
+            const auto joint_offset =
+                static_cast<std::size_t>(solver_context->joints_offset);
+            const auto locator_offset =
+                static_cast<std::size_t>(solver_context->locators_offset);
+            const auto joint_count = static_cast<std::size_t>(
+                solver_context->joint_count);
+            const auto locator_count = static_cast<std::size_t>(
+                solver_context->locator_count);
+            const bool size_overflow =
+                (handle_view_context->joints.stride != 0
+                    && joint_count
+                        > std::numeric_limits<std::size_t>::max()
+                            / handle_view_context->joints.stride)
+                || (handle_view_context->locators.stride != 0
+                    && locator_count
+                        > std::numeric_limits<std::size_t>::max()
+                            / handle_view_context->locators.stride);
+            if (size_overflow) {
+                errors.emplace_back(
+                    "Packed SolverContext typed-handle ranges overflow");
+                return false;
+            }
+            const auto joint_bytes = joint_count
+                * static_cast<std::size_t>(
+                    handle_view_context->joints.stride);
+            const auto locator_bytes = locator_count
+                * static_cast<std::size_t>(
+                    handle_view_context->locators.stride);
+            const bool joints_valid = joint_count == 0
+                ? handle_view_context->joints.count == 0
+                : handle_view_context->joints.stride != 0
+                    && joint_offset <= packed_storage->bytes
+                    && joint_bytes
+                        <= packed_storage->bytes - joint_offset
+                    && handle_view_context->joints.count == joint_count
+                    && static_cast<const std::byte*>(
+                            handle_view_context->joints.data)
+                        == static_cast<const std::byte*>(
+                            packed_storage->data) + joint_offset;
+            const bool locators_valid = locator_count == 0
+                ? handle_view_context->locators.count == 0
+                : handle_view_context->locators.stride != 0
+                    && locator_offset <= packed_storage->bytes
+                    && locator_bytes
+                        <= packed_storage->bytes - locator_offset
+                    && handle_view_context->locators.count == locator_count
+                    && static_cast<const std::byte*>(
+                            handle_view_context->locators.data)
+                        == static_cast<const std::byte*>(
+                            packed_storage->data) + locator_offset;
+            const bool ranges_valid = joints_valid && locators_valid;
+            if (!ranges_valid) {
+                errors.emplace_back(
+                    "Typed handle views do not alias the packed "
+                    "SolverContext arenas");
+                return false;
+            }
+            if (!handle_arenas_alias_packed) {
+                release_handle_arena_devices();
+            }
+            const auto packed_view =
+                gpu->DeviceBufferView(packed_device.handle);
+            if (!packed_view.has_value()) {
+                append_errors(errors, gpu->Errors());
+                return false;
+            }
+            handle_arenas_alias_packed = true;
+            handle_joint_device = packed_device.handle;
+            handle_locator_device = packed_device.handle;
+            handle_joint_offset = joint_offset;
+            handle_locator_offset = locator_offset;
+            handle_joint_bytes = joint_bytes;
+            handle_locator_bytes = locator_bytes;
+        } else {
+            if (handle_arenas_alias_packed) {
+                release_handle_arena_devices();
+            }
+            if (!upload_arena(handle_view_context->joints,
+                    handle_view_context->joints_revision,
+                    &handle_joint_device, &handle_joint_bytes,
+                    &uploaded_joint_data, &uploaded_joint_count,
+                    &uploaded_joint_stride, &uploaded_joint_revision,
+                    &uploaded_joint_device_ptr, &handle_joint_external)
+                || !upload_arena(handle_view_context->locators,
+                    handle_view_context->locators_revision,
+                    &handle_locator_device, &handle_locator_bytes,
+                    &uploaded_locator_data, &uploaded_locator_count,
+                    &uploaded_locator_stride, &uploaded_locator_revision,
+                    &uploaded_locator_device_ptr, &handle_locator_external))
+            {
+                return false;
+            }
+            handle_joint_offset = 0;
+            handle_locator_offset = 0;
+        }
+        uploaded_handle_topology_revision =
+            handle_view_context->topology_revision;
         orlcomp::HandleDeviceContext device_context;
         const auto joint_pointer = handle_joint_device == 0
             ? std::optional<std::uint64_t>{}
@@ -1169,9 +1544,11 @@ struct OrlExecution::Impl {
             return false;
         }
         device_context.joint_arena =
-            joint_pointer.value_or(0);
+            joint_pointer.value_or(0)
+            + static_cast<std::uint64_t>(handle_joint_offset);
         device_context.locator_arena =
-            locator_pointer.value_or(0);
+            locator_pointer.value_or(0)
+            + static_cast<std::uint64_t>(handle_locator_offset);
         device_context.joint_count = handle_view_context->joints.count;
         device_context.locator_count = handle_view_context->locators.count;
         device_context.joint_stride = handle_view_context->joints.stride;
@@ -1190,17 +1567,25 @@ struct OrlExecution::Impl {
             }
             handle_context_device = *allocated;
         }
-        if (!gpu->UploadBuffer(handle_context_device,
-                &device_context, sizeof(device_context)))
+        if (!handle_context_uploaded
+            || std::memcmp(
+                &uploaded_handle_context, &device_context,
+                sizeof(device_context)) != 0)
         {
-            append_errors(errors, gpu->Errors());
-            return false;
-        }
-        if (upload_calls != nullptr) {
-            ++*upload_calls;
-        }
-        if (upload_bytes != nullptr) {
-            *upload_bytes += sizeof(device_context);
+            if (!gpu->UploadBuffer(handle_context_device,
+                    &device_context, sizeof(device_context)))
+            {
+                append_errors(errors, gpu->Errors());
+                return false;
+            }
+            if (upload_calls != nullptr) {
+                ++*upload_calls;
+            }
+            if (upload_bytes != nullptr) {
+                *upload_bytes += sizeof(device_context);
+            }
+            uploaded_handle_context = device_context;
+            handle_context_uploaded = true;
         }
         return true;
     }
@@ -1545,6 +1930,17 @@ bool OrlExecution::bind_packed_buffer(
             + "' has an invalid range");
         return false;
     }
+    for (const auto& range : view.dirty_ranges) {
+        if (range.bytes == 0
+            || range.offset > view.storage_bytes
+            || range.bytes > view.storage_bytes - range.offset)
+        {
+            impl_->errors.emplace_back(
+                "Packed buffer binding for '" + std::string(parameter)
+                + "' has an invalid dirty range");
+            return false;
+        }
+    }
     if (desc->kind == ParameterKind::HandleBuffer) {
         if (view.bytes % desc->element_stride != 0) {
             impl_->errors.emplace_back(
@@ -1582,8 +1978,19 @@ bool OrlExecution::bind_packed_buffer(
 
     impl_->buffers.erase(name);
     impl_->release_device_binding(name);
-    impl_->packed_bindings[name] = Impl::PackedBinding{
-        view.offset, view.bytes};
+    auto& binding = impl_->packed_bindings[name];
+    const bool same_range =
+        binding.offset == view.offset && binding.bytes == view.bytes;
+    if (!same_range) {
+        binding.uploaded_version = 0;
+    }
+    binding.offset = view.offset;
+    binding.bytes = view.bytes;
+    binding.version = view.version;
+    binding.dirty_ranges = view.dirty_ranges;
+    if (!same_range && view.version == 0) {
+        binding.uploaded_version = 0;
+    }
     return true;
 }
 
@@ -1754,11 +2161,45 @@ bool OrlExecution::set_solver_context(
                 "Packed SolverContext storage is too small");
             return false;
         }
-        std::memcpy(
-            impl_->packed_storage->data,
-            &context,
-            sizeof(context));
-        ++impl_->packed_storage->version;
+        if (std::memcmp(
+                impl_->packed_storage->data,
+                &context,
+                sizeof(context)) != 0)
+        {
+            const auto previous_version =
+                impl_->packed_storage->version;
+            std::memcpy(
+                impl_->packed_storage->data,
+                &context,
+                sizeof(context));
+            ++impl_->packed_storage->version;
+            // set_solver_context() can be called after the packed view was
+            // bound. Keep the binding metadata in step with the mutation and
+            // retain a precise range so the next CUDA dispatch uploads the
+            // changed context without replacing device-only pose state.
+            for (auto& [_, binding] : impl_->packed_bindings) {
+                if (binding.version == previous_version
+                    || binding.version
+                        != impl_->packed_storage->version)
+                {
+                    binding.version = impl_->packed_storage->version;
+                    binding.uploaded_version = 0;
+                    const bool context_range_present =
+                        std::any_of(
+                            binding.dirty_ranges.begin(),
+                            binding.dirty_ranges.end(),
+                            [](const PackedBufferRange& range) {
+                                return range.offset == 0
+                                    && range.bytes
+                                        >= sizeof(orlrig::SolverContext);
+                            });
+                    if (!context_range_present) {
+                        binding.dirty_ranges.push_back({
+                            0, sizeof(orlrig::SolverContext)});
+                    }
+                }
+            }
+        }
         return true;
     }
     if (!impl_->solver_context.has_value()) {
@@ -1834,6 +2275,11 @@ bool OrlExecution::bind_hierarchy_data(OrlBuffer& buffer)
 
 void OrlExecution::clear_bindings() {
     impl_->release_device_bindings();
+    if (impl_->handle_arenas_alias_packed) {
+        impl_->release_handle_arena_devices();
+    }
+    impl_->handle_view_context = nullptr;
+    impl_->handle_context_uploaded = false;
     impl_->buffers.clear();
     impl_->packed_bindings.clear();
     impl_->packed_storage.reset();
@@ -1952,6 +2398,17 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
             append_errors(impl_->errors, impl_->jit->Errors());
             return result;
         }
+        impl_->last_telemetry = ExecutionTelemetry{
+            impl_->exec_stats.count + 1,
+            timing.upload_ms,
+            timing.kernel_ms,
+            timing.download_ms,
+            timing.total_ms,
+            timing.upload_calls,
+            timing.upload_bytes,
+            timing.download_calls,
+            timing.download_bytes,
+        };
         record_kernel(entry, impl_->backend, element_count, timing, impl_->exec_stats);
         return result;
     }
@@ -1975,6 +2432,11 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
                 {
                     return std::nullopt;
                 }
+            } else if (const auto device =
+                           impl_->device_bindings.find(parameter.name);
+                       device != impl_->device_bindings.end())
+            {
+                handle = device->second.handle;
             } else if (parameter.name == orlcomp::kSolverContextParameterName) {
                 const bool packed_context =
                     impl_->packed_storage.has_value();
@@ -2130,8 +2592,26 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
                 append_errors(impl_->errors, impl_->gpu->Errors());
                 return std::nullopt;
             }
+            ++timing.download_calls;
+            timing.download_bytes += buffer->byte_size();
         }
-        if (impl_->handle_view_context != nullptr) {
+        if (impl_->packed_storage.has_value()
+            && impl_->packed_device.handle != 0
+            && impl_->packed_storage->bytes != 0)
+        {
+            if (!impl_->gpu->DownloadBuffer(
+                    impl_->packed_device.handle,
+                    impl_->packed_storage->data,
+                    impl_->packed_storage->bytes))
+            {
+                append_errors(impl_->errors, impl_->gpu->Errors());
+                return std::nullopt;
+            }
+            ++timing.download_calls;
+            timing.download_bytes += impl_->packed_storage->bytes;
+        }
+        if (impl_->handle_view_context != nullptr
+            && !impl_->handle_arenas_alias_packed) {
             const auto download_handle_arena =
                 [&](const orlrig::HandleStorage& storage,
                     orlcomp::OrlGpuBuffer device,
@@ -2154,6 +2634,20 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
                 append_errors(impl_->errors, impl_->gpu->Errors());
                 return std::nullopt;
             }
+            if (impl_->handle_view_context->joints.writable
+                && impl_->handle_joint_device != 0
+                && impl_->handle_joint_bytes != 0)
+            {
+                ++timing.download_calls;
+                timing.download_bytes += impl_->handle_joint_bytes;
+            }
+            if (impl_->handle_view_context->locators.writable
+                && impl_->handle_locator_device != 0
+                && impl_->handle_locator_bytes != 0)
+            {
+                ++timing.download_calls;
+                timing.download_bytes += impl_->handle_locator_bytes;
+            }
         }
 
         if (!impl_->gpu->ReadCudaGlobalInt32(
@@ -2162,9 +2656,22 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
             append_errors(impl_->errors, impl_->gpu->Errors());
             return std::nullopt;
         }
+        ++timing.download_calls;
+        timing.download_bytes += sizeof(result);
     }
     timing.download_ms = elapsed_ms(t_download);
     timing.total_ms = elapsed_ms(t0);
+    impl_->last_telemetry = ExecutionTelemetry{
+        impl_->exec_stats.count + 1,
+        timing.upload_ms,
+        timing.kernel_ms,
+        timing.download_ms,
+        timing.total_ms,
+        timing.upload_calls,
+        timing.upload_bytes,
+        timing.download_calls,
+        timing.download_bytes,
+    };
     record_kernel(entry, impl_->backend, element_count, timing, impl_->exec_stats);
     return static_cast<std::int64_t>(result);
 }
@@ -2304,7 +2811,38 @@ std::optional<DeviceBufferView> OrlExecution::handle_joint_device_view()
         append_errors(impl_->errors, impl_->gpu->Errors());
         return std::nullopt;
     }
-    return DeviceBufferView{view->device_ptr, impl_->handle_joint_bytes};
+    return DeviceBufferView{
+        view->device_ptr
+            + static_cast<std::uint64_t>(impl_->handle_joint_offset),
+        impl_->handle_joint_bytes};
+}
+
+std::optional<DeviceBufferView>
+OrlExecution::handle_locator_device_view()
+{
+    if (impl_ == nullptr || !impl_->initialized
+        || impl_->backend != Backend::Cuda || impl_->gpu == nullptr
+        || impl_->handle_locator_device == 0
+        || impl_->handle_locator_bytes == 0)
+    {
+        return std::nullopt;
+    }
+    const auto view = impl_->gpu->DeviceBufferView(
+        impl_->handle_locator_device);
+    if (!view.has_value()) {
+        impl_->errors.clear();
+        append_errors(impl_->errors, impl_->gpu->Errors());
+        return std::nullopt;
+    }
+    return DeviceBufferView{
+        view->device_ptr
+            + static_cast<std::uint64_t>(impl_->handle_locator_offset),
+        impl_->handle_locator_bytes};
+}
+
+ExecutionTelemetry OrlExecution::last_execution_telemetry() const
+{
+    return impl_ == nullptr ? ExecutionTelemetry{} : impl_->last_telemetry;
 }
 
 std::optional<std::uint64_t> OrlExecution::device_buffer_pointer(

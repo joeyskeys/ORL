@@ -122,6 +122,7 @@ public:
     bool bind_handle_view_context(
         orlrig::HandleViewContext& context);
     std::optional<DeviceBufferView> handle_joint_device_view();
+    std::optional<DeviceBufferView> handle_locator_device_view();
     void clear_bindings();
 
     std::optional<std::int64_t> evaluate(std::uint32_t element_count = 1);
@@ -129,6 +130,7 @@ public:
     bool evaluate_device(std::uint32_t element_count = 1);
     std::optional<DeviceBufferView> device_buffer_view(std::string_view parameter);
     std::optional<std::uint64_t> device_buffer_pointer(std::string_view parameter);
+    ExecutionTelemetry last_execution_telemetry() const;
     bool synchronize();
 
     Backend backend() const;

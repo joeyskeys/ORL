@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <set>
@@ -29,6 +30,7 @@ public:
         const Selection& selection, ComponentId deformer_id,
     ComponentId weight_id,
     std::optional<orlgraph::GraphStage> stage = std::nullopt);
+    ~GraphSceneRuntime();
 
     bool set_type(std::string_view name);
     void set_mesh(std::string name);
@@ -42,7 +44,10 @@ private:
         orlgraph::GraphModule graph;
         std::optional<exec::OrlGraphProgram> program;
         std::optional<exec::OrlGraphExecution> execution;
+        std::optional<exec::OrlBuffer> dispatch_selection;
         std::vector<orlgraph::StableId> region_nodes;
+        bool fused_solver = false;
+        bool device_dispatch = false;
     };
 
     struct ExecutionStep {
@@ -73,6 +78,8 @@ private:
     bool build_orl_segment(
         const std::vector<orlgraph::StableId>& node_ids,
         std::size_t segment_index,
+        const std::vector<orlgraph::StableId>& evaluation_region_order,
+        bool fused_solver,
         std::string* error);
     bool execute_orl_segment(
         vkkk::Context& context, std::size_t segment_index);
@@ -132,6 +139,7 @@ private:
         const orlgraph::StableId& node,
         const orlgraph::StableId& port) const;
     void register_runtime_adapters();
+    void report_evaluation_failure(const std::string& message);
     orlgraph::GraphModule& active_graph();
     const orlgraph::GraphModule& active_graph() const;
 
@@ -148,6 +156,7 @@ private:
     std::size_t planned_graph_revision_ = 0;
     std::size_t planned_scene_revision_ = 0;
     std::size_t planned_graph_fingerprint_ = 0;
+    std::uint64_t planned_evaluation_dependency_revision_ = 0;
     exec::Backend planned_backend_ = exec::Backend::Cpu;
     std::size_t observed_graph_edit_revision_ = 0;
     std::size_t observed_evaluation_revision_ = 0;
@@ -159,8 +168,11 @@ private:
     orlrig::SolverDispatchRuntimeData active_dispatch_data_;
     bool logged_rest = false;
     bool logged_move = false;
+    bool logged_fused_execution = false;
     std::string reportedPlanError;
     std::size_t reportedPlanRevision = 0;
+    std::size_t reportedEvaluationRevision = 0;
+    std::string fusion_diagnostic_;
 };
 
 } // namespace ORL

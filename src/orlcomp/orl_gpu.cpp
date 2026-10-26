@@ -508,6 +508,35 @@ struct OrlGpuEngine::Impl {
         return true;
     }
 
+    bool UploadCudaBufferRange(OrlGpuBuffer handle, std::size_t offset,
+        const void *source, std::size_t bytes) {
+        if (source == nullptr) {
+            errors_.push_back("UploadBufferRange requires a non-null source");
+            return false;
+        }
+        CudaBuffer *buffer = FindCudaBuffer(handle, bytes);
+        if (buffer == nullptr
+            || offset > buffer->bytes
+            || bytes > buffer->bytes - offset)
+        {
+            if (buffer != nullptr) {
+                errors_.push_back(
+                    "GPU buffer range transfer exceeds allocation size");
+            }
+            return false;
+        }
+        if (!ActivateCudaContext()) {
+            return false;
+        }
+        const CUresult rc = cuMemcpyHtoD_(
+            buffer->address + offset, source, bytes);
+        if (rc != CUDA_SUCCESS) {
+            AddCudaError("cuMemcpyHtoD range failed", rc);
+            return false;
+        }
+        return true;
+    }
+
     bool DownloadCudaBuffer(OrlGpuBuffer handle, void *destination, std::size_t bytes) {
         if (destination == nullptr) {
             errors_.push_back("DownloadBuffer requires a non-null destination");
@@ -1113,6 +1142,31 @@ bool OrlGpuEngine::UploadBuffer(OrlGpuBuffer buffer, const void *source, std::si
     (void)source;
     (void)bytes;
     impl_->errors_.push_back("CUDA headers not available; cannot upload GPU buffers");
+    return false;
+#endif
+}
+
+bool OrlGpuEngine::UploadBufferRange(OrlGpuBuffer buffer, std::size_t offset,
+    const void *source, std::size_t bytes)
+{
+    impl_->errors_.clear();
+    if (impl_->backend_ != OrlGpuBackend::Cuda) {
+        impl_->errors_.push_back(
+            "UploadBufferRange currently requires the CUDA backend");
+        return false;
+    }
+#if ORL_HAS_CUDA_HEADERS
+    if (!IsDriverModuleLoaded() && !LoadToDriver()) {
+        return false;
+    }
+    return impl_->UploadCudaBufferRange(buffer, offset, source, bytes);
+#else
+    (void)buffer;
+    (void)offset;
+    (void)source;
+    (void)bytes;
+    impl_->errors_.push_back(
+        "CUDA headers not available; cannot upload GPU buffers");
     return false;
 #endif
 }
