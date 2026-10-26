@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -21,16 +22,15 @@
 #include "selection.hpp"
 #include "scene_graph_context.hpp"
 #include "orlrig/graph_resources.hpp"
+#include "orlviewer/rhi/selected_adapter.hpp"
+#include "orlviewer/rhi/vkkk_native.hpp"
 #if ORL_USE_QT6
-#include "gui/qt_backend.hpp"
 #include <QApplication>
 #include <QFile>
 #include <QStyleFactory>
 #include "qt/node_color_theme.hpp"
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
-#else
-#include "gui/glfw_backend.hpp"
 #endif
 #include "ops/camera_switch_op.hpp"
 #include "ops/clear_scene_op.hpp"
@@ -52,19 +52,18 @@
 #include "vp/controller_feature.hpp"
 #include "vp/deformer_feature.hpp"
 #include "vp/solver_feature.hpp"
-#include "vp/frame_axis.hpp"
-#include "vp/grid.hpp"
 #include "vp/joint_feature.hpp"
 #include "vp/joint_picking_feature.hpp"
 #include "vp/locator_feature.hpp"
 #include "vp/mesh_csr_feature.hpp"
 #include "vp/mesh_picking_feature.hpp"
 #include "vp/ortho_grid_feature.hpp"
+#include "vp/reference_features.hpp"
 #include "vp/rig_picking_feature.hpp"
 #include "vp/runtime_hud_feature.hpp"
 #include "vp/scene_mesh_feature.hpp"
 #include "vp/transform_guide_feature.hpp"
-#include "vp/viewport.hpp"
+#include "vp/viewport_host.hpp"
 
 namespace {
 
@@ -124,11 +123,25 @@ ViewportFrame make_viewport_frame(const ORL::Frame& frame) {
     return viewport_frame;
 }
 
-vkkk::vp::CoordinateSystem make_coordinate_system(const ViewportFrame& viewport_frame) {
-    return {
-        viewport_frame.axes,
-        {"x", "y", "z"},
-    };
+ORL::Rhi::FrameAxisSetup make_frame_axis_setup(const ViewportFrame& viewport_frame,
+    const std::filesystem::path& font_path)
+{
+    ORL::Rhi::FrameAxisSetup setup;
+    for (std::size_t axis = 0; axis < setup.axes.size(); ++axis) {
+        setup.axes[axis] = ORL::to_rhi(viewport_frame.axes[axis]);
+    }
+    setup.labels = {"x", "y", "z"};
+    setup.font_path = font_path.string();
+    return setup;
+}
+
+ORL::Rhi::CameraState make_camera_state(const vkkk::Camera& camera) {
+    ORL::Rhi::CameraState state;
+    static_assert(sizeof(state.view) == sizeof(camera.ubo_data.view));
+    std::memcpy(state.view.data(), &camera.ubo_data.view, sizeof(state.view));
+    std::memcpy(
+        state.projection.data(), &camera.ubo_data.proj, sizeof(state.projection));
+    return state;
 }
 
 struct StartupOptions {
@@ -186,23 +199,30 @@ int main(int argc, char** argv) {
 #if ORL_USE_QT6
     QApplication application(argc, argv);
     setup_qt_theme(application);
-    vkkk::QtBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport");
-#else
-    vkkk::GlfwBackend window_backend(kViewportWidth, kViewportHeight, "ORL Viewport", true);
 #endif
-    vkkk::Context context;
-    context.set_shader_cache(
-        spirv_cache_directory, startup.force_recompile);
-    context.set_pipeline_cache_path(
-        pipeline_cache_path, startup.force_recompile);
-    context.init(window_backend,
-                 "ORL",
-                 VK_MAKE_VERSION(0, 1, 0),
-                 "ORL Viewport",
-                 vk::ApiVersion13,
-                 true,
-                 {},
-                 {});
+    ORL::Rhi::AdapterConfig adapter_config;
+    adapter_config.initial_extent = {kViewportWidth, kViewportHeight};
+    adapter_config.validation = true;
+    adapter_config.force_shader_recompile = startup.force_recompile;
+    adapter_config.application_name = "ORL";
+    adapter_config.window_title = "ORL Viewport";
+    adapter_config.shader_directory =
+        (std::filesystem::path{ORL_RESOURCE_DIR} / "shaders").string();
+    adapter_config.shader_cache_directory = spirv_cache_directory.string();
+    adapter_config.pipeline_cache_path = pipeline_cache_path.string();
+    adapter_config.clear_color = {0.38f, 0.38f, 0.38f, 1.0f};
+
+    ORL::Rhi::SelectedAdapter adapter;
+    if (const auto status = adapter.initialize(adapter_config); !status) {
+        std::cerr << "Failed to initialize the "
+                  << ORL::Rhi::SelectedAdapter::backend_name()
+                  << " RHI adapter: " << status.message << '\n';
+        return 1;
+    }
+    // Legacy vkkk features and operations still consume the adapter-owned
+    // native window and context until they move onto adapter calls.
+    auto& window_backend = ORL::Rhi::VkkkNative::window(adapter);
+    auto& context = ORL::Rhi::VkkkNative::context(adapter);
 
     // Viewport world follows the provided ORL Frame. frame_dx is left-handed:
     // +X right, +Y up, +Z out (DirectX-style).
@@ -279,8 +299,8 @@ int main(int argc, char** argv) {
     window_backend.set_right_dock_ratio(0.30);
 #endif
 
-    using Viewport = vkkk::vp::Viewport<
-        vkkk::vp::GridFeature,
+    using Viewport = ORL::ViewportHost<
+        ORL::WorldGridFeature,
         ORL::OrthoGridFeature,
         ORL::SceneMeshFeature,
         ORL::JointFeature,
@@ -293,18 +313,16 @@ int main(int argc, char** argv) {
         ORL::JointPickingFeature,
         ORL::DeformerFeature,
         ORL::LocatorFeature,
-        vkkk::vp::FrameAxisFeature,
+        ORL::FrameAxisFeature,
         ORL::RuntimeHudFeature,
         ORL::TransformGuideFeature>;
-    Viewport viewport(context);
+    Viewport viewport(adapter);
     const std::filesystem::path font_path =
         std::filesystem::path{ORL_VKKK_SOURCE_DIR} / "resource/font/Roboto-Light.ttf";
-    const auto grid_handle = viewport.add_feature<vkkk::vp::GridFeature>(camera);
+    const auto grid_handle = viewport.add_feature<ORL::WorldGridFeature>();
     const auto mesh_handle = viewport.add_feature<ORL::SceneMeshFeature>(
-        scene, viewport_frame.right_handed,
-        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders", selection);
-    const auto csr_handle = viewport.add_feature<ORL::MeshCsrFeature>(
-        scene, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+        scene, viewport_frame.right_handed, selection);
+    const auto csr_handle = viewport.add_feature<ORL::MeshCsrFeature>(scene);
     const auto auto_weight_handle = viewport.add_feature<ORL::AutoWeightFeature>(
         scene, components, weight_id, selection);
     if (auto* auto_weight = viewport.find_feature(auto_weight_handle)) {
@@ -317,22 +335,17 @@ int main(int argc, char** argv) {
     const auto deformer_handle = viewport.add_feature<ORL::DeformerFeature>(
         scene_graph, deformer_id, weight_id, selection);
     const auto joint_feature_handle = viewport.add_feature<ORL::JointFeature>(
-        scene_graph, components, camera,
-        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
-    viewport.add_feature<ORL::LocatorFeature>(
-        components, camera,
-        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders", selection);
-    viewport.add_feature<ORL::ControllerFeature>(
-        components, camera, selection, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
-    const auto axis_handle = viewport.add_feature<vkkk::vp::FrameAxisFeature>(
-        camera, font_path, make_coordinate_system(viewport_frame));
+        scene_graph, components);
+    viewport.add_feature<ORL::LocatorFeature>(components, selection);
+    viewport.add_feature<ORL::ControllerFeature>(components, selection);
+    const auto axis_handle = viewport.add_feature<ORL::FrameAxisFeature>(
+        make_frame_axis_setup(viewport_frame, font_path));
     viewport.add_feature<ORL::RuntimeHudFeature>();
 
     ORL::CameraNavigator navigator(camera, world_frame, viewport_frame.right_handed);
     navigator.update_ubo();
     bool show_grid = true;
-    const auto ortho_grid_handle = viewport.add_feature<ORL::OrthoGridFeature>(
-        navigator, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    const auto ortho_grid_handle = viewport.add_feature<ORL::OrthoGridFeature>(navigator);
     ORL::LoadModelOp load_model(scene, context, &window_backend, world_frame);
     ORL::ClearSceneOp clear_scene(scene, context, components, selection, weight_id, deformer_id);
     ORL::CreateJointOp create_joint(components, camera, navigator.target, &window_backend, selection);
@@ -351,18 +364,15 @@ int main(int argc, char** argv) {
     ORL::SelectOp select_op(
         selection, components, scene, camera, &window_backend, create_joint);
     const auto joint_pick_handle = viewport.add_feature<ORL::JointPickingFeature>(
-        scene_graph, components, camera,
-        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+        scene_graph, components);
     if (auto* gpu_pick = viewport.find_feature(joint_pick_handle)) {
         select_op.set_gpu_picking(*gpu_pick);
     }
-    const auto mesh_pick_handle = viewport.add_feature<ORL::MeshPickingFeature>(
-        scene, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    const auto mesh_pick_handle = viewport.add_feature<ORL::MeshPickingFeature>(scene);
     if (auto* mesh_pick = viewport.find_feature(mesh_pick_handle)) {
         select_op.set_mesh_picking(*mesh_pick);
     }
-    const auto rig_pick_handle = viewport.add_feature<ORL::RigPickingFeature>(
-        components, camera, std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+    const auto rig_pick_handle = viewport.add_feature<ORL::RigPickingFeature>(components);
     if (auto* rig_pick = viewport.find_feature(rig_pick_handle)) {
         select_op.set_rig_picking(*rig_pick);
     }
@@ -370,8 +380,7 @@ int main(int argc, char** argv) {
     ORL::RotateOp rotate_op(selection, navigator, &window_backend);
     ORL::ScaleOp scale_op(selection, navigator, &window_backend);
     viewport.add_feature<ORL::TransformGuideFeature>(
-        move_op, rotate_op, scale_op, camera,
-        std::filesystem::path{ORL_RESOURCE_DIR} / "shaders");
+        move_op, rotate_op, scale_op, camera);
     if (auto* csr = viewport.find_feature(csr_handle)) {
         clear_scene.set_csr(*csr);
     }
@@ -668,8 +677,9 @@ int main(int argc, char** argv) {
     }
     controls.attach(window_backend);
 
-    while (!window_backend.should_close()) {
-        window_backend.poll_events();
+    int exit_code = 0;
+    while (!adapter.should_close()) {
+        adapter.poll_events();
         controls.poll();
 
 #if ORL_USE_QT6
@@ -688,15 +698,22 @@ int main(int argc, char** argv) {
             property_editor->refresh();
         }
 #endif
-        vkkk::Context::Frame frame{};
-        if (!viewport.begin_frame(frame)) {
-            continue;
+        ORL::Rhi::FrameState frame;
+        if (const auto status = viewport.begin_frame(frame); !status) {
+            if (status.code == ORL::Rhi::StatusCode::drawable_unavailable) {
+                continue;
+            }
+            std::cerr << "Viewer frame could not begin: " << status.message << '\n';
+            exit_code = 1;
+            break;
         }
 
-        const auto extent = viewport.extent();
-        camera.ratio = static_cast<float>(extent.width) /
-                       static_cast<float>(extent.height == 0 ? 1 : extent.height);
+        camera.ratio = static_cast<float>(frame.extent.width) /
+                       static_cast<float>(frame.extent.height == 0 ? 1 : frame.extent.height);
         navigator.update_ubo();
+        if (const auto status = adapter.set_camera(make_camera_state(camera)); !status) {
+            std::cerr << "Viewer camera update failed: " << status.message << '\n';
+        }
         if (create_joint.is_active()) {
             create_joint.refresh_preview();
         }
@@ -705,15 +722,16 @@ int main(int argc, char** argv) {
         }
 
         viewport.update(frame);
-        viewport.record_frame(frame);
-        viewport.end_frame(frame);
+        if (const auto status = viewport.end_frame(frame); !status) {
+            std::cerr << "Viewer frame could not be submitted: " << status.message << '\n';
+            exit_code = 1;
+            break;
+        }
     }
 
-    context.wait_idle();
-    if (!context.save_pipeline_cache(pipeline_cache_path)) {
-        std::cerr << "Failed to save viewer pipeline cache to "
-                  << pipeline_cache_path << '\n';
+    if (const auto status = adapter.shutdown(); !status) {
+        std::cerr << "Viewer RHI shutdown: " << status.message << '\n';
     }
     controls.detach();
-    return 0;
+    return exit_code;
 }

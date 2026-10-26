@@ -181,17 +181,16 @@ void AutoWeightFeature::request() {
     pending = true;
 }
 
-void AutoWeightFeature::on_update(vkkk::Context& context,
-    const vkkk::Context::Frame&)
+void AutoWeightFeature::on_update(ViewerAdapter& adapter, const Rhi::FrameState&)
 {
     if (!pending) {
         return;
     }
     pending = false;
-    run(context);
+    run(adapter);
 }
 
-bool AutoWeightFeature::run(vkkk::Context& context) {
+bool AutoWeightFeature::run(ViewerAdapter& adapter) {
     OrlEvaluationPause pause;
     WeightData* weight = components.weight(weight_id);
     if (weight == nullptr) {
@@ -227,7 +226,7 @@ bool AutoWeightFeature::run(vkkk::Context& context) {
     orlrig::MeshCsrData core_csr;
     const orlrig::MeshCsrData* csr_data = nullptr;
     if (csr != nullptr) {
-        if (!csr->build(context, mesh_name, *mesh)) {
+        if (!csr->build(adapter, mesh_name, *mesh)) {
             std::cerr << "Auto weight: CSR build failed for '" << mesh_name
                 << "'\n";
         }

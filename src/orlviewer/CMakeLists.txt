@@ -49,7 +49,7 @@ find_package(RapidJSON CONFIG REQUIRED)
 
 target_link_libraries(orl_viewer
     PRIVATE
-        vkkk
+        orl_rhi_selected
         orlexec
         orlrig
         orlgraph_io
