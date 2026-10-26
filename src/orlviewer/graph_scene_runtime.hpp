@@ -31,6 +31,10 @@ public:
     ComponentId weight_id,
     std::optional<orlgraph::GraphStage> stage = std::nullopt);
     ~GraphSceneRuntime();
+    GraphSceneRuntime(const GraphSceneRuntime&) = delete;
+    GraphSceneRuntime& operator=(const GraphSceneRuntime&) = delete;
+    GraphSceneRuntime(GraphSceneRuntime&& other) noexcept;
+    GraphSceneRuntime& operator=(GraphSceneRuntime&&) = delete;
 
     bool set_type(std::string_view name);
     void set_mesh(std::string name);
@@ -173,6 +177,7 @@ private:
     std::size_t reportedPlanRevision = 0;
     std::size_t reportedEvaluationRevision = 0;
     std::string fusion_diagnostic_;
+    bool owns_device_views_ = true;
 };
 
 } // namespace ORL

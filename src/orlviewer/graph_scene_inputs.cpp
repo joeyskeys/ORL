@@ -231,12 +231,12 @@ orlrig::HandleViewContext& SceneInputCatalog::handle_view_context()
     } else {
         handle_view_context_.joints = {
             const_cast<void*>(
-                static_cast<const OrlBuffer&>(joints_).data()),
+                static_cast<const exec::OrlBuffer&>(joints_).data()),
             joints_.count(), orlrig::kJointStride, true,
             joint_device_ptr, joint_device_bytes};
         handle_view_context_.locators = {
             const_cast<void*>(
-                static_cast<const OrlBuffer&>(locators_).data()),
+                static_cast<const exec::OrlBuffer&>(locators_).data()),
             locators_.count(), orlrig::kLocatorStride, true,
             locator_device_ptr, locator_device_bytes};
     }
@@ -723,12 +723,22 @@ void SceneInputCatalog::set_computed_joints_device(
 
 void SceneInputCatalog::clear_computed_joints_device()
 {
+    clear_computed_device_state();
+}
+
+void SceneInputCatalog::clear_computed_device_state()
+{
     computed_joints_device_.reset();
     computed_joints_device_count_ = 0;
-    computed_solver_context_device_.reset();
     handle_view_context_.joints.device_ptr = 0;
     handle_view_context_.joints.device_bytes = 0;
     packed_solver_inputs.device_host_joints_snapshot.clear();
+    computed_locators_device_.reset();
+    computed_locators_device_count_ = 0;
+    computed_solver_context_device_.reset();
+    handle_view_context_.locators.device_ptr = 0;
+    handle_view_context_.locators.device_bytes = 0;
+    packed_solver_inputs.device_host_locators_snapshot.clear();
 }
 
 void SceneInputCatalog::set_computed_locators_device(
@@ -754,12 +764,7 @@ void SceneInputCatalog::set_computed_locators_device(
 
 void SceneInputCatalog::clear_computed_locators_device()
 {
-    computed_locators_device_.reset();
-    computed_locators_device_count_ = 0;
-    computed_solver_context_device_.reset();
-    handle_view_context_.locators.device_ptr = 0;
-    handle_view_context_.locators.device_bytes = 0;
-    packed_solver_inputs.device_host_locators_snapshot.clear();
+    clear_computed_device_state();
 }
 
 void SceneInputCatalog::set_computed_solver_context_device(
@@ -905,7 +910,7 @@ bool SceneInputCatalog::commit_joints(
         joints_.count() != current_joints.size()
         || (!current_joints.empty()
             && std::memcmp(
-                static_cast<const OrlBuffer&>(joints_).data(),
+                static_cast<const exec::OrlBuffer&>(joints_).data(),
                 current_joints.data(),
                 current_joints.size() * orlrig::kJointStride) != 0);
     if (!host_buffer_was_edited
@@ -951,7 +956,7 @@ bool SceneInputCatalog::commit_joints(
             + packed_solver_inputs.locators_offset;
     } else {
         locator_source_bytes = static_cast<const std::byte*>(
-            static_cast<const OrlBuffer&>(locators_).data());
+            static_cast<const exec::OrlBuffer&>(locators_).data());
     }
     if (locator_source_bytes == nullptr && !locator_ids.empty()) {
         return set_error(error, "Packed locator buffer has no host data");

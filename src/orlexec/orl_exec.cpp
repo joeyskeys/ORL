@@ -1407,6 +1407,19 @@ struct OrlExecution::Impl {
         const bool has_published_handle_state =
             handle_view_context->joints.device_ptr != 0
             || handle_view_context->locators.device_ptr != 0;
+        const bool has_partial_published_handle_state =
+            (handle_view_context->joints.device_ptr != 0)
+            != (handle_view_context->locators.device_ptr != 0);
+        if (has_solver_context_parameter
+            && has_partial_published_handle_state
+            && handle_view_context->joints.count != 0
+            && handle_view_context->locators.count != 0)
+        {
+            errors.emplace_back(
+                "Published typed handle state is incomplete; "
+                "joint and locator arenas must be invalidated together");
+            return false;
+        }
         if (packed_storage.has_value()
             && has_solver_context_parameter
             && !has_published_handle_state) {

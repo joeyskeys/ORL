@@ -1101,6 +1101,22 @@ TEST_CASE("computed joints resolves the shared device buffer",
         locator_descriptor->port, locator_binding, &error));
     REQUIRE(locator_binding.buffer != nullptr);
     REQUIRE(locator_binding.device_ptr == 0);
+
+    // Joint and locator views are published from one fused device snapshot.
+    // Invalidating either arena must invalidate both before the next launch.
+    context.set_computed_joints_device(
+        ORL::exec::DeviceBufferView{
+            0x1234, orlrig::kJointStride},
+        1);
+    context.set_computed_locators_device(
+        ORL::exec::DeviceBufferView{
+            0x5678, orlrig::kLocatorStride},
+        1);
+    context.clear_computed_locators_device();
+    REQUIRE(context.scene_inputs().resolve(
+        descriptor->port, binding, &error));
+    REQUIRE(binding.buffer != nullptr);
+    REQUIRE(binding.device_ptr == 0);
 }
 
 TEST_CASE("CUDA scene inputs share one packed arena",

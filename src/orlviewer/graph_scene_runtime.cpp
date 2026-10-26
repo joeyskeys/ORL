@@ -389,11 +389,52 @@ GraphSceneRuntime::GraphSceneRuntime(SceneGraphContext& graph_context,
     register_runtime_adapters();
 }
 
+GraphSceneRuntime::GraphSceneRuntime(GraphSceneRuntime&& other) noexcept
+    : graph_context_(other.graph_context_)
+    , selection_(other.selection_)
+    , deformer_id(other.deformer_id)
+    , weight_id(other.weight_id)
+    , stage_(std::move(other.stage_))
+    , type_name(std::move(other.type_name))
+    , runner_(std::move(other.runner_))
+    , runtime_adapters_(std::move(other.runtime_adapters_))
+    , orl_segments_(std::move(other.orl_segments_))
+    , execution_plan_(std::move(other.execution_plan_))
+    , planned_graph_revision_(other.planned_graph_revision_)
+    , planned_scene_revision_(other.planned_scene_revision_)
+    , planned_graph_fingerprint_(other.planned_graph_fingerprint_)
+    , planned_evaluation_dependency_revision_(
+        other.planned_evaluation_dependency_revision_)
+    , planned_backend_(other.planned_backend_)
+    , observed_graph_edit_revision_(other.observed_graph_edit_revision_)
+    , observed_evaluation_revision_(other.observed_evaluation_revision_)
+    , execution_plan_ready_(other.execution_plan_ready_)
+    , graph_active_(other.graph_active_)
+    , evaluation_plan_(std::move(other.evaluation_plan_))
+    , active_change_set_(std::move(other.active_change_set_))
+    , active_dispatch_(std::move(other.active_dispatch_))
+    , active_dispatch_data_(std::move(other.active_dispatch_data_))
+    , logged_rest(other.logged_rest)
+    , logged_move(other.logged_move)
+    , logged_fused_execution(other.logged_fused_execution)
+    , reportedPlanError(std::move(other.reportedPlanError))
+    , reportedPlanRevision(other.reportedPlanRevision)
+    , reportedEvaluationRevision(other.reportedEvaluationRevision)
+    , fusion_diagnostic_(std::move(other.fusion_diagnostic_))
+    , owns_device_views_(true)
+{
+    // Device views are borrowed by SceneInputCatalog. The moved-to runtime
+    // keeps ownership of the segment allocations; the moved-from feature must
+    // not clear those views from its destructor.
+    other.owns_device_views_ = false;
+}
+
 GraphSceneRuntime::~GraphSceneRuntime()
 {
     // SceneInputCatalog stores borrowed device views. Clear them while this
     // solver runtime still owns the allocations in orl_segments_.
-    if (stage_.has_value()
+    if (owns_device_views_
+        && stage_.has_value()
         && *stage_ == orlgraph::GraphStage::Solver)
     {
         graph_context_.clear_computed_joints_device();

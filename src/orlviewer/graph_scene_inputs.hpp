@@ -69,7 +69,8 @@ public:
     bool resolve_binding(std::string_view binding,
         exec::GraphInputBinding& result, std::string* error = nullptr);
     // The view is borrowed from the solver execution. Its owner must keep the
-    // target allocation alive until the deformer has finished.
+    // target allocation alive until the deformer has finished. Clearing either
+    // typed view invalidates the complete fused device snapshot.
     void set_computed_joints_device(
         std::optional<exec::DeviceBufferView> view,
         std::size_t element_count);
@@ -172,6 +173,7 @@ private:
     bool prepare_packed_inputs();
     exec::PackedBufferView packed_view(
         std::size_t offset, std::size_t bytes);
+    void clear_computed_device_state();
     bool set_error(std::string* error, std::string message) const;
 
     struct PackedSolverInputs {
