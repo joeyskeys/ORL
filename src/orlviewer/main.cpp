@@ -336,7 +336,8 @@ int main(int argc, char** argv) {
         scene_graph, deformer_id, weight_id, selection);
     const auto joint_feature_handle = viewport.add_feature<ORL::JointFeature>(
         scene_graph, components);
-    viewport.add_feature<ORL::LocatorFeature>(components, selection);
+    viewport.add_feature<ORL::LocatorFeature>(
+        scene_graph, components, selection);
     viewport.add_feature<ORL::ControllerFeature>(components, selection);
     const auto axis_handle = viewport.add_feature<ORL::FrameAxisFeature>(
         make_frame_axis_setup(viewport_frame, font_path));

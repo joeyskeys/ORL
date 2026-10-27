@@ -200,6 +200,14 @@ struct JointState {
     std::uint32_t device_joint_count = 0;
 };
 
+struct LocatorState {
+    bool prepared = false;
+    bool ready = false;
+    bool device_ready = false;
+    std::optional<std::uint64_t> device_upload_serial;
+    std::uint32_t device_locator_count = 0;
+};
+
 } // namespace vkkk_detail
 
 struct VkkkAdapter::Impl {
@@ -224,8 +232,7 @@ struct VkkkAdapter::Impl {
     vkkk_detail::JointState joints;
     vkkk_detail::ControllerState controllers;
     std::array<vkkk_detail::PickLayerState, 3> pick_layers{};
-    bool locators_prepared = false;
-    bool locators_ready = false;
+    vkkk_detail::LocatorState locators;
     bool ortho_grid_prepared = false;
     bool ortho_grid_ready = false;
     bool overlay_lines_prepared = false;

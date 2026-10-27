@@ -46,7 +46,8 @@ public:
     Status prepare_controllers();
     Status draw_controller(const ShapeInstanceDraw& draw);
     Status prepare_locators();
-    Status draw_locators(std::string_view shape, std::span<const LocatorInstance> instances);
+    Status upload_device_locators(DeviceBuffer device, std::uint32_t count);
+    Status draw_locators(const LocatorDraw& draw);
     Status prepare_ortho_grid();
     Status draw_ortho_grid(const OrthoGridDraw& draw);
     Status prepare_overlay_lines();

@@ -48,7 +48,11 @@ Status MtAdapter::prepare_locators() {
     return unsupported("prepare_locators");
 }
 
-Status MtAdapter::draw_locators(std::string_view, std::span<const LocatorInstance>) {
+Status MtAdapter::upload_device_locators(DeviceBuffer, std::uint32_t) {
+    return unsupported("upload_device_locators");
+}
+
+Status MtAdapter::draw_locators(const LocatorDraw&) {
     return unsupported("draw_locators");
 }
 

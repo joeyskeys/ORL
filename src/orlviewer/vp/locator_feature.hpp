@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "component_manager.hpp"
+#include "../scene_graph_context.hpp"
 #include "selection.hpp"
 #include "vp/rhi_feature.hpp"
 #include "vp/rig_shapes.hpp"
@@ -13,8 +14,10 @@ namespace ORL
 
 class LocatorFeature final : public RhiFeature {
 public:
-    LocatorFeature(const ComponentManager& components, const Selection& selection)
-        : components(components)
+    LocatorFeature(SceneGraphContext& graph_context,
+        const ComponentManager& components, const Selection& selection)
+        : graph_context(graph_context)
+        , components(components)
         , selection(selection)
     {
     }
@@ -25,30 +28,38 @@ public:
     }
 
     void on_submit(ViewerAdapter& adapter, const Rhi::FrameState&) {
-        // LocatorFeature intentionally renders the host-authored component
-        // snapshot. Device-only solver locator state is published through
-        // SceneGraphContext for GPU graph consumers; copying it back here
-        // would reintroduce the readback that the fused solver avoids. A
-        // future external-buffer locator draw can consume that publication
-        // directly.
         locators.clear();
-        components.for_each([&](const Component& meta) {
-            if (meta.kind != ComponentKind::Locator) {
-                return;
-            }
-            const auto* locator = components.locator(meta.id);
-            if (locator == nullptr) {
-                return;
+        for (const auto id : components.packed_locator_ids()) {
+            const auto* meta = components.find(id);
+            const auto* locator = components.locator(id);
+            if (meta == nullptr || locator == nullptr) {
+                continue;
             }
             locators.push_back({
                 .model = to_rhi(locator->xform),
-                .color = is_selected(meta.id) ? selected_color : unselected_color,
+                .color = is_selected(meta->id) ? selected_color : unselected_color,
             });
-        });
+        }
         if (locators.empty()) {
             return;
         }
-        report(adapter.draw_locators(rig_shapes::kLocatorCross, locators));
+
+        bool gpu_locators = false;
+        const auto device_locators = graph_context.computed_locators_device();
+        if (device_locators.has_value()
+            && graph_context.computed_locators_device_count() != 0)
+        {
+            const auto count = static_cast<std::uint32_t>(
+                graph_context.computed_locators_device_count());
+            gpu_locators = static_cast<bool>(adapter.upload_device_locators(
+                {device_locators->device_ptr, device_locators->bytes}, count));
+        }
+
+        report(adapter.draw_locators({
+            .shape = rig_shapes::kLocatorCross,
+            .instances = locators,
+            .use_device_locators = gpu_locators,
+        }));
     }
 
 private:
@@ -69,6 +80,7 @@ private:
         return false;
     }
 
+    SceneGraphContext& graph_context;
     const ComponentManager& components;
     const Selection& selection;
     std::vector<Rhi::LocatorInstance> locators;

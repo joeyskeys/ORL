@@ -124,6 +124,14 @@ struct LocatorInstance {
     Vec4 color{0.95f, 0.78f, 0.28f, 1.0f};
 };
 
+// Device locators keep their model transform in the published ORL locator
+// buffer. The host record is still used for per-locator display color.
+struct LocatorDraw {
+    std::string_view shape;
+    std::span<const LocatorInstance> instances{};
+    bool use_device_locators = false;
+};
+
 // Screen-space grid for orthographic views, drawn without depth test before
 // the rest of the scene. Fields mirror the backend uniform block.
 struct OrthoGridDraw {
@@ -273,11 +281,13 @@ concept ControllerDisplayAdapter = requires(
 template <typename Adapter>
 concept LocatorDisplayAdapter = requires(
     Adapter& adapter,
-    std::string_view shape,
-    std::span<const LocatorInstance> instances)
+    DeviceBuffer device,
+    std::uint32_t count,
+    const LocatorDraw& draw)
 {
     { adapter.prepare_locators() } -> std::same_as<Status>;
-    { adapter.draw_locators(shape, instances) } -> std::same_as<Status>;
+    { adapter.upload_device_locators(device, count) } -> std::same_as<Status>;
+    { adapter.draw_locators(draw) } -> std::same_as<Status>;
 };
 
 template <typename Adapter>

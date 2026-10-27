@@ -106,7 +106,10 @@ constexpr const char* kOverlayLinePipeline = "orl_transform_guide";
 // --- Locators ---------------------------------------------------------------
 
 constexpr const char* kLocatorPipeline = "orl_locators";
+constexpr const char* kLocatorDevicePipeline = "orl_locators_device";
 constexpr const char* kLocatorsBlock = "Locators";
+constexpr const char* kLocatorTransformsBlock = "LocatorTransforms";
+constexpr std::size_t kDeviceLocatorStride = sizeof(double) * 16;
 
 // Matches the std430 Locators record in locator.vert.
 static_assert(sizeof(LocatorInstance) == sizeof(float) * 20);
@@ -601,57 +604,131 @@ Status VkkkAdapter::prepare_locators() {
         return status;
     }
     auto& context = *impl_->context;
-    PipelineDesc desc;
-    desc.name = kLocatorPipeline;
-    desc.vertex.path = impl_->shader_path("locator.vert");
-    desc.fragment.path = impl_->shader_path("line.frag");
-    desc.topology = vk::PrimitiveTopology::eLineList;
-    desc.depth_write = false;
-    impl_->locators_ready = vkkk_detail::create_pipeline(context, desc)
+    PipelineDesc host_desc;
+    host_desc.name = kLocatorPipeline;
+    host_desc.vertex.path = impl_->shader_path("locator.vert");
+    host_desc.fragment.path = impl_->shader_path("line.frag");
+    host_desc.topology = vk::PrimitiveTopology::eLineList;
+    host_desc.depth_write = false;
+    impl_->locators.ready = vkkk_detail::create_pipeline(context, host_desc)
         && context.resize_pipeline_ssbo(kLocatorPipeline, kLocatorsBlock, 1)
         && context.alloc_pipeline_ssbo(kLocatorPipeline, kLocatorsBlock);
-    impl_->locators_prepared = true;
-    if (!impl_->locators_ready) {
+    PipelineDesc device_desc;
+    device_desc.name = kLocatorDevicePipeline;
+    device_desc.vertex.path = impl_->shader_path("locator_device.vert");
+    device_desc.fragment.path = impl_->shader_path("line.frag");
+    device_desc.topology = vk::PrimitiveTopology::eLineList;
+    device_desc.depth_write = false;
+    impl_->locators.device_ready =
+        vkkk_detail::create_pipeline(context, device_desc)
+        && context.resize_pipeline_ssbo(
+            kLocatorDevicePipeline, kLocatorTransformsBlock, 1)
+        && context.alloc_pipeline_ssbo(
+            kLocatorDevicePipeline, kLocatorTransformsBlock)
+        && context.resize_pipeline_ssbo(
+            kLocatorDevicePipeline, kLocatorsBlock, 1)
+        && context.alloc_pipeline_ssbo(
+            kLocatorDevicePipeline, kLocatorsBlock);
+    impl_->locators.prepared = true;
+    if (!impl_->locators.ready || !impl_->locators.device_ready) {
         return Status::failure(StatusCode::resource_failure,
             "locator pipeline is unavailable");
     }
     return Status::success();
 }
 
-Status VkkkAdapter::draw_locators(std::string_view shape,
-    std::span<const LocatorInstance> instances)
+Status VkkkAdapter::upload_device_locators(
+    DeviceBuffer device, std::uint32_t count)
+{
+    if (auto status = impl_->require_frame("upload_device_locators"); !status) {
+        return status;
+    }
+    auto& state = impl_->locators;
+    if (!state.prepared || !state.device_ready) {
+        return Status::failure(StatusCode::not_initialized,
+            "upload_device_locators requires prepare_locators");
+    }
+    state.device_upload_serial.reset();
+    state.device_locator_count = 0;
+    const auto bytes = static_cast<vk::DeviceSize>(count)
+        * static_cast<vk::DeviceSize>(kDeviceLocatorStride);
+    if (count == 0 || device.device_ptr == 0
+        || device.bytes < static_cast<std::size_t>(bytes))
+    {
+        return Status::failure(StatusCode::invalid_argument,
+            "device locators are empty or smaller than the requested count");
+    }
+    auto& context = *impl_->context;
+    const auto image_index = impl_->active_frame->image_index;
+    if (!context.resize_pipeline_ssbo(
+            kLocatorDevicePipeline, kLocatorTransformsBlock, count)
+        || !context.write_pipeline_ssbo_from_cuda(
+            kLocatorDevicePipeline, kLocatorTransformsBlock,
+            image_index, device.device_ptr, bytes))
+    {
+        return Status::failure(StatusCode::resource_failure,
+            "vkkk could not copy device locators into the locator buffers");
+    }
+    state.device_upload_serial = impl_->active_frame->serial;
+    state.device_locator_count = count;
+    return Status::success();
+}
+
+Status VkkkAdapter::draw_locators(const LocatorDraw& draw)
 {
     if (auto status = impl_->require_frame("draw_locators"); !status) {
         return status;
     }
-    if (!impl_->locators_prepared) {
+    if (!impl_->locators.prepared) {
         return Status::failure(StatusCode::not_initialized,
             "draw_locators requires prepare_locators");
     }
-    const std::string key{shape};
+    const std::string key{draw.shape};
     const auto found = impl_->shapes.find(key);
     if (found == impl_->shapes.end() || found->second != ShapeKind::lines) {
         return Status::failure(StatusCode::invalid_argument,
             "draw_locators: '" + key + "' is not a registered line shape");
     }
-    if (!impl_->locators_ready || instances.empty()) {
+    const bool device = draw.use_device_locators;
+    if (device && (!impl_->locators.device_ready
+            || impl_->locators.device_upload_serial
+                != impl_->active_frame->serial))
+    {
+        return Status::failure(StatusCode::invalid_argument,
+            "draw_locators uses device locators that were not uploaded "
+            "this frame");
+    }
+    if ((!device && !impl_->locators.ready) || draw.instances.empty()) {
         return Status::success();
     }
+    std::uint32_t count = static_cast<std::uint32_t>(draw.instances.size());
+    if (device) {
+        count = std::min(count, impl_->locators.device_locator_count);
+    }
+    if (count == 0) {
+        return Status::success();
+    }
+    const auto pipeline = device
+        ? kLocatorDevicePipeline : kLocatorPipeline;
+    auto records = std::vector<LocatorInstance>(
+        draw.instances.begin(),
+        draw.instances.begin() + static_cast<std::ptrdiff_t>(count));
 
     impl_->queue(Pass::scene,
-        [impl = impl_.get(), shape = key,
-            records = std::vector<LocatorInstance>(instances.begin(), instances.end())](
+        [impl = impl_.get(), pipeline, shape = key,
+            count, records = std::move(records)](
             vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
             auto& context = *impl->context;
-            if (!context.resize_pipeline_ssbo(kLocatorPipeline, kLocatorsBlock, records.size())) {
+            if (!context.resize_pipeline_ssbo(
+                    pipeline, kLocatorsBlock, records.size())) {
                 return;
             }
-            context.sync_ubo(kLocatorPipeline, vkkk::buf::CameraUBO,
+            context.sync_ubo(pipeline, vkkk::buf::CameraUBO,
                 &impl->camera_ubo, image_index);
-            context.sync_ssbo(kLocatorPipeline, kLocatorsBlock, records.data(), image_index,
+            context.sync_ssbo(pipeline, kLocatorsBlock, records.data(), image_index,
                 static_cast<std::uint32_t>(records.size() * sizeof(LocatorInstance)));
-            if (context.bind(*cmd, kLocatorPipeline, image_index)) {
-                context.draw_lines(*cmd, shape, 0, static_cast<std::uint32_t>(records.size()));
+            if (context.bind(*cmd, pipeline, image_index)) {
+                context.draw_lines(*cmd, shape, 0, count);
             }
         });
     return Status::success();
