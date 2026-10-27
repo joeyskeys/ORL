@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -182,8 +183,8 @@ public:
 
     const std::vector<ControlBinding>& bindings() const { return bindings_; }
 
-    // Dispatch hold-style key bindings, and Qt edge events when that backend
-    // is compiled in. Call once per frame after WindowBackend::poll_events.
+    // Dispatch hold-style key bindings and backend input events. Call once
+    // per frame after WindowBackend::poll_events.
     void poll();
     void dispatch_event(const InputEvent& event);
 
@@ -219,15 +220,19 @@ private:
     void poll_holds();
 
 #if ORL_USE_QT6
-    static constexpr std::size_t kKeyCount =
+    static constexpr std::size_t kQtKeyCount =
         static_cast<std::size_t>(vkkk::Key::NumpadSubtract) + 1;
 
-    void poll_qt_events();
-    void snapshot_qt_state();
+    class QtEventFilter;
 
-    std::array<bool, kKeyCount> prev_keys_{};
+    void dispatch_qt_key(
+        vkkk::Key key, vkkk::InputAction action, std::uint32_t mods);
+    void reset_qt_key_state();
+    void poll_qt_events();
+    QtEventFilter* qt_event_filter_ = nullptr;
+
+    std::array<bool, kQtKeyCount> qt_keys_down_{};
     bool prev_mouse_[3] = {};
-    bool qt_synced_ = false;
 #else
     static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
     static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);

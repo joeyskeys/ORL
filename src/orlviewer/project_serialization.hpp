@@ -38,7 +38,6 @@ struct NodeGraphLayout {
 
 struct ProjectIoResult {
     bool ok = false;
-    bool evaluate_orl = true;
     std::vector<std::string> errors;
     std::vector<std::string> warnings;
     NodeGraphLayout node_graph_layout;
@@ -50,7 +49,6 @@ ProjectIoResult save_project_json(
     const ComponentManager& components,
     ComponentId weight_id,
     ComponentId deformer_id,
-    bool evaluate_orl,
     const NodeGraphLayout* node_graph_layout = nullptr);
 
 ProjectIoResult load_project_json(

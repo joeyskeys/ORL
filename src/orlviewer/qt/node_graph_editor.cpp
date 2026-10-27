@@ -19,6 +19,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
+#include <QScopedValueRollback>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QStringList>
@@ -191,6 +192,24 @@ void NodeGraphEditor::set_project_context(ComponentManager* components,
     project_deformer_id = deformer_id;
 }
 
+void NodeGraphEditor::set_evaluation_ui_state(
+    GraphEvaluationUiState state)
+{
+    if (evaluation_ui_state_ == state) {
+        return;
+    }
+    evaluation_ui_state_ = state;
+    if (state != GraphEvaluationUiState::Editing) {
+        pending_connection_ = {};
+        dragging_node_ = -1;
+        draggingFrame = -1;
+        panning_ = false;
+        boxSelecting = false;
+    }
+    setEnabled(state == GraphEvaluationUiState::Editing);
+    update();
+}
+
 bool NodeGraphEditor::load_project_file()
 {
     if (scene_graph_context_ == nullptr || project_components == nullptr) {
@@ -198,6 +217,11 @@ bool NodeGraphEditor::load_project_file()
             QStringLiteral("The node graph is not attached to a project."));
         return false;
     }
+    if (project_file_dialog_active_) {
+        return false;
+    }
+    QScopedValueRollback<bool> project_dialog_guard(
+        project_file_dialog_active_, true);
 
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open ORL Project"),
@@ -208,7 +232,9 @@ bool NodeGraphEditor::load_project_file()
     }
 
     const bool was_enabled = runtime_config.evaluate_orl;
+    const OrlEvaluationPhase was_phase = runtime_config.evaluation_phase;
     runtime_config.evaluate_orl = false;
+    runtime_config.evaluation_phase = OrlEvaluationPhase::Disabled;
     scene_graph_context_->scene_inputs().set_cuda_evaluation(false);
     scene_graph_context_->clear_computed_joints_device();
     if (project_selection != nullptr) {
@@ -219,6 +245,7 @@ bool NodeGraphEditor::load_project_file()
         project_weight_id, project_deformer_id);
     if (!loaded.ok) {
         runtime_config.evaluate_orl = was_enabled;
+        runtime_config.evaluation_phase = was_phase;
         QString message = QStringLiteral("Unable to open ORL project.");
         if (!loaded.errors.empty()) {
             message += QStringLiteral("\n")
@@ -240,13 +267,10 @@ bool NodeGraphEditor::load_project_file()
     apply_stage_view();
     rebuild_view();
 
-    runtime_config.evaluate_orl = loaded.evaluate_orl;
+    runtime_config.evaluate_orl = false;
+    runtime_config.evaluation_phase = OrlEvaluationPhase::Disabled;
     if (project_selection != nullptr) {
-        project_selection->set_controller_input_mode(
-            runtime_config.evaluate_orl);
-    }
-    if (runtime_config.evaluate_orl) {
-        scene_graph_context_->request_evaluation();
+        project_selection->set_controller_input_mode(false);
     }
     if (!loaded.warnings.empty()) {
         QString message = QStringLiteral(
@@ -332,6 +356,11 @@ StaticValueSetResult NodeGraphEditor::set_selected_static_value(
     const orlgraph::ConstantValue& value)
 {
     StaticValueSetResult result;
+    if (evaluation_ui_state_ != GraphEvaluationUiState::Editing) {
+        result.error = QStringLiteral(
+            "Graph editing is disabled while ORL evaluation is active.");
+        return result;
+    }
     if (selected_node_ < 0 || selected_node_ >= nodes_.size()) {
         result.error = QStringLiteral("No node is selected.");
         return result;
@@ -391,6 +420,11 @@ StaticValueSetResult
 NodeGraphEditor::apply_relative_xform_to_selected_matrix()
 {
     StaticValueSetResult result;
+    if (evaluation_ui_state_ != GraphEvaluationUiState::Editing) {
+        result.error = QStringLiteral(
+            "Graph editing is disabled while ORL evaluation is active.");
+        return result;
+    }
     if (project_selection == nullptr) {
         result.error = QStringLiteral("No scene selection is available.");
         return result;
@@ -1077,6 +1111,12 @@ void NodeGraphEditor::rebuild_view()
 
 bool NodeGraphEditor::save_project_file(bool save_as)
 {
+    if (project_file_dialog_active_) {
+        return false;
+    }
+    QScopedValueRollback<bool> project_dialog_guard(
+        project_file_dialog_active_, true);
+
     QString path;
     if (!save_as && graph_file_path_.has_value()) {
         path = *graph_file_path_;
@@ -1103,7 +1143,7 @@ bool NodeGraphEditor::save_project_file(bool save_as)
         const NodeGraphLayout layout = export_node_graph_layout();
         saved = save_project_json(path.toStdString(), *scene_graph_context_,
             *project_components, project_weight_id, project_deformer_id,
-            runtime_config.evaluate_orl, &layout);
+            &layout);
     } else {
         std::vector<orlgraph::Diagnostic> diagnostics;
         if (scene_graph_context_ != nullptr) {
@@ -2632,6 +2672,22 @@ void NodeGraphEditor::paintEvent(QPaintEvent*)
         stage_ == orlgraph::GraphStage::Solver
             ? QStringLiteral("Stage: Solver")
             : QStringLiteral("Stage: Deformer"));
+
+    if (evaluation_ui_state_ != GraphEvaluationUiState::Editing) {
+        painter.fillRect(rect(), QColor{230, 230, 230, 150});
+        painter.setPen(QColor{QStringLiteral("#3d3d3d")});
+        QFont state_font = painter.font();
+        state_font.setBold(true);
+        state_font.setPointSizeF(
+            std::max(12.0, state_font.pointSizeF() + 4.0));
+        painter.setFont(state_font);
+        painter.drawText(
+            rect(),
+            Qt::AlignCenter,
+            evaluation_ui_state_ == GraphEvaluationUiState::Compiling
+                ? QStringLiteral("compiling")
+                : QStringLiteral("evaluating"));
+    }
 }
 
 void NodeGraphEditor::mousePressEvent(QMouseEvent* event)

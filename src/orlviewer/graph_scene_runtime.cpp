@@ -536,6 +536,10 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
     const bool solver_stage = stage_.has_value()
         && *stage_ == orlgraph::GraphStage::Solver;
     if (!runtime_config.evaluate_orl) {
+        if (solver_stage) {
+            runtime_config.evaluation_phase =
+                OrlEvaluationPhase::Disabled;
+        }
         graph_context_.scene_inputs().set_cuda_evaluation(false);
         if (solver_stage) {
             graph_context_.clear_computed_joints_device();
@@ -550,6 +554,8 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
             report_compile_error("Solver: " + hierarchy_error);
             graph_context_.clear_computed_joints_device();
             graph_context_.clear_computed_locators_device();
+            runtime_config.evaluate_orl = false;
+            runtime_config.evaluation_phase = OrlEvaluationPhase::Disabled;
             return;
         }
     }
@@ -575,6 +581,10 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
     }
 
     if (solver_stage) {
+        if (graph_invalidated || !execution_plan_ready_) {
+            runtime_config.evaluation_phase =
+                OrlEvaluationPhase::Compiling;
+        }
         // Keep the previous computed-joints device view alive when a partial
         // frame has no dirty solver region. A solver execution replaces this
         // view when it actually dispatches.
@@ -586,6 +596,8 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
             graph_context_.clear_computed_joints_device();
             graph_context_.clear_computed_locators_device();
             graph_active_ = false;
+            runtime_config.evaluation_phase =
+                OrlEvaluationPhase::Evaluating;
             return;
         }
         std::string input_error;
@@ -594,13 +606,23 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
         {
             std::cerr << "Solver: controller input application failed: "
                       << input_error << '\n';
+            runtime_config.evaluate_orl = false;
+            runtime_config.evaluation_phase = OrlEvaluationPhase::Disabled;
             graph_active_ = false;
             return;
         }
-        if (graph_active_ && !dispatch_graph(context, false)) {
-            graph_context_.clear_computed_joints_device();
-            graph_context_.clear_computed_locators_device();
-            graph_active_ = false;
+        if (graph_active_) {
+            if (!dispatch_graph(context, false)) {
+                graph_context_.clear_computed_joints_device();
+                graph_context_.clear_computed_locators_device();
+                graph_active_ = false;
+                runtime_config.evaluate_orl = false;
+                runtime_config.evaluation_phase =
+                    OrlEvaluationPhase::Disabled;
+            } else {
+                runtime_config.evaluation_phase =
+                    OrlEvaluationPhase::Evaluating;
+            }
         }
         return;
     }

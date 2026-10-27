@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -12,6 +13,10 @@
 #include <rapidjson/error/en.h>
 
 #if ORL_USE_QT6
+#include <QApplication>
+#include <QCoreApplication>
+#include <QEvent>
+#include <QKeyEvent>
 #include "gui/qt_backend.hpp"
 #endif
 
@@ -207,7 +212,147 @@ BindingScope parse_binding_scope(
     return BindingScope::Panel;
 }
 
+#if ORL_USE_QT6
+std::optional<vkkk::Key> key_from_qt(
+    int key, Qt::KeyboardModifiers modifiers)
+{
+    const bool keypad = modifiers.testFlag(Qt::KeypadModifier);
+    if (keypad) {
+        switch (key) {
+        case Qt::Key_Insert: return vkkk::Key::Numpad0;
+        case Qt::Key_End: return vkkk::Key::Numpad1;
+        case Qt::Key_Down: return vkkk::Key::Numpad2;
+        case Qt::Key_PageDown: return vkkk::Key::Numpad3;
+        case Qt::Key_Left: return vkkk::Key::Numpad4;
+        case Qt::Key_Clear: return vkkk::Key::Numpad5;
+        case Qt::Key_Right: return vkkk::Key::Numpad6;
+        case Qt::Key_Home: return vkkk::Key::Numpad7;
+        case Qt::Key_Up: return vkkk::Key::Numpad8;
+        case Qt::Key_PageUp: return vkkk::Key::Numpad9;
+        default: break;
+        }
+    }
+    if (key >= Qt::Key_A && key <= Qt::Key_Z) {
+        return static_cast<vkkk::Key>(
+            static_cast<int>(vkkk::Key::A) + key - Qt::Key_A);
+    }
+    if (key >= Qt::Key_0 && key <= Qt::Key_9) {
+        const auto base = keypad
+            ? static_cast<int>(vkkk::Key::Numpad0)
+            : static_cast<int>(vkkk::Key::Digit0);
+        return static_cast<vkkk::Key>(base + key - Qt::Key_0);
+    }
+    if (key >= Qt::Key_F1 && key <= Qt::Key_F12) {
+        return static_cast<vkkk::Key>(
+            static_cast<int>(vkkk::Key::F1) + key - Qt::Key_F1);
+    }
+    switch (key) {
+    case Qt::Key_Space: return vkkk::Key::Space;
+    case Qt::Key_Escape: return vkkk::Key::Escape;
+    case Qt::Key_Return: return vkkk::Key::Enter;
+    case Qt::Key_Enter: return vkkk::Key::NumpadEnter;
+    case Qt::Key_Tab: return vkkk::Key::Tab;
+    case Qt::Key_Backspace: return vkkk::Key::Backspace;
+    case Qt::Key_Insert: return vkkk::Key::Insert;
+    case Qt::Key_Delete: return vkkk::Key::Delete;
+    case Qt::Key_Right: return vkkk::Key::Right;
+    case Qt::Key_Left: return vkkk::Key::Left;
+    case Qt::Key_Down: return vkkk::Key::Down;
+    case Qt::Key_Up: return vkkk::Key::Up;
+    case Qt::Key_PageUp: return vkkk::Key::PageUp;
+    case Qt::Key_PageDown: return vkkk::Key::PageDown;
+    case Qt::Key_Home: return vkkk::Key::Home;
+    case Qt::Key_End: return vkkk::Key::End;
+    case Qt::Key_CapsLock: return vkkk::Key::CapsLock;
+    case Qt::Key_Shift: return vkkk::Key::LeftShift;
+    case Qt::Key_Control: return vkkk::Key::LeftCtrl;
+    case Qt::Key_Alt: return vkkk::Key::LeftAlt;
+    case Qt::Key_Meta: return vkkk::Key::LeftSuper;
+    case Qt::Key_Minus: return vkkk::Key::Minus;
+    case Qt::Key_Equal: return vkkk::Key::Equal;
+    case Qt::Key_Comma: return vkkk::Key::Comma;
+    case Qt::Key_Period: return vkkk::Key::Period;
+    case Qt::Key_Slash: return vkkk::Key::Slash;
+    case Qt::Key_Semicolon: return vkkk::Key::Semicolon;
+    case Qt::Key_Apostrophe: return vkkk::Key::Apostrophe;
+    case Qt::Key_QuoteLeft: return vkkk::Key::Grave;
+    case Qt::Key_BracketLeft: return vkkk::Key::LeftBracket;
+    case Qt::Key_BracketRight: return vkkk::Key::RightBracket;
+    case Qt::Key_Backslash: return vkkk::Key::Backslash;
+    case Qt::Key_Plus: return vkkk::Key::NumpadAdd;
+    default: return std::nullopt;
+    }
+}
+
+std::uint32_t mods_from_qt(Qt::KeyboardModifiers modifiers) {
+    std::uint32_t result = vkkk::input_mod::none;
+    if (modifiers.testFlag(Qt::ShiftModifier)) {
+        result |= vkkk::input_mod::shift;
+    }
+    if (modifiers.testFlag(Qt::ControlModifier)) {
+        result |= vkkk::input_mod::ctrl;
+    }
+    if (modifiers.testFlag(Qt::AltModifier)) {
+        result |= vkkk::input_mod::alt;
+    }
+    if (modifiers.testFlag(Qt::MetaModifier)) {
+        result |= vkkk::input_mod::super;
+    }
+    return result;
+}
+#endif
+
 } // namespace
+
+#if ORL_USE_QT6
+class ControlMap::QtEventFilter final : public QObject {
+public:
+    explicit QtEventFilter(ControlMap* owner)
+        : owner_(owner)
+    {
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (owner_ == nullptr) {
+            return QObject::eventFilter(watched, event);
+        }
+        if (event->type() == QEvent::ApplicationDeactivate
+            || event->type() == QEvent::WindowDeactivate)
+        {
+            owner_->reset_qt_key_state();
+            return QObject::eventFilter(watched, event);
+        }
+        if (event->type() != QEvent::KeyPress
+            && event->type() != QEvent::KeyRelease)
+        {
+            return QObject::eventFilter(watched, event);
+        }
+        if (QApplication::activeModalWidget() != nullptr) {
+            return QObject::eventFilter(watched, event);
+        }
+        const auto* key_event = static_cast<QKeyEvent*>(event);
+        if (key_event->isAutoRepeat()) {
+            return QObject::eventFilter(watched, event);
+        }
+        const auto key = key_from_qt(
+            key_event->key(), key_event->modifiers());
+        if (!key.has_value()) {
+            return QObject::eventFilter(watched, event);
+        }
+        owner_->dispatch_qt_key(
+            *key,
+            event->type() == QEvent::KeyPress
+                ? vkkk::InputAction::Press
+                : vkkk::InputAction::Release,
+            mods_from_qt(key_event->modifiers()));
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    ControlMap* owner_ = nullptr;
+};
+#endif
 
 int ControlMap::parse_key(std::string_view name) {
     if (name.empty()) {
@@ -319,8 +464,10 @@ void ControlMap::attach(vkkk::WindowBackend& backend) {
     sync_cursor();
 
 #if ORL_USE_QT6
-    qt_synced_ = false;
-    snapshot_qt_state();
+    if (auto* application = QCoreApplication::instance()) {
+        qt_event_filter_ = new QtEventFilter(this);
+        application->installEventFilter(qt_event_filter_);
+    }
 #else
     auto* glfw = dynamic_cast<vkkk::GlfwBackend*>(backend_);
     if (glfw == nullptr) {
@@ -340,8 +487,14 @@ void ControlMap::attach(vkkk::WindowBackend& backend) {
 
 void ControlMap::detach() {
 #if ORL_USE_QT6
-    qt_synced_ = false;
-    prev_keys_.fill(false);
+    if (qt_event_filter_ != nullptr) {
+        if (auto* application = QCoreApplication::instance()) {
+            application->removeEventFilter(qt_event_filter_);
+        }
+        delete qt_event_filter_;
+        qt_event_filter_ = nullptr;
+    }
+    qt_keys_down_.fill(false);
     prev_mouse_[0] = prev_mouse_[1] = prev_mouse_[2] = false;
 #else
     if (glfw_window_ != nullptr) {
@@ -574,47 +727,43 @@ void ControlMap::poll_holds() {
 
 #if ORL_USE_QT6
 
-bool qt_key_active(vkkk::WindowBackend& backend, vkkk::Key key) {
-    switch (key) {
-    case vkkk::Key::RightShift:
-    case vkkk::Key::RightCtrl:
-    case vkkk::Key::RightAlt:
-    case vkkk::Key::RightSuper:
-        return false;
-    default:
-        break;
-    }
-    if (!backend.key_down(key)) {
-        return false;
-    }
-    return true;
-}
-
-void ControlMap::snapshot_qt_state() {
-    if (backend_ == nullptr) {
+void ControlMap::dispatch_qt_key(
+    vkkk::Key key, vkkk::InputAction action, std::uint32_t mods)
+{
+    const auto index = static_cast<std::size_t>(key);
+    if (index >= qt_keys_down_.size()) {
         return;
     }
-    for (std::size_t i = 1; i < kKeyCount; ++i) {
-        prev_keys_[i] = qt_key_active(*backend_, static_cast<vkkk::Key>(i));
-    }
-    buttons_down_ = 0;
-    for (int i = 0; i < 3; ++i) {
-        const auto button = static_cast<vkkk::MouseButton>(i);
-        prev_mouse_[i] = backend_->mouse_down(button);
-        if (prev_mouse_[i]) {
-            buttons_down_ |= (1u << i);
+    if (action == vkkk::InputAction::Press) {
+        if (qt_keys_down_[index]) {
+            return;
         }
+        qt_keys_down_[index] = true;
     }
-    sync_cursor();
-    qt_synced_ = true;
+    else if (action == vkkk::InputAction::Release) {
+        if (!qt_keys_down_[index]) {
+            return;
+        }
+        qt_keys_down_[index] = false;
+    }
+
+    InputEvent event;
+    event.kind = InputEvent::Kind::Key;
+    event.key = key;
+    event.action = action;
+    event.mods = mods;
+    event.x = cursor_x_;
+    event.y = cursor_y_;
+    dispatch(event);
+}
+
+void ControlMap::reset_qt_key_state()
+{
+    qt_keys_down_.fill(false);
 }
 
 void ControlMap::poll_qt_events() {
     if (backend_ == nullptr) {
-        return;
-    }
-    if (!qt_synced_) {
-        snapshot_qt_state();
         return;
     }
 
@@ -669,23 +818,6 @@ void ControlMap::poll_qt_events() {
                 dispatch(event);
             }
         }
-    }
-
-    for (std::size_t i = 1; i < kKeyCount; ++i) {
-        const auto key = static_cast<vkkk::Key>(i);
-        const bool down = qt_key_active(*backend_, key);
-        if (down == prev_keys_[i]) {
-            continue;
-        }
-        prev_keys_[i] = down;
-        InputEvent event;
-        event.kind = InputEvent::Kind::Key;
-        event.key = key;
-        event.action = down ? vkkk::InputAction::Press : vkkk::InputAction::Release;
-        event.mods = mods;
-        event.x = cursor_x_;
-        event.y = cursor_y_;
-        dispatch(event);
     }
 
     if (auto* qt = dynamic_cast<vkkk::QtBackend*>(backend_)) {

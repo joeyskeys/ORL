@@ -8,11 +8,18 @@ enum class ComputeDevice {
     Gpu,
 };
 
+enum class OrlEvaluationPhase {
+    Disabled,
+    Compiling,
+    Evaluating,
+};
+
 // Process-wide runtime switches. The compute target is selected at startup;
 // ORL evaluation can be toggled live while authoring the rig.
 struct RuntimeConfig {
     ComputeDevice device = ComputeDevice::Gpu;
-    bool evaluate_orl = true;
+    bool evaluate_orl = false;
+    OrlEvaluationPhase evaluation_phase = OrlEvaluationPhase::Disabled;
 };
 
 inline RuntimeConfig runtime_config;

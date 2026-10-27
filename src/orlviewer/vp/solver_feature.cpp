@@ -43,6 +43,8 @@ void SolverFeature::on_update(
     vkkk::Context& context, const vkkk::Context::Frame&)
 {
     if (!runtime_config.evaluate_orl) {
+        runtime_config.evaluation_phase =
+            OrlEvaluationPhase::Disabled;
         graph_context.scene_inputs().set_cuda_evaluation(false);
         graph_context.clear_computed_joints_device();
         return;
@@ -57,6 +59,9 @@ void SolverFeature::on_update(
     std::string hierarchy_error;
     if (!graph_context.ensure_hierarchy_plan(&hierarchy_error)) {
         std::cerr << "Solver: " << hierarchy_error << '\n';
+        runtime_config.evaluate_orl = false;
+        runtime_config.evaluation_phase =
+            OrlEvaluationPhase::Disabled;
         return;
     }
     if (const auto status = runner.set_hierarchy_plan(
@@ -64,6 +69,9 @@ void SolverFeature::on_update(
         !status)
     {
         print_runner_errors(status.errors);
+        runtime_config.evaluate_orl = false;
+        runtime_config.evaluation_phase =
+            OrlEvaluationPhase::Disabled;
         return;
     }
     graph_context.clear_computed_joints_device();
@@ -72,9 +80,14 @@ void SolverFeature::on_update(
     if (!components.apply_controller_inputs(&input_error)) {
         std::cerr << "Solver: controller input application failed: "
                   << input_error << '\n';
+        runtime_config.evaluate_orl = false;
+        runtime_config.evaluation_phase =
+            OrlEvaluationPhase::Disabled;
         return;
     }
     if (components.size(ComponentKind::Constraint) == 0) {
+        runtime_config.evaluation_phase =
+            OrlEvaluationPhase::Evaluating;
         return;
     }
 
@@ -93,6 +106,8 @@ void SolverFeature::on_update(
         }
         evaluate_two_bone(*constraint);
     }
+    runtime_config.evaluation_phase =
+        OrlEvaluationPhase::Evaluating;
 }
 
 bool SolverFeature::evaluate_two_bone(ConstraintData& constraint) {

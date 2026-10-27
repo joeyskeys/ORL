@@ -52,6 +52,12 @@ struct StaticValueSetResult {
     QString error;
 };
 
+enum class GraphEvaluationUiState {
+    Editing,
+    Compiling,
+    Evaluating,
+};
+
 // Draft Blender-style node canvas. When attached to a SceneGraphContext it
 // edits that context's active graph directly.
 class NodeGraphEditor final : public QWidget {
@@ -65,6 +71,10 @@ public:
     void set_scene_graph_context(SceneGraphContext* context);
     void set_project_context(ComponentManager* components,
         ComponentId weight_id, ComponentId deformer_id);
+    void set_evaluation_ui_state(GraphEvaluationUiState state);
+    bool graph_editing_enabled() const {
+        return evaluation_ui_state_ == GraphEvaluationUiState::Editing;
+    }
     void set_selection(Selection* selection) { project_selection = selection; }
     bool load_project_file();
     bool save_project_file(bool save_as);
@@ -282,6 +292,9 @@ private:
     StageLayout deformer_layout_;
     std::optional<node_graph::NodeClipboard> nodeClipboard;
     int pasteSerial = 0;
+    bool project_file_dialog_active_ = false;
+    GraphEvaluationUiState evaluation_ui_state_ =
+        GraphEvaluationUiState::Editing;
 };
 
 } // namespace ORL

@@ -455,6 +455,26 @@ int main(int argc, char** argv) {
             }
         });
 #if ORL_USE_QT6
+    const auto sync_graph_editor_evaluation_state =
+        [node_graph_editor] {
+        if (node_graph_editor == nullptr) {
+            return;
+        }
+        ORL::GraphEvaluationUiState state =
+            ORL::GraphEvaluationUiState::Editing;
+        switch (ORL::runtime_config.evaluation_phase) {
+        case ORL::OrlEvaluationPhase::Disabled:
+            state = ORL::GraphEvaluationUiState::Editing;
+            break;
+        case ORL::OrlEvaluationPhase::Compiling:
+            state = ORL::GraphEvaluationUiState::Compiling;
+            break;
+        case ORL::OrlEvaluationPhase::Evaluating:
+            state = ORL::GraphEvaluationUiState::Evaluating;
+            break;
+        }
+        node_graph_editor->set_evaluation_ui_state(state);
+    };
     controls.bind_op_variant("graph_stage_solver",
         [node_graph_editor, panel_has_focus](const ORL::InputEvent& event) {
             return node_graph_editor != nullptr
@@ -627,6 +647,10 @@ int main(int argc, char** argv) {
     controls.bind_edit_op("create_ik", create_ik);
     controls.bind_op("toggle_orl_evaluation", [&](const ORL::InputEvent&) {
         ORL::runtime_config.evaluate_orl = !ORL::runtime_config.evaluate_orl;
+        ORL::runtime_config.evaluation_phase =
+            ORL::runtime_config.evaluate_orl
+            ? ORL::OrlEvaluationPhase::Compiling
+            : ORL::OrlEvaluationPhase::Disabled;
         selection.set_controller_input_mode(ORL::runtime_config.evaluate_orl);
         if (ORL::runtime_config.evaluate_orl) {
             scene_graph.request_evaluation();
@@ -636,6 +660,15 @@ int main(int argc, char** argv) {
         std::cout << "ORL evaluation: "
                   << (ORL::runtime_config.evaluate_orl ? "enabled" : "disabled")
                   << '\n';
+#if ORL_USE_QT6
+        sync_graph_editor_evaluation_state();
+        if (ORL::runtime_config.evaluation_phase
+                == ORL::OrlEvaluationPhase::Compiling
+            && node_graph_editor != nullptr)
+        {
+            node_graph_editor->repaint();
+        }
+#endif
     });
     controls.bind_op("select", select_op);
     // Transform edits are continuous pose/input edits. Keep the solver
@@ -723,6 +756,9 @@ int main(int argc, char** argv) {
         }
 
         viewport.update(frame);
+#if ORL_USE_QT6
+        sync_graph_editor_evaluation_state();
+#endif
         if (const auto status = viewport.end_frame(frame); !status) {
             std::cerr << "Viewer frame could not be submitted: " << status.message << '\n';
             exit_code = 1;

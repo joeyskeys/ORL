@@ -1339,7 +1339,6 @@ ProjectIoResult save_project_json(
     const ComponentManager& components,
     ComponentId weight_id,
     ComponentId deformer_id,
-    bool evaluate_orl,
     const NodeGraphLayout* node_graph_layout)
 {
     graph_context.ensure_stage_graphs();
@@ -1370,10 +1369,6 @@ ProjectIoResult save_project_json(
         Json{kProjectFormatVersion}, allocator);
     add(document, "header", std::move(header), allocator);
 
-    Json evaluation(rapidjson::kObjectType);
-    add(evaluation, "evaluate_orl", Json{evaluate_orl}, allocator);
-    add(document, "evaluation", std::move(evaluation), allocator);
-
     Json graph(rapidjson::kObjectType);
     graph.CopyFrom(graph_document, allocator);
     add(document, "graph", std::move(graph), allocator);
@@ -1396,7 +1391,6 @@ ProjectIoResult save_project_json(
 
     ProjectIoResult result;
     result.ok = true;
-    result.evaluate_orl = evaluate_orl;
     return result;
 }
 
@@ -1440,12 +1434,6 @@ ProjectIoResult load_project_json(
         return result;
     }
 
-    if (const auto* evaluation = member<void>(
-            document, "evaluation", result.errors, false))
-    {
-        read_bool(*evaluation, "evaluate_orl", result.evaluate_orl,
-            result.errors, false);
-    }
     read_editor_layout(document, result.node_graph_layout);
 
     const auto* graph = member<void>(document, "graph", result.errors);

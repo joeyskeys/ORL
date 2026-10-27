@@ -362,6 +362,9 @@ void PropertyEditor::refresh_static_value_editor(
     const std::optional<orlgraph::ConstantValue>& value,
     const QString& node_id)
 {
+    const bool graph_editing_enabled = node_graph_editor_ != nullptr
+        && node_graph_editor_->graph_editing_enabled();
+    static_value_editor_.group->setEnabled(graph_editing_enabled);
     if (!value.has_value()
         || value->type.lanes == 0
         || !std::holds_alternative<std::vector<double>>(value->value))
