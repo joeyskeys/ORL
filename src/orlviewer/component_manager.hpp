@@ -174,6 +174,15 @@ public:
     bool apply_controller_inputs(std::string* error = nullptr);
     bool set_locator_world_xform(ComponentId locator,
         const glm::mat4& world);
+    bool bind_transform_parent(ComponentId child, ComponentId parent,
+        bool maintain_world = true,
+        bool inherit_translation = true,
+        bool inherit_rotation = true,
+        bool inherit_scale = true,
+        std::string* error = nullptr);
+    bool clear_transform_parent(ComponentId child);
+    const orlrig::TransformParentRelation* transform_parent(
+        ComponentId child) const;
 
     orlrig::ComponentStore& rigging() { return store; }
     const orlrig::ComponentStore& rigging() const { return store; }

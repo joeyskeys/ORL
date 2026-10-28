@@ -11,6 +11,7 @@ enum class ComputeDevice {
 enum class OrlEvaluationPhase {
     Disabled,
     Compiling,
+    AwaitingOrder,
     Evaluating,
 };
 

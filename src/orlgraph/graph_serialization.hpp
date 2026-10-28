@@ -13,7 +13,7 @@ namespace orlgraph
 {
 
 inline constexpr const char* kOroMagic = "ORO";
-inline constexpr std::uint32_t kOroFormatVersion = 1;
+inline constexpr std::uint32_t kOroFormatVersion = 2;
 inline constexpr const char* kOroLanguageVersion = "orl-0";
 inline constexpr const char* kOroLogicalAbiVersion = "orlgraph-1";
 
@@ -21,9 +21,9 @@ inline constexpr const char* kOroLogicalAbiVersion = "orlgraph-1";
 // references node definitions by stable ID; the definitions remain owned by
 // the caller's NodeRegistry.
 inline constexpr const char* kGraphJsonMagic = "ORL_GRAPH";
-inline constexpr std::uint32_t kGraphJsonFormatVersion = 1;
+inline constexpr std::uint32_t kGraphJsonFormatVersion = 2;
 inline constexpr const char* kGraphStagesJsonMagic = "ORL_GRAPH_STAGES";
-inline constexpr std::uint32_t kGraphStagesJsonFormatVersion = 1;
+inline constexpr std::uint32_t kGraphStagesJsonFormatVersion = 2;
 
 struct OroSerializationResult {
     bool ok = false;

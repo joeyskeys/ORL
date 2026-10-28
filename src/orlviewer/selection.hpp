@@ -824,7 +824,15 @@ private:
                 return {};
             }
             attr.kind = XformAttrKind::Matrix;
-            attr.matrix = &locator->xform;
+            attr.read_world = [this, id = ref.component] {
+                const auto* value = components.locator(id);
+                return value == nullptr
+                    ? glm::mat4{1.0f} : value->xform;
+            };
+            attr.write_world = [this, id = ref.component](
+                                   const glm::mat4& world) {
+                return components.set_locator_world_xform(id, world);
+            };
             return attr;
         }
         if (ref.kind == SelectionRef::Kind::Vector && ref.vector != nullptr) {

@@ -1090,7 +1090,7 @@ RunnerStatus compute_world_matrices_parallel(
                 }
                 glm::mat4 world = joint_local_matrix(*joint);
                 const auto parent = hierarchy.parent_of(id);
-                if (parent.has_value()) {
+                if (parent.has_value() && *parent) {
                     const auto parent_position =
                         hierarchy.preorder_position(*parent);
                     if (!parent_position.has_value()) {

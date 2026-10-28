@@ -11,6 +11,7 @@
 #include <QFontMetrics>
 #include <QHash>
 #include <QAction>
+#include <QInputDialog>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -28,7 +29,9 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <map>
 #include <optional>
+#include <set>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -208,6 +211,167 @@ void NodeGraphEditor::set_evaluation_ui_state(
     }
     setEnabled(state == GraphEvaluationUiState::Editing);
     update();
+}
+
+bool NodeGraphEditor::resolve_order_conflicts()
+{
+    if (scene_graph_context_ == nullptr
+        || order_resolver_active_
+        || scene_graph_context_->evaluation_order_conflicts().empty())
+    {
+        return false;
+    }
+    order_resolver_active_ = true;
+    QScopedValueRollback<bool> resolver_guard(
+        order_resolver_active_, false);
+
+    using NodePair = std::pair<orlgraph::StableId, orlgraph::StableId>;
+    std::vector<NodePair> choices;
+    const auto node_label = [this](const orlgraph::StableId& id) {
+        const auto* node = active_graph().node(id);
+        if (node == nullptr || node->name.empty()) {
+            return QString::fromStdString(id.value);
+        }
+        return QString::fromStdString(node->name)
+            + QStringLiteral(" [")
+            + QString::fromStdString(id.value) + QStringLiteral("]");
+    };
+    std::set<std::vector<orlgraph::StableId>> resolved_stacks;
+    for (const auto& conflict :
+         scene_graph_context_->evaluation_order_conflicts())
+    {
+        if (conflict.writers.size() < 2) {
+            continue;
+        }
+        if (!resolved_stacks.insert(conflict.writers).second) {
+            continue;
+        }
+        QStringList options;
+        if (conflict.writers.size() == 2) {
+            options.push_back(
+                node_label(conflict.writers[0])
+                + QStringLiteral(" before ")
+                + node_label(conflict.writers[1]));
+            options.push_back(
+                node_label(conflict.writers[1])
+                + QStringLiteral(" before ")
+                + node_label(conflict.writers[0]));
+        } else {
+            QString listed;
+            for (const auto& writer : conflict.writers) {
+                if (!listed.isEmpty()) {
+                    listed += QStringLiteral(" -> ");
+                }
+                listed += node_label(writer);
+            }
+            QString reversed;
+            for (auto writer = conflict.writers.rbegin();
+                 writer != conflict.writers.rend(); ++writer)
+            {
+                if (!reversed.isEmpty()) {
+                    reversed += QStringLiteral(" -> ");
+                }
+                reversed += node_label(*writer);
+            }
+            options.push_back(listed);
+            options.push_back(reversed);
+        }
+        bool accepted = false;
+        const QString selected = QInputDialog::getItem(
+            this, QStringLiteral("Constraint order required"),
+            QStringLiteral("Choose the order for %1 '%2':")
+                .arg(QString::fromStdString(conflict.destination_kind),
+                    QString::fromStdString(conflict.destination_name)),
+            options, 0, false, &accepted);
+        if (!accepted) {
+            runtime_config.evaluate_orl = false;
+            runtime_config.evaluation_phase =
+                OrlEvaluationPhase::Disabled;
+            scene_graph_context_->clear_computed_joints_device();
+            scene_graph_context_->clear_computed_locators_device();
+            if (project_selection != nullptr) {
+                project_selection->set_controller_input_mode(false);
+            }
+            return false;
+        }
+        const bool reverse = options.size() > 1 && selected == options[1];
+        if (!reverse) {
+            for (std::size_t index = 1;
+                 index < conflict.writers.size(); ++index)
+            {
+                choices.emplace_back(
+                    conflict.writers[index - 1],
+                    conflict.writers[index]);
+            }
+        } else {
+            for (std::size_t index = conflict.writers.size();
+                 index-- > 1;)
+            {
+                choices.emplace_back(
+                    conflict.writers[index],
+                    conflict.writers[index - 1]);
+            }
+        }
+    }
+    if (choices.empty()) {
+        return false;
+    }
+
+    std::map<orlgraph::StableId, std::set<orlgraph::StableId>> outgoing;
+    std::map<orlgraph::StableId, std::size_t> indegree;
+    for (const auto& [before, after] : choices) {
+        indegree.try_emplace(before, 0);
+        indegree.try_emplace(after, 0);
+        if (outgoing[before].insert(after).second) {
+            ++indegree[after];
+        }
+    }
+    std::set<orlgraph::StableId> ready;
+    for (const auto& [id, count] : indegree) {
+        if (count == 0) {
+            ready.insert(id);
+        }
+    }
+    std::vector<orlgraph::StableId> ordered;
+    while (!ready.empty()) {
+        const auto id = *ready.begin();
+        ready.erase(ready.begin());
+        ordered.push_back(id);
+        for (const auto& dependent : outgoing[id]) {
+            if (--indegree[dependent] == 0) {
+                ready.insert(dependent);
+            }
+        }
+    }
+    if (ordered.size() != indegree.size()) {
+        QMessageBox::warning(this, QStringLiteral("Constraint order"),
+            QStringLiteral(
+                "The selected stack choices contain a cycle. "
+                "No order was applied."));
+        runtime_config.evaluate_orl = false;
+        runtime_config.evaluation_phase = OrlEvaluationPhase::Disabled;
+        if (project_selection != nullptr) {
+            project_selection->set_controller_input_mode(false);
+        }
+        return false;
+    }
+
+    auto& nodes = active_graph().mutable_nodes();
+    for (std::size_t index = 0; index < ordered.size(); ++index) {
+        const auto found = nodes.find(ordered[index]);
+        if (found != nodes.end()) {
+            found->second.execution_order =
+                static_cast<std::int64_t>(index * 10);
+        }
+    }
+    scene_graph_context_->touch_graph();
+    runtime_config.evaluate_orl = true;
+    runtime_config.evaluation_phase = OrlEvaluationPhase::Compiling;
+    if (project_selection != nullptr) {
+        project_selection->set_controller_input_mode(true);
+    }
+    scene_graph_context_->request_evaluation();
+    return true;
 }
 
 bool NodeGraphEditor::load_project_file()
@@ -2686,7 +2850,10 @@ void NodeGraphEditor::paintEvent(QPaintEvent*)
             Qt::AlignCenter,
             evaluation_ui_state_ == GraphEvaluationUiState::Compiling
                 ? QStringLiteral("compiling")
-                : QStringLiteral("evaluating"));
+                : evaluation_ui_state_
+                    == GraphEvaluationUiState::AwaitingOrder
+                    ? QStringLiteral("constraint order required")
+                    : QStringLiteral("evaluating"));
     }
 }
 

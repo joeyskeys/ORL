@@ -447,6 +447,10 @@ Json node_value(const NodeInstance& node, Allocator& allocator) {
     add(result, "id", string_value(node.id.value, allocator), allocator);
     add(result, "definition", string_value(node.definition.value, allocator), allocator);
     add(result, "name", string_value(node.name, allocator), allocator);
+    if (node.execution_order.has_value()) {
+        add(result, "execution_order",
+            Json{*node.execution_order}, allocator);
+    }
     Json parameters(rapidjson::kObjectType);
     for (const auto& [name, value] : node.parameter_values) {
         add(parameters, name.c_str(), constant_value(value, allocator), allocator);
@@ -1522,6 +1526,20 @@ bool parse_node(const Json& value, NodeInstance* output,
     }
     output->id = StableId{std::move(id)};
     output->definition = StableId{std::move(definition)};
+    if (const Json* execution_order = member(value, "execution_order");
+        execution_order != nullptr)
+    {
+        if (!execution_order->IsInt64()) {
+            diagnostics->push_back({
+                DiagnosticSeverity::Error,
+                "ORLGRAPH_INVALID_INTEGER",
+                "Field is not a signed integer: execution_order",
+                {}, {}, {},
+            });
+            return false;
+        }
+        output->execution_order = execution_order->GetInt64();
+    }
     const Json* parameters = member(value, "parameters");
     if (parameters != nullptr && parameters->IsObject()) {
         for (auto item = parameters->MemberBegin(); item != parameters->MemberEnd(); ++item) {
@@ -1852,7 +1870,7 @@ OroDocument deserialize_oro(std::string_view text) {
     }
     std::uint32_t format_version = 0;
     read_u32(*header, "format_version", &format_version, &result.diagnostics);
-    if (format_version != kOroFormatVersion) {
+    if (format_version != 1 && format_version != kOroFormatVersion) {
         result.diagnostics.push_back({
             DiagnosticSeverity::Error, "ORLGRAPH_UNSUPPORTED_FORMAT",
             "Unsupported .oro format version", {}, {}, {},
@@ -2299,7 +2317,7 @@ GraphStagesJsonDocument deserialize_graph_stages_json(
     std::uint32_t format_version = 0;
     read_u32(*header, "format_version", &format_version,
         &result.diagnostics);
-    if (format_version != kGraphStagesJsonFormatVersion) {
+    if (format_version != 1 && format_version != kGraphStagesJsonFormatVersion) {
         result.diagnostics.push_back({
             DiagnosticSeverity::Error, "ORLGRAPH_UNSUPPORTED_FORMAT",
             "Unsupported staged graph JSON format version", {}, {}, {},
@@ -2430,7 +2448,7 @@ GraphJsonDocument deserialize_graph_json(std::string_view text)
 
     std::uint32_t format_version = 0;
     read_u32(*header, "format_version", &format_version, &result.diagnostics);
-    if (format_version != kGraphJsonFormatVersion) {
+    if (format_version != 1 && format_version != kGraphJsonFormatVersion) {
         result.diagnostics.push_back({
             DiagnosticSeverity::Error, "ORLGRAPH_UNSUPPORTED_FORMAT",
             "Unsupported graph JSON format version", {}, {}, {},

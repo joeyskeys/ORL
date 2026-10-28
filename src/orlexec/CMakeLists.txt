@@ -66,6 +66,8 @@ add_library(orlrig
     orlrig/runner_status.hpp
     orlrig/two_stage_runner.cpp
     orlrig/two_stage_runner.hpp
+    orlrig/transform_hierarchy.cpp
+    orlrig/transform_hierarchy.hpp
     orlrig/weight.hpp
     orlrig/component_store.hpp
 )

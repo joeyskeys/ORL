@@ -207,6 +207,10 @@ void eliminate_common_nodes(GraphModule& module, const NodeRegistry& registry,
         }
         std::ostringstream signature;
         signature << node.definition.value << "|";
+        if (node.execution_order.has_value()) {
+            signature << "execution_order="
+                << *node.execution_order << ";";
+        }
         for (const auto& [name, value] : node.parameter_values) {
             signature << name << "=" << value_key(value) << ";";
         }

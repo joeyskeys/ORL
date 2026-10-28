@@ -8,6 +8,8 @@
 #include <variant>
 #include <vector>
 
+#include <glm/mat4x4.hpp>
+
 #include "controller.hpp"
 #include "deformer.hpp"
 #include "joint.hpp"
@@ -22,6 +24,23 @@ struct ComponentId {
 
     explicit operator bool() const { return value != 0; }
     friend bool operator==(ComponentId, ComponentId) = default;
+};
+
+enum class TransformParentKind : std::uint8_t {
+    World,
+    Joint,
+    Locator,
+};
+
+struct TransformParentRelation {
+    ComponentId child;
+    ComponentId parent;
+    TransformParentKind parent_kind = TransformParentKind::World;
+    glm::mat4 local_offset{1.0f};
+    bool inherit_translation = true;
+    bool inherit_rotation = true;
+    bool inherit_scale = true;
+    bool enabled = true;
 };
 
 enum class ComponentKind {
@@ -106,6 +125,14 @@ public:
     std::vector<ComponentId> packed_locator_ids() const;
     std::int64_t locator_index(ComponentId id) const;
 
+    bool set_transform_parent(TransformParentRelation relation,
+        std::string* error = nullptr);
+    bool clear_transform_parent(ComponentId child);
+    const TransformParentRelation* transform_parent(
+        ComponentId child) const;
+    std::vector<TransformParentRelation> transform_parents() const;
+    std::uint64_t relation_revision() const { return relation_revision_; }
+
     template <typename Fn>
     void for_each(Fn&& fn) const {
         for (const auto& [_, record] : records) {
@@ -143,6 +170,9 @@ private:
     std::unordered_map<std::string, std::uint64_t> names;
     std::vector<ComponentId> joint_order;
     std::vector<ComponentId> locator_order;
+    std::unordered_map<std::uint64_t, TransformParentRelation>
+        transform_parents_;
+    std::uint64_t relation_revision_ = 1;
 };
 
 template <typename T>

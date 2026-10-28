@@ -23,6 +23,7 @@
 #include "orlrig/ik.hpp"
 #include "orlrig/locator.hpp"
 #include "orlrig/runners.hpp"
+#include "orlrig/transform_hierarchy.hpp"
 #include "orlrig/two_stage_runner.hpp"
 
 namespace
@@ -1319,6 +1320,18 @@ TEST_CASE("evaluation plan rejects two solvers writing the same joints",
         [](const std::string& error) {
             return error.find("Competing writers") != std::string::npos;
         }));
+    REQUIRE(compiled.status == orlrig::EvaluationPlanStatus::UnresolvedOrder);
+    REQUIRE(compiled.order_conflicts.size() == 2);
+
+    graph.mutable_nodes().at(orlgraph::StableId{"ik_a"}).execution_order = 10;
+    graph.mutable_nodes().at(orlgraph::StableId{"ik_b"}).execution_order = 20;
+    const auto resolved = orlrig::compile_evaluation_plan(
+        graph, registry, store, *hierarchy.plan);
+    REQUIRE(resolved);
+    REQUIRE(resolved.plan.has_value());
+    REQUIRE(resolved.plan->order.size() == 2);
+    REQUIRE(resolved.plan->order[0].value == "ik_a");
+    REQUIRE(resolved.plan->order[1].value == "ik_b");
 }
 
 #if 0 // Locator index constraints await typed constraint migration.
@@ -1383,6 +1396,67 @@ TEST_CASE("evaluation plan rejects a locator dependency cycle",
 }
 
 #endif
+
+TEST_CASE("transform hierarchy propagates joint parents to locators",
+    "[orlrig][hierarchy][transform]")
+{
+    orlrig::ComponentStore store;
+    auto root_value = orlrig::make_identity_joint();
+    root_value.translation[0] = 3.0;
+    const auto root = store.create_joint("root", root_value);
+    auto locator_value = orlrig::make_locator(glm::vec3{10.0f, 2.0f, 0.0f});
+    const auto locator = store.create_locator("pole", locator_value);
+
+    orlrig::TransformParentRelation relation;
+    relation.child = locator;
+    relation.parent = root;
+    relation.parent_kind = orlrig::TransformParentKind::Joint;
+    relation.local_offset = glm::inverse(
+        orlrig::joint_world_matrix(store.packed_joints(), 0))
+        * locator_value.xform;
+    REQUIRE(store.set_transform_parent(relation));
+
+    const auto hierarchy = orlrig::compile_hierarchy_plan(store);
+    REQUIRE(hierarchy);
+    const auto transform = orlrig::compile_transform_hierarchy_plan(
+        store, *hierarchy.plan);
+    REQUIRE(transform);
+    REQUIRE(transform.plan->nodes.size() == 2);
+    REQUIRE(transform.plan->nodes[1].parent_index == 0);
+
+    std::vector<glm::mat4> joints;
+    std::vector<glm::mat4> locators;
+    REQUIRE(orlrig::evaluate_transform_hierarchy(
+        *transform.plan, *hierarchy.plan, store,
+        &joints, &locators));
+    REQUIRE(glm::vec3{joints[0][3]}.x == Catch::Approx(3.0f));
+    REQUIRE(locators.size() == 1);
+    REQUIRE(glm::vec3{locators[0][3]}.x == Catch::Approx(10.0f));
+
+    store.joint(root)->translation[0] = 8.0;
+    REQUIRE(orlrig::evaluate_transform_hierarchy(
+        *transform.plan, *hierarchy.plan, store,
+        &joints, &locators));
+    REQUIRE(glm::vec3{locators[0][3]}.x == Catch::Approx(15.0f));
+}
+
+TEST_CASE("transform hierarchy rejects locator parent cycles",
+    "[orlrig][hierarchy][transform]")
+{
+    orlrig::ComponentStore store;
+    const auto first = store.create_locator("first");
+    const auto second = store.create_locator("second");
+    orlrig::TransformParentRelation first_relation;
+    first_relation.child = first;
+    first_relation.parent = second;
+    first_relation.parent_kind = orlrig::TransformParentKind::Locator;
+    REQUIRE(store.set_transform_parent(first_relation));
+    orlrig::TransformParentRelation second_relation;
+    second_relation.child = second;
+    second_relation.parent = first;
+    second_relation.parent_kind = orlrig::TransformParentKind::Locator;
+    REQUIRE_FALSE(store.set_transform_parent(second_relation));
+}
 
 TEST_CASE("opaque solver nodes force conservative full evaluation",
     "[orlrig][partial][fallback]")

@@ -104,6 +104,29 @@ const orlgraph::GraphModule& SceneGraphContext::stage_graph(
 
 void SceneGraphContext::refresh_scene_inputs()
 {
+    refresh_scene_inputs_preserving({});
+}
+
+void SceneGraphContext::refresh_scene_inputs_preserving(
+    const std::vector<ComponentId>& preserve_locators)
+{
+    std::vector<ComponentId> effective_preserve = preserve_locators;
+    if (scene_inputs_.computed_locators_device().has_value()) {
+        for (const ComponentId id :
+             components_.rigging().packed_locator_ids())
+        {
+            if (std::find(
+                    effective_preserve.begin(),
+                    effective_preserve.end(), id)
+                == effective_preserve.end())
+            {
+                effective_preserve.push_back(id);
+            }
+        }
+    }
+    std::string hierarchy_error;
+    (void)apply_transform_hierarchy_preserving(
+        effective_preserve, &hierarchy_error);
     const auto previous_revision = scene_inputs_.revision();
     scene_inputs_.refresh();
     if (scene_inputs_.revision() != previous_revision) {
@@ -138,6 +161,39 @@ std::size_t SceneGraphContext::hierarchy_signature() const
             + (signature << 6)
             + (signature >> 2);
     }
+    signature ^= std::hash<std::uint64_t>{}(
+            components_.rigging().relation_revision())
+        + static_cast<std::size_t>(0x9e3779b9)
+        + (signature << 6) + (signature >> 2);
+    for (const auto& relation : components_.rigging().transform_parents()) {
+        signature ^= std::hash<std::uint64_t>{}(relation.child.value)
+            + (signature << 6) + (signature >> 2);
+        signature ^= std::hash<std::uint64_t>{}(relation.parent.value)
+            + (signature << 6) + (signature >> 2);
+        signature ^= std::hash<int>{}(
+                static_cast<int>(relation.parent_kind))
+            + (signature << 6) + (signature >> 2);
+        signature ^= std::hash<bool>{}(relation.inherit_translation)
+            + (signature << 6) + (signature >> 2);
+        signature ^= std::hash<bool>{}(relation.inherit_rotation)
+            + (signature << 6) + (signature >> 2);
+        signature ^= std::hash<bool>{}(relation.inherit_scale)
+            + (signature << 6) + (signature >> 2);
+        signature ^= std::hash<bool>{}(relation.enabled)
+            + (signature << 6) + (signature >> 2);
+        for (int column = 0; column < 4; ++column) {
+            for (int row = 0; row < 4; ++row) {
+                signature ^= std::hash<float>{}(
+                        relation.local_offset[column][row])
+                    + (signature << 6) + (signature >> 2);
+            }
+        }
+    }
+    for (const ComponentId id : components_.rigging().packed_locator_ids()) {
+        signature ^= std::hash<std::uint64_t>{}(id.value)
+            + static_cast<std::size_t>(0x9e3779b9)
+            + (signature << 6) + (signature >> 2);
+    }
     return signature;
 }
 
@@ -154,6 +210,11 @@ std::size_t SceneGraphContext::evaluation_signature(
         signature ^= std::hash<std::string>{}(id.value)
             + std::hash<std::string>{}(node.definition.value)
             + (signature << 6) + (signature >> 2);
+        if (node.execution_order.has_value()) {
+            signature ^= std::hash<std::int64_t>{}(
+                    *node.execution_order)
+                + (signature << 6) + (signature >> 2);
+        }
         for (const auto& [name, value] : node.parameter_values) {
             signature ^= std::hash<std::string>{}(name)
                 + (signature << 6) + (signature >> 2);
@@ -210,6 +271,10 @@ void SceneGraphContext::invalidate_evaluation_plan()
     std::atomic_store(&compiled_evaluation_plan_,
         std::shared_ptr<const orlrig::EvaluationPlan>{});
     compiled_evaluation_signature_ = 0;
+    compiled_transform_hierarchy_plan_.reset();
+    compiled_transform_hierarchy_signature_ = 0;
+    evaluation_plan_status_ = orlrig::EvaluationPlanStatus::Success;
+    evaluation_order_conflicts_.clear();
 }
 
 void SceneGraphContext::mark_plan_invalidated()
@@ -367,16 +432,34 @@ bool SceneGraphContext::ensure_evaluation_plan(
     }
     const auto result = orlrig::compile_evaluation_plan(
         stage_graph(stage), registry_, components_.rigging(),
-        *compiled_hierarchy_plan);
-    if (!result.plan.has_value() || !result.errors.empty()) {
+        *compiled_hierarchy_plan,
+        compiled_transform_hierarchy_plan_
+            ? &*compiled_transform_hierarchy_plan_ : nullptr);
+    if (!result.plan.has_value() || !result.errors.empty()
+        || !result.order_conflicts.empty()) {
         std::atomic_store(&compiled_evaluation_plan_,
             std::shared_ptr<const orlrig::EvaluationPlan>{});
         compiled_evaluation_signature_ = 0;
+        evaluation_plan_status_ = result.status;
+        evaluation_order_conflicts_ = result.order_conflicts;
         std::string message = result.plan.has_value()
             ? "Evaluation plan contains invalid regions"
             : "Evaluation plan compilation failed";
         for (const auto& detail : result.errors) {
             message += ": " + detail;
+        }
+        for (const auto& conflict : result.order_conflicts) {
+            message += ": unresolved "
+                + conflict.destination_kind + " '"
+                + conflict.destination_name + "' writers";
+            for (std::size_t index = 0;
+                 index < conflict.writers.size(); ++index)
+            {
+                const auto& writer = index < conflict.writer_names.size()
+                    ? conflict.writer_names[index]
+                    : conflict.writers[index].value;
+                message += " '" + writer + "'";
+            }
         }
         return set_error(error, std::move(message));
     }
@@ -384,6 +467,8 @@ bool SceneGraphContext::ensure_evaluation_plan(
         std::move(*result.plan));
     std::atomic_store(&compiled_evaluation_plan_, std::move(plan));
     compiled_evaluation_signature_ = signature;
+    evaluation_plan_status_ = orlrig::EvaluationPlanStatus::Success;
+    evaluation_order_conflicts_.clear();
     return true;
 }
 
@@ -399,7 +484,7 @@ bool SceneGraphContext::ensure_hierarchy_plan(std::string* error)
     if (compiled_hierarchy_plan.has_value()
         && compiled_hierarchy_signature == signature)
     {
-        return true;
+        return ensure_transform_hierarchy_plan(error);
     }
     if (compiled_hierarchy_plan.has_value()) {
         mark_plan_invalidated();
@@ -443,6 +528,82 @@ bool SceneGraphContext::ensure_hierarchy_plan(std::string* error)
         }
     }
     compiled_hierarchy_signature = signature;
+    return ensure_transform_hierarchy_plan(error);
+}
+
+bool SceneGraphContext::ensure_transform_hierarchy_plan(
+    std::string* error)
+{
+    if (!compiled_hierarchy_plan.has_value()) {
+        return set_error(error,
+            "Joint hierarchy must be compiled before transform hierarchy");
+    }
+    const auto signature = hierarchy_signature();
+    if (compiled_transform_hierarchy_plan_.has_value()
+        && compiled_transform_hierarchy_signature_ == signature)
+    {
+        return true;
+    }
+    const auto result = orlrig::compile_transform_hierarchy_plan(
+        components_.rigging(), *compiled_hierarchy_plan);
+    if (!result) {
+        compiled_transform_hierarchy_plan_.reset();
+        compiled_transform_hierarchy_signature_ = 0;
+        std::string message = "Transform hierarchy compilation failed";
+        for (const auto& detail : result.errors) {
+            message += ": " + detail;
+        }
+        return set_error(error, std::move(message));
+    }
+    compiled_transform_hierarchy_plan_ = result.plan;
+    compiled_transform_hierarchy_signature_ = signature;
+    return true;
+}
+
+bool SceneGraphContext::apply_transform_hierarchy(std::string* error)
+{
+    return apply_transform_hierarchy_preserving({}, error);
+}
+
+bool SceneGraphContext::apply_transform_hierarchy_preserving(
+    const std::vector<ComponentId>& preserve_locators,
+    std::string* error)
+{
+    if (!ensure_hierarchy_plan(error)
+        || !compiled_transform_hierarchy_plan_.has_value())
+    {
+        return false;
+    }
+    std::vector<glm::mat4> joint_world;
+    std::vector<glm::mat4> locator_world;
+    if (!orlrig::evaluate_transform_hierarchy(
+            *compiled_transform_hierarchy_plan_,
+            *compiled_hierarchy_plan,
+            components_.rigging(), preserve_locators,
+            &joint_world, &locator_world, error))
+    {
+        return false;
+    }
+    const auto locator_ids = components_.rigging().packed_locator_ids();
+    if (locator_ids.size() != locator_world.size()) {
+        return set_error(error,
+            "Transform hierarchy locator output count is inconsistent");
+    }
+    for (std::size_t index = 0; index < locator_ids.size(); ++index) {
+        if (std::find(
+                preserve_locators.begin(),
+                preserve_locators.end(), locator_ids[index])
+            != preserve_locators.end())
+        {
+            continue;
+        }
+        auto* locator = components_.rigging().locator(locator_ids[index]);
+        if (locator == nullptr) {
+            return set_error(error,
+                "Transform hierarchy locator output is unavailable");
+        }
+        locator->xform = locator_world[index];
+    }
     return true;
 }
 

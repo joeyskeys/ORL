@@ -304,6 +304,9 @@ struct NodeInstance {
     Provenance provenance;
     InlinePolicy inline_policy = InlinePolicy::Default;
     std::vector<struct ParameterMapping> parameter_mappings;
+    // Optional per-instance ordering hint for competing solver/constraint
+    // writers. This is compile-time graph metadata, not an ORL parameter.
+    std::optional<std::int64_t> execution_order;
 };
 
 enum class EndpointKind : std::uint8_t {

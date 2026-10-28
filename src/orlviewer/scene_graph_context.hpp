@@ -15,6 +15,7 @@
 #include "orlgraph/graph_validation.hpp"
 #include "orlrig/evaluation.hpp"
 #include "orlrig/hierarchy.hpp"
+#include "orlrig/transform_hierarchy.hpp"
 
 namespace ORL
 {
@@ -90,16 +91,34 @@ public:
     SceneInputCatalog& scene_inputs() { return scene_inputs_; }
     const SceneInputCatalog& scene_inputs() const { return scene_inputs_; }
     void refresh_scene_inputs();
+    void refresh_scene_inputs_preserving(
+        const std::vector<ComponentId>& preserve_locators);
     bool ensure_hierarchy_plan(std::string* error = nullptr);
     const std::optional<orlrig::HierarchyPlan>& hierarchy_plan() const {
         return compiled_hierarchy_plan;
     }
+    bool ensure_transform_hierarchy_plan(std::string* error = nullptr);
+    const std::optional<orlrig::TransformHierarchyPlan>&
+    transform_hierarchy_plan() const {
+        return compiled_transform_hierarchy_plan_;
+    }
+    bool apply_transform_hierarchy(std::string* error = nullptr);
+    bool apply_transform_hierarchy_preserving(
+        const std::vector<ComponentId>& preserve_locators,
+        std::string* error = nullptr);
     const orlrig::HierarchyContext& hierarchy_context() const {
         return hierarchy_context_;
     }
     bool ensure_evaluation_plan(
         orlgraph::GraphStage stage, std::string* error = nullptr);
     std::shared_ptr<const orlrig::EvaluationPlan> evaluation_plan() const;
+    orlrig::EvaluationPlanStatus evaluation_plan_status() const {
+        return evaluation_plan_status_;
+    }
+    const std::vector<orlrig::EvaluationOrderConflict>&
+    evaluation_order_conflicts() const {
+        return evaluation_order_conflicts_;
+    }
     exec::OrlBuffer& hierarchy_data() { return hierarchy_data_; }
     const exec::OrlBuffer& hierarchy_data() const {
         return hierarchy_data_;
@@ -194,8 +213,15 @@ private:
     bool staged_graphs_ = false;
     std::optional<orlrig::HierarchyPlan> compiled_hierarchy_plan;
     std::size_t compiled_hierarchy_signature = 0;
+    std::optional<orlrig::TransformHierarchyPlan>
+        compiled_transform_hierarchy_plan_;
+    std::size_t compiled_transform_hierarchy_signature_ = 0;
     std::shared_ptr<const orlrig::EvaluationPlan> compiled_evaluation_plan_;
     std::size_t compiled_evaluation_signature_ = 0;
+    orlrig::EvaluationPlanStatus evaluation_plan_status_ =
+        orlrig::EvaluationPlanStatus::Success;
+    std::vector<orlrig::EvaluationOrderConflict>
+        evaluation_order_conflicts_;
     std::uint64_t topology_revision_ = 0;
     std::uint64_t pose_revision_ = 0;
     std::uint64_t change_generation_ = 0;

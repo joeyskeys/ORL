@@ -79,6 +79,8 @@ private:
         const QString& node_id);
     void apply_static_value_edit();
     void apply_relative_xform();
+    void bind_selected_transform_parent();
+    void clear_selected_transform_parent();
     bool make_transform(const SelectionRef& ref,
         TransformValues& values, QString& source) const;
     bool read_vector_component(const VectorEditor& editor,
@@ -116,6 +118,10 @@ private:
     VectorEditor translation_editor_;
     VectorEditor rotation_editor_;
     VectorEditor scale_editor_;
+    QGroupBox* transform_parent_group_ = nullptr;
+    QLabel* transform_parent_source_ = nullptr;
+    QPushButton* bind_transform_parent_button_ = nullptr;
+    QPushButton* clear_transform_parent_button_ = nullptr;
     QLabel* draft_note_ = nullptr;
     QScrollArea* scroll_area_ = nullptr;
 };

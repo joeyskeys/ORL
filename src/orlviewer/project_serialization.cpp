@@ -31,7 +31,7 @@ using Json = rapidjson::Value;
 using Allocator = rapidjson::Document::AllocatorType;
 
 constexpr const char* kProjectMagic = "ORL_PROJECT";
-constexpr std::uint32_t kProjectFormatVersion = 1;
+constexpr std::uint32_t kProjectFormatVersion = 2;
 
 struct SavedJoint {
     std::uint64_t id = 0;
@@ -66,6 +66,18 @@ struct SavedAttachment {
     bool input_drives_target = false;
 };
 
+struct SavedTransformParent {
+    std::uint64_t child = 0;
+    std::uint64_t parent = 0;
+    orlrig::TransformParentKind parent_kind =
+        orlrig::TransformParentKind::World;
+    glm::mat4 local_offset{1.0f};
+    bool inherit_translation = true;
+    bool inherit_rotation = true;
+    bool inherit_scale = true;
+    bool enabled = true;
+};
+
 struct SavedWeights {
     bool present = false;
     std::int64_t weight_count =
@@ -89,6 +101,7 @@ struct SavedComponents {
     std::vector<SavedController> controllers;
     std::vector<SavedConstraint> constraints;
     std::vector<SavedAttachment> attachments;
+    std::vector<SavedTransformParent> transform_parents;
     SavedWeights weights;
     SavedDeformer deformer;
 };
@@ -397,6 +410,38 @@ bool read_locator(const Json& object, SavedLocator& result,
         && read_matrix(object, "xform", result.value.xform, errors);
 }
 
+bool read_transform_parent(const Json& object,
+    SavedTransformParent& result, std::vector<std::string>& errors)
+{
+    bool valid = read_u64(object, "child", result.child, errors);
+    valid = read_u64(object, "parent", result.parent, errors)
+        && valid;
+    std::int64_t parent_kind = 0;
+    valid = read_i64(object, "parent_kind", parent_kind, errors)
+        && valid;
+    if (parent_kind < 0
+        || parent_kind > static_cast<std::int64_t>(
+            orlrig::TransformParentKind::Locator))
+    {
+        errors.emplace_back("Project transform parent kind is out of range");
+        valid = false;
+    } else {
+        result.parent_kind =
+            static_cast<orlrig::TransformParentKind>(parent_kind);
+    }
+    valid = read_matrix(object, "local_offset",
+        result.local_offset, errors) && valid;
+    valid = read_bool(object, "inherit_translation",
+        result.inherit_translation, errors) && valid;
+    valid = read_bool(object, "inherit_rotation",
+        result.inherit_rotation, errors) && valid;
+    valid = read_bool(object, "inherit_scale",
+        result.inherit_scale, errors) && valid;
+    valid = read_bool(object, "enabled", result.enabled,
+        errors, false) && valid;
+    return valid;
+}
+
 bool read_controller(const Json& object, SavedController& result,
     std::vector<std::string>& errors)
 {
@@ -661,6 +706,29 @@ bool read_components(const Json& object, SavedComponents& result,
         valid = false;
     }
 
+    if (const auto* parents = member<void>(
+            object, "transform_parents", errors, false))
+    {
+        if (!parents->IsArray()) {
+            errors.emplace_back(
+                "Project components.transform_parents must be an array");
+            valid = false;
+        } else {
+            for (const auto& entry : parents->GetArray()) {
+                if (!entry.IsObject()) {
+                    errors.emplace_back(
+                        "Project transform parent entries must be objects");
+                    valid = false;
+                    continue;
+                }
+                SavedTransformParent value;
+                valid = read_transform_parent(
+                    entry, value, errors) && valid;
+                result.transform_parents.push_back(std::move(value));
+            }
+        }
+    }
+
     if (const auto* weights = member<void>(
             object, "weights", errors, false))
     {
@@ -773,6 +841,29 @@ bool validate_component_references(const SavedComponents& components,
                 "Project controller attachment references invalid components");
         }
     }
+    std::set<std::uint64_t> parent_children;
+    for (const auto& value : components.transform_parents) {
+        const auto child = kinds.find(value.child);
+        const auto parent = kinds.find(value.parent);
+        const bool child_valid = child != kinds.end()
+            && child->second == ComponentKind::Locator;
+        const bool parent_valid =
+            value.parent_kind == orlrig::TransformParentKind::World
+                ? value.parent == 0
+                : parent != kinds.end()
+                    && parent->second
+                        == (value.parent_kind
+                            == orlrig::TransformParentKind::Joint
+                            ? ComponentKind::Joint
+                            : ComponentKind::Locator);
+        if (!child_valid || !parent_valid
+            || !parent_children.insert(value.child).second)
+        {
+            errors.emplace_back(
+                "Project transform parent references invalid or duplicate "
+                "components");
+        }
+    }
     return errors.empty();
 }
 
@@ -873,6 +964,30 @@ Json serialize_components(const ComponentManager& components,
         locators.PushBack(std::move(entry), allocator);
     }
     add(result, "locators", std::move(locators), allocator);
+
+    Json transform_parents(rapidjson::kArrayType);
+    for (const auto& relation :
+         components.rigging().transform_parents())
+    {
+        Json entry(rapidjson::kObjectType);
+        add(entry, "child", Json{relation.child.value}, allocator);
+        add(entry, "parent", Json{relation.parent.value}, allocator);
+        add(entry, "parent_kind",
+            Json{static_cast<std::int64_t>(relation.parent_kind)},
+            allocator);
+        add_matrix(entry, "local_offset",
+            relation.local_offset, allocator);
+        add(entry, "inherit_translation",
+            Json{relation.inherit_translation}, allocator);
+        add(entry, "inherit_rotation",
+            Json{relation.inherit_rotation}, allocator);
+        add(entry, "inherit_scale",
+            Json{relation.inherit_scale}, allocator);
+        add(entry, "enabled", Json{relation.enabled}, allocator);
+        transform_parents.PushBack(std::move(entry), allocator);
+    }
+    add(result, "transform_parents",
+        std::move(transform_parents), allocator);
 
     std::vector<ComponentId> other_ids;
     components.for_each([&other_ids](const Component& meta) {
@@ -1070,6 +1185,38 @@ bool apply_components(const SavedComponents& saved,
             return false;
         }
         id_map.emplace(value.id, id);
+    }
+    for (const auto& value : saved.transform_parents) {
+        const auto child = id_map.find(value.child);
+        const auto parent = id_map.find(value.parent);
+        if (child == id_map.end()
+            || (value.parent_kind != orlrig::TransformParentKind::World
+                && parent == id_map.end()))
+        {
+            errors.emplace_back(
+                "Unable to restore transform-parent relation");
+            return false;
+        }
+        orlrig::TransformParentRelation relation;
+        relation.child = child->second;
+        relation.parent = value.parent_kind
+                == orlrig::TransformParentKind::World
+            ? ComponentId{} : parent->second;
+        relation.parent_kind = value.parent_kind;
+        relation.local_offset = value.local_offset;
+        relation.inherit_translation = value.inherit_translation;
+        relation.inherit_rotation = value.inherit_rotation;
+        relation.inherit_scale = value.inherit_scale;
+        relation.enabled = value.enabled;
+        std::string relation_error;
+        if (!components.rigging().set_transform_parent(
+                std::move(relation), &relation_error))
+        {
+            errors.emplace_back(
+                "Unable to restore transform-parent relation: "
+                + relation_error);
+            return false;
+        }
     }
     for (const auto& value : saved.controllers) {
         const auto id = components.create_controller(
@@ -1423,11 +1570,11 @@ ProjectIoResult load_project_json(
     if (!read_string(*header, "magic", magic, result.errors)
         || magic != kProjectMagic
         || !read_u64(*header, "format_version", version, result.errors)
-        || version != kProjectFormatVersion)
+        || (version != 1 && version != kProjectFormatVersion))
     {
         if (magic != kProjectMagic) {
             result.errors.emplace_back("Project file magic is invalid");
-        } else if (version != kProjectFormatVersion) {
+        } else if (version != 1 && version != kProjectFormatVersion) {
             result.errors.emplace_back(
                 "Unsupported project file format version");
         }

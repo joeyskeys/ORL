@@ -469,6 +469,9 @@ int main(int argc, char** argv) {
         case ORL::OrlEvaluationPhase::Compiling:
             state = ORL::GraphEvaluationUiState::Compiling;
             break;
+        case ORL::OrlEvaluationPhase::AwaitingOrder:
+            state = ORL::GraphEvaluationUiState::AwaitingOrder;
+            break;
         case ORL::OrlEvaluationPhase::Evaluating:
             state = ORL::GraphEvaluationUiState::Evaluating;
             break;
@@ -718,6 +721,12 @@ int main(int argc, char** argv) {
 
 #if ORL_USE_QT6
         scene_graph.refresh_scene_inputs();
+        if (node_graph_editor != nullptr
+            && ORL::runtime_config.evaluation_phase
+                == ORL::OrlEvaluationPhase::AwaitingOrder)
+        {
+            node_graph_editor->resolve_order_conflicts();
+        }
         if (node_graph_editor != nullptr) {
             node_graph_editor->refresh_scene_inputs();
         }

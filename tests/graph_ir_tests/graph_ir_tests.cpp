@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -789,6 +790,12 @@ TEST_CASE("editable graph JSON is deterministic and round trips",
         StableId{"result"}, "Result", PortDirection::Output,
         LogicalType::int64(), Domain::constant(), Shape::scalar(), false,
         std::nullopt, false, "result", "result", {}}));
+    NodeInstance ordered_node;
+    ordered_node.id = StableId{"ordered"};
+    ordered_node.definition = StableId{"orlrig.constraint.test"};
+    ordered_node.name = "ordered";
+    ordered_node.execution_order = -7;
+    REQUIRE(module.add_node(std::move(ordered_node)));
 
     const auto first = serialize_graph_json(module);
     const auto second = serialize_graph_json(module);
@@ -805,6 +812,8 @@ TEST_CASE("editable graph JSON is deterministic and round trips",
     REQUIRE(input->binding == "scene.mesh.body.positions");
     REQUIRE(input->semantic == "mesh.positions");
     REQUIRE(input->coordinate_space == "world");
+    REQUIRE(loaded.module.node(StableId{"ordered"})
+        ->execution_order == std::optional<std::int64_t>{-7});
 }
 
 TEST_CASE("exact handle graph JSON preserves identity and rejects malformed types",

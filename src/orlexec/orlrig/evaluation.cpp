@@ -257,7 +257,8 @@ void resolve_handle_walks(
         std::vector<ComponentId> ids;
         if (walk.kind == orlgraph::HandleWalkKind::Parent) {
             if (const auto parent =
-                    hierarchy.parent_of(connected.id))
+                    hierarchy.parent_of(connected.id);
+                parent.has_value() && *parent)
             {
                 ids.push_back(*parent);
             }
@@ -278,7 +279,11 @@ void resolve_handle_walks(
             }
             ids.push_back(connected.id);
             auto current = connected.id;
-            while (const auto parent = hierarchy.parent_of(current)) {
+            while (true) {
+                const auto parent = hierarchy.parent_of(current);
+                if (!parent.has_value() || !*parent) {
+                    break;
+                }
                 ids.push_back(*parent);
                 current = *parent;
                 if (stop.has_value() && current == *stop) {
@@ -313,7 +318,7 @@ bool is_ancestor(const HierarchyPlan& hierarchy,
     ComponentId ancestor, ComponentId joint)
 {
     auto current = hierarchy.parent_of(joint);
-    while (current.has_value()) {
+    while (current.has_value() && *current) {
         if (*current == ancestor) {
             return true;
         }
@@ -371,7 +376,7 @@ void append_ancestors(const HierarchyPlan& hierarchy,
         return;
     }
     auto current = hierarchy.parent_of(joint);
-    while (current.has_value()) {
+    while (current.has_value() && *current) {
         append_unique(output, *current);
         current = hierarchy.parent_of(*current);
     }
@@ -469,7 +474,8 @@ EvaluationPlanCompileResult compile_evaluation_plan(
     const orlgraph::GraphModule& graph,
     const orlgraph::NodeRegistry& registry,
     const ComponentStore& components,
-    const HierarchyPlan& hierarchy)
+    const HierarchyPlan& hierarchy,
+    const TransformHierarchyPlan* transform_hierarchy)
 {
     EvaluationPlanCompileResult result;
     EvaluationPlan plan;
@@ -477,6 +483,7 @@ EvaluationPlanCompileResult compile_evaluation_plan(
 
     const auto validation = orlgraph::validate(graph, registry);
     if (!validation.ok()) {
+        result.status = EvaluationPlanStatus::InvalidGraph;
         for (const auto& diagnostic : validation.diagnostics) {
             if (diagnostic.severity == orlgraph::DiagnosticSeverity::Error) {
                 result.errors.push_back(
@@ -488,6 +495,7 @@ EvaluationPlanCompileResult compile_evaluation_plan(
 
     const auto schedule = orlgraph::topological_schedule(graph);
     if (!schedule.ok) {
+        result.status = EvaluationPlanStatus::DependencyCycle;
         result.errors = schedule.errors;
         return result;
     }
@@ -512,11 +520,17 @@ EvaluationPlanCompileResult compile_evaluation_plan(
                     == orlgraph::ImplementationKind::OrlFunction
                 && definition->operation != "identity");
         if (!solver_node) {
+            if (node->execution_order.has_value()) {
+                result.errors.push_back(
+                    "Execution order is only valid on solver or constraint "
+                    "nodes: '" + node_id.value + "'");
+            }
             continue;
         }
 
         SolverRegion region;
         region.node_id = node_id;
+        region.execution_order = node->execution_order;
         region.definition_id = definition->id;
         region.stateful = definition->stateful;
         if (definition->partial_footprint.has_value()) {
@@ -690,6 +704,13 @@ EvaluationPlanCompileResult compile_evaluation_plan(
             + 0x9e3779b97f4a7c15ULL
             + (plan.dependency_revision << 6)
             + (plan.dependency_revision >> 2);
+        if (region.execution_order.has_value()) {
+            plan.dependency_revision ^= std::hash<std::int64_t>{}(
+                    *region.execution_order)
+                + 0x9e3779b97f4a7c15ULL
+                + (plan.dependency_revision << 6)
+                + (plan.dependency_revision >> 2);
+        }
     }
     for (const auto& connection : graph.connections()) {
         plan.dependency_revision ^= hash(
@@ -701,6 +722,25 @@ EvaluationPlanCompileResult compile_evaluation_plan(
             + 0x9e3779b97f4a7c15ULL
             + (plan.dependency_revision << 6)
             + (plan.dependency_revision >> 2);
+    }
+    if (transform_hierarchy != nullptr) {
+        plan.dependency_revision ^= std::hash<std::uint64_t>{}(
+                transform_hierarchy->relation_revision)
+            + 0x9e3779b97f4a7c15ULL
+            + (plan.dependency_revision << 6)
+            + (plan.dependency_revision >> 2);
+        for (const auto& node : transform_hierarchy->nodes) {
+            plan.dependency_revision ^= std::hash<std::uint64_t>{}(
+                    node.id.value)
+                + 0x9e3779b97f4a7c15ULL
+                + (plan.dependency_revision << 6)
+                + (plan.dependency_revision >> 2);
+            plan.dependency_revision ^= std::hash<std::int64_t>{}(
+                    node.parent_index)
+                + 0x9e3779b97f4a7c15ULL
+                + (plan.dependency_revision << 6)
+                + (plan.dependency_revision >> 2);
+        }
     }
 
     const auto add_element_edges = [](
@@ -714,7 +754,16 @@ EvaluationPlanCompileResult compile_evaluation_plan(
             }
             for (const std::size_t reader : found->second) {
                 for (const std::size_t writer : writer_list) {
-                    if (reader == writer) {
+                    // A read/write region is itself a competing writer for
+                    // this destination. Treating every other writer as a
+                    // hard read-after-write edge would manufacture A->B and
+                    // B->A cycles before stack resolution can apply an
+                    // explicit order.
+                    if (reader == writer
+                        || std::find(
+                            writer_list.begin(), writer_list.end(), reader)
+                            != writer_list.end())
+                    {
                         continue;
                     }
                     append_unique(&(*regions)[reader].dependencies, writer);
@@ -728,6 +777,10 @@ EvaluationPlanCompileResult compile_evaluation_plan(
     std::map<std::uint64_t, std::vector<std::size_t>> controller_reader_regions;
     std::map<std::uint64_t, std::vector<std::size_t>> locator_writer_regions;
     std::map<std::uint64_t, std::vector<std::size_t>> locator_reader_regions;
+    std::map<orlgraph::StableId, std::vector<std::size_t>>
+        resource_writer_regions;
+    std::map<orlgraph::StableId, std::vector<std::size_t>>
+        resource_reader_regions;
     const auto note_regions = [](
         const std::vector<ComponentId>& ids,
         std::size_t region_index,
@@ -746,6 +799,12 @@ EvaluationPlanCompileResult compile_evaluation_plan(
             &controller_reader_regions);
         note_regions(region.write_locators, index, &locator_writer_regions);
         note_regions(region.read_locators, index, &locator_reader_regions);
+        for (const auto& resource : region.write_resources) {
+            append_unique(&resource_writer_regions[resource], index);
+        }
+        for (const auto& resource : region.read_resources) {
+            append_unique(&resource_reader_regions[resource], index);
+        }
     }
     add_element_edges(joint_writer_regions, joint_reader_regions,
         &plan.regions);
@@ -753,6 +812,24 @@ EvaluationPlanCompileResult compile_evaluation_plan(
         &plan.regions);
     add_element_edges(locator_writer_regions, locator_reader_regions,
         &plan.regions);
+    for (const auto& [resource, writers] : resource_writer_regions) {
+        const auto found = resource_reader_regions.find(resource);
+        if (found == resource_reader_regions.end()) {
+            continue;
+        }
+        for (const std::size_t reader : found->second) {
+            for (const std::size_t writer : writers) {
+                if (reader != writer
+                    && std::find(
+                        writers.begin(), writers.end(), reader)
+                        == writers.end())
+                {
+                    append_unique(
+                        &plan.regions[reader].dependencies, writer);
+                }
+            }
+        }
+    }
     for (std::size_t left = 0; left < plan.regions.size(); ++left) {
         for (std::size_t right = 0; right < plan.regions.size(); ++right) {
             if (left == right) {
@@ -760,9 +837,80 @@ EvaluationPlanCompileResult compile_evaluation_plan(
             }
             for (const ComponentId parent : plan.regions[left].write_joints) {
                 for (const ComponentId child : plan.regions[right].write_joints) {
-                    if (is_ancestor(hierarchy, parent, child)) {
+                    const bool right_writes_parent =
+                        std::find(
+                            plan.regions[right].write_joints.begin(),
+                            plan.regions[right].write_joints.end(),
+                            parent)
+                        != plan.regions[right].write_joints.end();
+                    const bool left_writes_child =
+                        std::find(
+                            plan.regions[left].write_joints.begin(),
+                            plan.regions[left].write_joints.end(),
+                            child)
+                        != plan.regions[left].write_joints.end();
+                    if (!right_writes_parent && !left_writes_child
+                        && is_ancestor(hierarchy, parent, child))
+                    {
                         append_unique(&plan.regions[right].dependencies, left);
                     }
+                }
+            }
+        }
+    }
+    if (transform_hierarchy != nullptr) {
+        const auto contains = [](const std::vector<ComponentId>& values,
+                                  ComponentId id) {
+            return std::find(values.begin(), values.end(), id)
+                != values.end();
+        };
+        for (const auto& child_node : transform_hierarchy->nodes) {
+            if (child_node.kind != ComponentKind::Locator
+                || child_node.parent_index < 0
+                || static_cast<std::size_t>(child_node.parent_index)
+                    >= transform_hierarchy->nodes.size())
+            {
+                continue;
+            }
+            const auto& parent_node =
+                transform_hierarchy->nodes[static_cast<std::size_t>(
+                    child_node.parent_index)];
+            append_unique(
+                &plan.transform_children[parent_node.id.value],
+                child_node.id);
+            for (std::size_t parent_region = 0;
+                 parent_region < plan.regions.size(); ++parent_region)
+            {
+                const auto& parent_writes =
+                    parent_node.kind == ComponentKind::Joint
+                    ? plan.regions[parent_region].write_joints
+                    : plan.regions[parent_region].write_locators;
+                if (!contains(parent_writes, parent_node.id)) {
+                    continue;
+                }
+                for (std::size_t child_region = 0;
+                     child_region < plan.regions.size(); ++child_region)
+                {
+                    const auto& child_value = plan.regions[child_region];
+                    if (!contains(child_value.read_locators,
+                            child_node.id)
+                        && !contains(child_value.write_locators,
+                            child_node.id))
+                    {
+                        continue;
+                    }
+                    if (parent_region == child_region) {
+                        result.errors.push_back(
+                            "Transform hierarchy dependency cycle at "
+                            "locator '" + component_label(
+                                components, child_node.id) + "'");
+                        result.status =
+                            EvaluationPlanStatus::DependencyCycle;
+                        continue;
+                    }
+                    append_unique(
+                        &plan.regions[child_region].dependencies,
+                        parent_region);
                 }
             }
         }
@@ -776,6 +924,84 @@ EvaluationPlanCompileResult compile_evaluation_plan(
             }
         }
     }
+    const auto add_order_edge = [&](
+        std::size_t before, std::size_t after) {
+        if (before == after) {
+            return;
+        }
+        append_unique(&plan.regions[after].dependencies, before);
+        append_unique(&precedes[before], after);
+    };
+    const auto hard_precedes = precedes;
+    const auto make_conflict = [&](
+        std::string kind,
+        ComponentId destination,
+        orlgraph::StableId destination_resource,
+        std::string destination_name,
+        const std::vector<std::size_t>& unordered,
+        std::string reason) {
+        EvaluationOrderConflict conflict;
+        conflict.destination_kind = std::move(kind);
+        conflict.destination = destination;
+        conflict.destination_resource = std::move(destination_resource);
+        conflict.destination_name = std::move(destination_name);
+        conflict.reason = std::move(reason);
+        conflict.pairwise = unordered.size() == 2;
+        for (const std::size_t index : unordered) {
+            if (index >= plan.regions.size()) {
+                continue;
+            }
+            const auto& region = plan.regions[index];
+            conflict.writers.push_back(region.node_id);
+            const auto* writer = graph.node(region.node_id);
+            const std::string name = writer == nullptr || writer->name.empty()
+                ? region.node_id.value : writer->name;
+            conflict.writer_names.push_back(name);
+
+            EvaluationOrderConflict::Writer detail;
+            detail.node_id = region.node_id;
+            detail.name = name;
+            detail.execution_order = region.execution_order;
+            detail.read_joints = region.read_joints;
+            detail.write_joints = region.write_joints;
+            detail.read_locators = region.read_locators;
+            detail.write_locators = region.write_locators;
+            detail.read_resources = region.read_resources;
+            detail.write_resources = region.write_resources;
+            for (const std::size_t other : unordered) {
+                if (other == index || other >= plan.regions.size()) {
+                    continue;
+                }
+                if (reaches(hard_precedes, other, index)) {
+                    detail.hard_predecessors.push_back(
+                        plan.regions[other].node_id);
+                }
+                if (reaches(hard_precedes, index, other)) {
+                    detail.hard_successors.push_back(
+                        plan.regions[other].node_id);
+                }
+            }
+            conflict.writer_details.push_back(std::move(detail));
+        }
+        for (std::size_t first = 0; first < unordered.size(); ++first) {
+            for (std::size_t second = first + 1;
+                 second < unordered.size(); ++second)
+            {
+                if (unordered[first] >= plan.regions.size()
+                    || unordered[second] >= plan.regions.size())
+                {
+                    continue;
+                }
+                conflict.candidates.push_back({
+                    plan.regions[unordered[first]].node_id,
+                    plan.regions[unordered[second]].node_id});
+                conflict.candidates.push_back({
+                    plan.regions[unordered[second]].node_id,
+                    plan.regions[unordered[first]].node_id});
+            }
+        }
+        return conflict;
+    };
     const auto report_competing = [&](
         std::string_view kind,
         const std::map<std::uint64_t, std::vector<std::size_t>>& writers) {
@@ -783,6 +1009,7 @@ EvaluationPlanCompileResult compile_evaluation_plan(
             if (writer_list.size() < 2) {
                 continue;
             }
+            std::vector<std::size_t> unordered;
             for (std::size_t first = 0; first < writer_list.size(); ++first) {
                 for (std::size_t second = first + 1;
                      second < writer_list.size(); ++second)
@@ -792,20 +1019,223 @@ EvaluationPlanCompileResult compile_evaluation_plan(
                     const bool forward = reaches(precedes, left, right);
                     const bool backward = reaches(precedes, right, left);
                     if (forward != backward) {
+                        if (plan.regions[left].execution_order.has_value()
+                            && plan.regions[right]
+                                .execution_order.has_value()
+                            && *plan.regions[left].execution_order
+                                != *plan.regions[right].execution_order)
+                        {
+                            const bool requested_forward =
+                                *plan.regions[left].execution_order
+                                < *plan.regions[right].execution_order;
+                            if ((requested_forward && backward)
+                                || (!requested_forward && forward))
+                            {
+                                result.status =
+                                    EvaluationPlanStatus::InvalidGraph;
+                                result.errors.push_back(
+                                    "Execution order contradicts a "
+                                    "dependency for " + std::string{kind}
+                                    + " '"
+                                    + component_label(
+                                        components, ComponentId{id}) + "'");
+                            }
+                        }
                         continue;
                     }
-                    result.errors.push_back(
-                        "Competing writers of " + std::string{kind} + " '"
-                        + component_label(components, ComponentId{id})
-                        + "': " + plan.regions[left].node_id.value
-                        + ", " + plan.regions[right].node_id.value);
+                    append_unique(&unordered, left);
+                    append_unique(&unordered, right);
                 }
             }
+            if (unordered.empty()) {
+                continue;
+            }
+
+            const bool all_have_order = std::all_of(
+                unordered.begin(), unordered.end(),
+                [&](std::size_t index) {
+                    return plan.regions[index].execution_order.has_value();
+                });
+            if (all_have_order) {
+                std::sort(unordered.begin(), unordered.end(),
+                    [&](std::size_t left, std::size_t right) {
+                        if (*plan.regions[left].execution_order
+                            != *plan.regions[right].execution_order)
+                        {
+                            return *plan.regions[left].execution_order
+                                < *plan.regions[right].execution_order;
+                        }
+                        return plan.regions[left].node_id
+                            < plan.regions[right].node_id;
+                    });
+                bool duplicate_order = false;
+                for (std::size_t index = 1;
+                     index < unordered.size(); ++index)
+                {
+                    if (*plan.regions[unordered[index - 1]]
+                            .execution_order
+                        == *plan.regions[unordered[index]]
+                            .execution_order)
+                    {
+                        duplicate_order = true;
+                        break;
+                    }
+                }
+                if (!duplicate_order) {
+                    for (std::size_t index = 1;
+                         index < unordered.size(); ++index)
+                    {
+                        const std::size_t before = unordered[index - 1];
+                        const std::size_t after = unordered[index];
+                        if (reaches(precedes, after, before)) {
+                            result.status =
+                                EvaluationPlanStatus::InvalidGraph;
+                            result.errors.push_back(
+                                "Execution order contradicts a dependency "
+                                "for " + std::string{kind} + " '"
+                                + component_label(
+                                    components, ComponentId{id}) + "'");
+                            continue;
+                        }
+                        add_order_edge(before, after);
+                    }
+                    continue;
+                }
+            }
+
+            result.status = EvaluationPlanStatus::UnresolvedOrder;
+            std::string legacy_message =
+                "Competing writers of " + std::string{kind} + " '"
+                + component_label(components, ComponentId{id}) + "':";
+            for (const std::size_t index : unordered) {
+                legacy_message += " " + plan.regions[index].node_id.value;
+            }
+            result.errors.push_back(std::move(legacy_message));
+            result.order_conflicts.push_back(make_conflict(
+                std::string{kind},
+                ComponentId{id},
+                {},
+                component_label(components, ComponentId{id}),
+                unordered,
+                "Competing writers have no unique dependency or execution "
+                "order"));
         }
     };
     report_competing("joint", joint_writer_regions);
     report_competing("controller", controller_writer_regions);
     report_competing("locator", locator_writer_regions);
+    const auto report_resource_competing =
+        [&](const std::map<orlgraph::StableId, std::vector<std::size_t>>&
+                writers) {
+            for (const auto& [resource, writer_list] : writers) {
+                if (writer_list.size() < 2) {
+                    continue;
+                }
+                std::vector<std::size_t> unordered;
+                for (std::size_t first = 0;
+                     first < writer_list.size(); ++first)
+                {
+                    for (std::size_t second = first + 1;
+                         second < writer_list.size(); ++second)
+                    {
+                        const std::size_t left = writer_list[first];
+                        const std::size_t right = writer_list[second];
+                        const bool forward = reaches(precedes, left, right);
+                        const bool backward =
+                            reaches(precedes, right, left);
+                        if (forward != backward) {
+                            if (plan.regions[left].execution_order
+                                    .has_value()
+                                && plan.regions[right]
+                                    .execution_order.has_value()
+                                && *plan.regions[left].execution_order
+                                    != *plan.regions[right]
+                                        .execution_order)
+                            {
+                                const bool requested_forward =
+                                    *plan.regions[left].execution_order
+                                    < *plan.regions[right].execution_order;
+                                if ((requested_forward && backward)
+                                    || (!requested_forward && forward))
+                                {
+                                    result.status =
+                                        EvaluationPlanStatus::InvalidGraph;
+                                    result.errors.push_back(
+                                        "Execution order contradicts a "
+                                        "dependency for resource '"
+                                        + resource.value + "'");
+                                }
+                            }
+                            continue;
+                        }
+                        append_unique(&unordered, left);
+                        append_unique(&unordered, right);
+                    }
+                }
+                if (unordered.empty()) {
+                    continue;
+                }
+                const bool all_have_order = std::all_of(
+                    unordered.begin(), unordered.end(),
+                    [&](std::size_t index) {
+                        return plan.regions[index].execution_order
+                            .has_value();
+                    });
+                if (all_have_order) {
+                    std::sort(unordered.begin(), unordered.end(),
+                        [&](std::size_t left, std::size_t right) {
+                            if (*plan.regions[left].execution_order
+                                != *plan.regions[right].execution_order)
+                            {
+                                return *plan.regions[left].execution_order
+                                    < *plan.regions[right].execution_order;
+                            }
+                            return plan.regions[left].node_id
+                                < plan.regions[right].node_id;
+                        });
+                    bool duplicate_order = false;
+                    for (std::size_t index = 1;
+                         index < unordered.size(); ++index)
+                    {
+                        if (*plan.regions[unordered[index - 1]]
+                                .execution_order
+                            == *plan.regions[unordered[index]]
+                                .execution_order)
+                        {
+                            duplicate_order = true;
+                            break;
+                        }
+                    }
+                    if (!duplicate_order) {
+                        for (std::size_t index = 1;
+                             index < unordered.size(); ++index)
+                        {
+                            const std::size_t before = unordered[index - 1];
+                            const std::size_t after = unordered[index];
+                            if (reaches(precedes, after, before)) {
+                                result.status =
+                                    EvaluationPlanStatus::InvalidGraph;
+                                result.errors.push_back(
+                                    "Execution order contradicts a "
+                                    "dependency for resource '"
+                                    + resource.value + "'");
+                            } else {
+                                add_order_edge(before, after);
+                            }
+                        }
+                        continue;
+                    }
+                }
+                result.status = EvaluationPlanStatus::UnresolvedOrder;
+                result.errors.push_back(
+                    "Competing writers of resource '" + resource.value + "'");
+                result.order_conflicts.push_back(make_conflict(
+                    "resource", {}, resource, resource.value, unordered,
+                    "Competing writers have no unique dependency or "
+                    "execution order"));
+            }
+        };
+    report_resource_competing(resource_writer_regions);
     for (std::size_t left = 0; left < plan.regions.size(); ++left) {
         if (!plan.regions[left].global) {
             continue;
@@ -823,6 +1253,7 @@ EvaluationPlanCompileResult compile_evaluation_plan(
                 "Unresolved order between '"
                 + plan.regions[left].node_id.value + "' and '"
                 + plan.regions[right].node_id.value + "'");
+            result.status = EvaluationPlanStatus::UnresolvedOrder;
         }
     }
 
@@ -841,6 +1272,12 @@ EvaluationPlanCompileResult compile_evaluation_plan(
                 level_indices.push_back(index);
             }
         }
+        std::sort(level_indices.begin(), level_indices.end(),
+            [&](std::size_t left, std::size_t right) {
+                return plan.regions[left].node_id
+                    < plan.regions[right].node_id;
+            });
+        std::sort(level.begin(), level.end());
         if (level.empty()) {
             std::string message = "Evaluation dependency cycle involving";
             for (std::size_t index = 0; index < plan.regions.size(); ++index) {
@@ -849,6 +1286,7 @@ EvaluationPlanCompileResult compile_evaluation_plan(
                 }
             }
             result.errors.push_back(std::move(message));
+            result.status = EvaluationPlanStatus::DependencyCycle;
             break;
         }
         for (const std::size_t index : level_indices) {
@@ -863,7 +1301,19 @@ EvaluationPlanCompileResult compile_evaluation_plan(
         plan.batches.push_back(std::move(level));
     }
 
-    if (!result.errors.empty()) {
+    // `order` is the executable solver-region order.  The graph schedule
+    // captured above also contains input adapters and other non-region
+    // nodes, so it cannot be used as the runtime stack order.
+    plan.order.clear();
+    for (const auto& batch : plan.batches) {
+        plan.order.insert(
+            plan.order.end(), batch.begin(), batch.end());
+    }
+
+    if (!result.errors.empty() || !result.order_conflicts.empty()) {
+        if (result.status == EvaluationPlanStatus::Success) {
+            result.status = EvaluationPlanStatus::InvalidGraph;
+        }
         return result;
     }
     result.plan = std::move(plan);
@@ -878,6 +1328,36 @@ DynamicDispatchPlan build_dynamic_dispatch_plan(
     if (dirty.empty() && !plan.stateful_evaluation_required) {
         return result;
     }
+    std::vector<ComponentId> effective_joints = dirty.joints;
+    std::vector<ComponentId> effective_locators = dirty.locators;
+    std::vector<ComponentId> pending_parents;
+    pending_parents.reserve(
+        effective_joints.size() + effective_locators.size());
+    pending_parents.insert(
+        pending_parents.end(),
+        effective_joints.begin(), effective_joints.end());
+    pending_parents.insert(
+        pending_parents.end(),
+        effective_locators.begin(), effective_locators.end());
+    for (std::size_t cursor = 0;
+         cursor < pending_parents.size(); ++cursor)
+    {
+        const auto found = plan.transform_children.find(
+            pending_parents[cursor].value);
+        if (found == plan.transform_children.end()) {
+            continue;
+        }
+        for (const ComponentId child : found->second) {
+            if (std::find(
+                    effective_locators.begin(),
+                    effective_locators.end(), child)
+                == effective_locators.end())
+            {
+                effective_locators.push_back(child);
+                pending_parents.push_back(child);
+            }
+        }
+    }
     std::vector<bool> selected(plan.regions.size(), false);
     if (dirty.empty() || dirty.full_evaluation
         || plan.full_evaluation_required
@@ -891,19 +1371,21 @@ DynamicDispatchPlan build_dynamic_dispatch_plan(
         for (std::size_t index = 0; index < plan.regions.size(); ++index) {
             const auto& region = plan.regions[index];
             bool is_dirty = region.global;
-            if (!dirty.joints.empty()) {
+            if (!effective_joints.empty()) {
                 is_dirty = is_dirty
-                    || intersects(region.affected_joints, dirty.joints)
-                    || intersects(region.read_joints, dirty.joints);
+                    || intersects(region.affected_joints, effective_joints)
+                    || intersects(region.read_joints, effective_joints);
             }
             if (!dirty.controllers.empty()) {
                 is_dirty = is_dirty
                     || intersects(region.read_controllers,
                         dirty.controllers);
             }
-            if (!dirty.locators.empty()) {
+            if (!effective_locators.empty()) {
                 is_dirty = is_dirty
-                    || intersects(region.read_locators, dirty.locators);
+                    || intersects(region.read_locators, effective_locators)
+                    || intersects(
+                        region.write_locators, effective_locators);
             }
             for (const std::size_t dependency : region.dependencies) {
                 if (dependency < selected.size() && selected[dependency]) {
@@ -929,6 +1411,30 @@ DynamicDispatchPlan build_dynamic_dispatch_plan(
                 }
             }
             selected[index] = is_dirty;
+        }
+        bool closure_changed = true;
+        while (closure_changed) {
+            closure_changed = false;
+            for (std::size_t index = 0;
+                 index < plan.regions.size(); ++index)
+            {
+                if (selected[index]) {
+                    continue;
+                }
+                const auto& region = plan.regions[index];
+                const bool dependency_selected =
+                    std::any_of(
+                        region.dependencies.begin(),
+                        region.dependencies.end(),
+                        [&](std::size_t dependency) {
+                            return dependency < selected.size()
+                                && selected[dependency];
+                        });
+                if (dependency_selected) {
+                    selected[index] = true;
+                    closure_changed = true;
+                }
+            }
         }
         const std::size_t selected_count = static_cast<std::size_t>(
             std::count(selected.begin(), selected.end(), true));

@@ -55,6 +55,7 @@ struct StaticValueSetResult {
 enum class GraphEvaluationUiState {
     Editing,
     Compiling,
+    AwaitingOrder,
     Evaluating,
 };
 
@@ -72,6 +73,7 @@ public:
     void set_project_context(ComponentManager* components,
         ComponentId weight_id, ComponentId deformer_id);
     void set_evaluation_ui_state(GraphEvaluationUiState state);
+    bool resolve_order_conflicts();
     bool graph_editing_enabled() const {
         return evaluation_ui_state_ == GraphEvaluationUiState::Editing;
     }
@@ -293,6 +295,7 @@ private:
     std::optional<node_graph::NodeClipboard> nodeClipboard;
     int pasteSerial = 0;
     bool project_file_dialog_active_ = false;
+    bool order_resolver_active_ = false;
     GraphEvaluationUiState evaluation_ui_state_ =
         GraphEvaluationUiState::Editing;
 };

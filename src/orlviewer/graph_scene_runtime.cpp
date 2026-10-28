@@ -80,6 +80,35 @@ FusionAssessment assess_solver_fusion(
             "evaluation plan contains stateful solver regions";
         return result;
     }
+    // Parent propagation is currently a host-side base stage.  A fused
+    // launch cannot safely let a solver update a parent and then have a
+    // later solver read the child locator without lowering that stage into
+    // the same CUDA program.  Keep this case on the segmented correctness
+    // path until the hierarchy operation has a device lowering.
+    for (const auto& region : plan.regions) {
+        bool writes_parent = false;
+        for (const auto& parent : plan.transform_children) {
+            writes_parent = std::find(
+                region.write_joints.begin(),
+                region.write_joints.end(),
+                orlrig::ComponentId{parent.first})
+                != region.write_joints.end()
+                || std::find(
+                    region.write_locators.begin(),
+                    region.write_locators.end(),
+                    orlrig::ComponentId{parent.first})
+                    != region.write_locators.end();
+            if (writes_parent) {
+                break;
+            }
+        }
+        if (writes_parent) {
+            result.diagnostic =
+                "transform hierarchy parent writes require segmented "
+                "base propagation";
+            return result;
+        }
+    }
 
     for (const auto& connection : graph.connections()) {
         if (connection.feedback) {
@@ -535,7 +564,20 @@ void GraphSceneRuntime::unbind() {
 void GraphSceneRuntime::on_update(vkkk::Context& context) {
     const bool solver_stage = stage_.has_value()
         && *stage_ == orlgraph::GraphStage::Solver;
-    if (!runtime_config.evaluate_orl) {
+    if (solver_stage && !runtime_config.evaluate_orl
+        && runtime_config.evaluation_phase
+            == OrlEvaluationPhase::AwaitingOrder)
+    {
+        graph_context_.scene_inputs().set_cuda_evaluation(false);
+        graph_context_.clear_computed_joints_device();
+        graph_context_.clear_computed_locators_device();
+        return;
+    }
+    if (!runtime_config.evaluate_orl
+        && (!solver_stage
+            || runtime_config.evaluation_phase
+                != OrlEvaluationPhase::AwaitingOrder))
+    {
         if (solver_stage) {
             runtime_config.evaluation_phase =
                 OrlEvaluationPhase::Disabled;
@@ -616,9 +658,17 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
                 graph_context_.clear_computed_joints_device();
                 graph_context_.clear_computed_locators_device();
                 graph_active_ = false;
-                runtime_config.evaluate_orl = false;
-                runtime_config.evaluation_phase =
-                    OrlEvaluationPhase::Disabled;
+                if (graph_context_.evaluation_plan_status()
+                    == orlrig::EvaluationPlanStatus::UnresolvedOrder)
+                {
+                    runtime_config.evaluate_orl = false;
+                    runtime_config.evaluation_phase =
+                        OrlEvaluationPhase::AwaitingOrder;
+                } else {
+                    runtime_config.evaluate_orl = false;
+                    runtime_config.evaluation_phase =
+                        OrlEvaluationPhase::Disabled;
+                }
             } else {
                 runtime_config.evaluation_phase =
                     OrlEvaluationPhase::Evaluating;
@@ -891,6 +941,30 @@ bool GraphSceneRuntime::dispatch_graph(vkkk::Context& context, bool capture)
         dirty.joints = active_change_set_.joints;
         dirty.controllers = active_change_set_.controllers;
         dirty.locators = active_change_set_.locators;
+        if (evaluation_plan_ != nullptr
+            && graph_context_.computed_locators_device().has_value())
+        {
+            const auto parent_dirty = [&](const std::vector<ComponentId>& ids) {
+                return std::any_of(
+                    ids.begin(), ids.end(),
+                    [&](ComponentId id) {
+                        return evaluation_plan_->transform_children
+                            .contains(id.value);
+                    });
+            };
+            if (parent_dirty(dirty.joints)
+                || parent_dirty(dirty.locators))
+            {
+                // The previous frame's locator view is final output. A
+                // changed parent invalidates that view; materialize the new
+                // hierarchy base before the next solver dispatch.
+                graph_context_.clear_computed_locators_device();
+                std::string hierarchy_error;
+                (void)graph_context_.apply_transform_hierarchy(
+                    &hierarchy_error);
+                graph_context_.scene_inputs().refresh();
+            }
+        }
         if (evaluation_plan_ == nullptr) {
             active_dispatch_ = {};
         } else if (runner_.backend() == exec::Backend::Cuda) {
@@ -1107,6 +1181,9 @@ std::size_t GraphSceneRuntime::graph_fingerprint() const
     for (const auto& [id, node] : graph.nodes()) {
         stream << "|node:" << id.value << ':' << node.definition.value
                << ':' << node.name;
+        if (node.execution_order.has_value()) {
+            stream << ":execution_order=" << *node.execution_order;
+        }
         for (const auto& [name, value] : node.parameter_values) {
             stream << "|param:" << name << '=' << constant_fingerprint(value);
         }
@@ -2400,6 +2477,47 @@ bool GraphSceneRuntime::execute_orl_segment(
     }
 
     auto& segment = orl_segments_[segment_index];
+    if (stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver
+        && evaluation_plan_ != nullptr)
+    {
+        std::vector<ComponentId> preserve_locators;
+        bool current_segment_reached = false;
+        for (const auto& step : execution_plan_) {
+            if (step.kind != ExecutionStep::Kind::OrlSegment) {
+                continue;
+            }
+            if (step.index == segment_index) {
+                current_segment_reached = true;
+                break;
+            }
+            if (step.index >= orl_segments_.size()) {
+                continue;
+            }
+            for (const auto& node_id :
+                 orl_segments_[step.index].region_nodes)
+            {
+                const auto* region = evaluation_plan_->region(node_id);
+                if (region == nullptr) {
+                    continue;
+                }
+                for (const auto id : region->write_locators) {
+                    if (std::find(
+                            preserve_locators.begin(),
+                            preserve_locators.end(), id)
+                        == preserve_locators.end())
+                    {
+                        preserve_locators.push_back(id);
+                    }
+                }
+            }
+        }
+        if (!current_segment_reached) {
+            return report_failure(
+                "solver segment is not present in the execution order");
+        }
+        graph_context_.refresh_scene_inputs_preserving(preserve_locators);
+    }
     auto& execution = *segment.execution;
     if (!graph_context_.bind_graph_inputs(execution, segment.graph))
     {
@@ -2601,6 +2719,56 @@ bool GraphSceneRuntime::execute_orl_segment(
                   << error << '\n';
         return report_failure(
             "graph scene writeback failed: " + error);
+    }
+    if (stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver
+        && graph_context_.transform_hierarchy_plan().has_value())
+    {
+        bool has_parented_locator = false;
+        for (const auto& node :
+             graph_context_.transform_hierarchy_plan()->nodes)
+        {
+            if (node.kind == orlrig::ComponentKind::Locator
+                && node.parent_index >= 0)
+            {
+                has_parented_locator = true;
+                break;
+            }
+        }
+        bool has_future_segment = false;
+        bool current_segment_reached = false;
+        for (const auto& step : execution_plan_) {
+            if (step.kind != ExecutionStep::Kind::OrlSegment) {
+                continue;
+            }
+            if (step.index == segment_index) {
+                current_segment_reached = true;
+                continue;
+            }
+            if (current_segment_reached) {
+                has_future_segment = true;
+                break;
+            }
+        }
+        if (has_parented_locator && !has_future_segment) {
+            std::vector<ComponentId> preserve_locators;
+            if (evaluation_plan_ != nullptr) {
+                for (const auto& region : evaluation_plan_->regions) {
+                    for (const auto id : region.write_locators) {
+                        if (std::find(
+                                preserve_locators.begin(),
+                                preserve_locators.end(), id)
+                            == preserve_locators.end())
+                        {
+                            preserve_locators.push_back(id);
+                        }
+                    }
+                }
+            }
+            graph_context_.refresh_scene_inputs_preserving(
+                preserve_locators);
+            graph_context_.clear_computed_locators_device();
+        }
     }
     return true;
 }

@@ -2,6 +2,8 @@
 
 #include <glm/gtc/matrix_inverse.hpp>
 
+#include "../orlexec/orlrig/transform_hierarchy.hpp"
+
 #include <utility>
 
 namespace ORL
@@ -568,8 +570,87 @@ bool ComponentManager::set_locator_world_xform(ComponentId locator,
     if (value == nullptr) {
         return false;
     }
+    if (const auto* existing = store.transform_parent(locator);
+        existing != nullptr && existing->enabled
+            && existing->parent_kind != orlrig::TransformParentKind::World)
+    {
+        glm::mat4 parent_world{1.0f};
+        if (!target_world_xform(existing->parent, parent_world)) {
+            return false;
+        }
+        auto updated = *existing;
+        const glm::mat4 inherited = orlrig::inherited_parent_matrix(
+            parent_world,
+            existing->inherit_translation,
+            existing->inherit_rotation,
+            existing->inherit_scale);
+        updated.local_offset = glm::inverse(inherited) * world;
+        if (!store.set_transform_parent(std::move(updated))) {
+            return false;
+        }
+    }
     value->xform = world;
     return true;
+}
+
+bool ComponentManager::bind_transform_parent(
+    ComponentId child, ComponentId parent, bool maintain_world,
+    bool inherit_translation, bool inherit_rotation,
+    bool inherit_scale, std::string* error)
+{
+    const auto* child_meta = find(child);
+    if (child_meta == nullptr || child_meta->kind != ComponentKind::Locator) {
+        return set_error(error, "Transform-parent child must be a locator");
+    }
+    const auto* parent_meta = find(parent);
+    if (parent_meta == nullptr
+        || (parent_meta->kind != ComponentKind::Joint
+            && parent_meta->kind != ComponentKind::Locator))
+    {
+        return set_error(error,
+            "Transform-parent parent must be a joint or locator");
+    }
+    const auto* child_value = locator(child);
+    if (child_value == nullptr) {
+        return set_error(error, "Transform-parent child transform is unavailable");
+    }
+    glm::mat4 parent_world{1.0f};
+    if (!target_world_xform(parent, parent_world)) {
+        return set_error(error, "Transform-parent parent transform is unavailable");
+    }
+    orlrig::TransformParentRelation relation;
+    relation.child = child;
+    relation.parent = parent;
+    relation.parent_kind = parent_meta->kind == ComponentKind::Joint
+        ? orlrig::TransformParentKind::Joint
+        : orlrig::TransformParentKind::Locator;
+    const glm::mat4 inherited_parent = orlrig::inherited_parent_matrix(
+        parent_world,
+        relation.inherit_translation,
+        relation.inherit_rotation,
+        relation.inherit_scale);
+    relation.local_offset = maintain_world
+        ? glm::inverse(inherited_parent) * child_value->xform
+        : glm::mat4{1.0f};
+    relation.inherit_translation = inherit_translation;
+    relation.inherit_rotation = inherit_rotation;
+    relation.inherit_scale = inherit_scale;
+    relation.enabled = true;
+    if (!store.set_transform_parent(std::move(relation), error)) {
+        return false;
+    }
+    return true;
+}
+
+bool ComponentManager::clear_transform_parent(ComponentId child)
+{
+    return store.clear_transform_parent(child);
+}
+
+const orlrig::TransformParentRelation*
+ComponentManager::transform_parent(ComponentId child) const
+{
+    return store.transform_parent(child);
 }
 
 bool ComponentManager::target_world_xform(ComponentId target,
@@ -607,8 +688,14 @@ bool ComponentManager::set_target_world_xform(ComponentId target,
         return set_error(error, "Transform target no longer exists");
     }
     if (meta->kind == ComponentKind::Locator) {
-        return set_locator_world_xform(target, world)
-            || set_error(error, "Locator transform is unavailable");
+        // Controller input is an authored/input-layer write. For a parented
+        // locator, update the local offset so the next hierarchy pass keeps
+        // the requested world pose instead of overwriting it with the old
+        // offset.
+        if (!set_locator_world_xform(target, world)) {
+            return set_error(error, "Locator transform is unavailable");
+        }
+        return true;
     }
     if (meta->kind != ComponentKind::Joint) {
         return set_error(error, "Transform target is not a joint or locator");

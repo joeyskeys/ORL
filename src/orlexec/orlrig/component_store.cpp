@@ -1,5 +1,7 @@
 #include "component_store.hpp"
 
+#include <algorithm>
+
 namespace orlrig
 {
 
@@ -65,6 +67,9 @@ bool ComponentStore::destroy(ComponentId id) {
     }
     if (found->second.meta.kind == ComponentKind::Locator) {
         std::erase(locator_order, id);
+    }
+    if (transform_parents_.erase(id.value) != 0) {
+        ++relation_revision_;
     }
     records.erase(found);
     ++revision;
@@ -248,6 +253,91 @@ std::int64_t ComponentStore::locator_index(ComponentId id) const {
         }
     }
     return -1;
+}
+
+bool ComponentStore::set_transform_parent(
+    TransformParentRelation relation, std::string* error)
+{
+    const auto fail = [error](std::string message) {
+        if (error != nullptr) {
+            *error = std::move(message);
+        }
+        return false;
+    };
+    const auto* child = find(relation.child);
+    if (child == nullptr || child->kind != ComponentKind::Locator) {
+        return fail("Transform parent child must be an existing locator");
+    }
+    if (relation.parent_kind == TransformParentKind::World) {
+        relation.parent = {};
+        relation.parent_kind = TransformParentKind::World;
+    } else {
+        const auto* parent = find(relation.parent);
+        const ComponentKind expected =
+            relation.parent_kind == TransformParentKind::Joint
+                ? ComponentKind::Joint : ComponentKind::Locator;
+        if (parent == nullptr || parent->kind != expected) {
+            return fail("Transform parent does not match the declared kind");
+        }
+        if (relation.parent == relation.child) {
+            return fail("A transform cannot be its own parent");
+        }
+        if (relation.parent_kind == TransformParentKind::Locator) {
+            ComponentId current = relation.parent;
+            for (std::size_t step = 0; step <= transform_parents_.size();
+                 ++step)
+            {
+                if (current == relation.child) {
+                    return fail("Transform parent relationship contains a cycle");
+                }
+                const auto found = transform_parents_.find(current.value);
+                if (found == transform_parents_.end()
+                    || !found->second.enabled
+                    || found->second.parent_kind
+                        != TransformParentKind::Locator)
+                {
+                    break;
+                }
+                current = found->second.parent;
+            }
+        }
+    }
+    transform_parents_[relation.child.value] = relation;
+    ++relation_revision_;
+    ++revision;
+    return true;
+}
+
+bool ComponentStore::clear_transform_parent(ComponentId child)
+{
+    if (transform_parents_.erase(child.value) == 0) {
+        return false;
+    }
+    ++relation_revision_;
+    ++revision;
+    return true;
+}
+
+const TransformParentRelation* ComponentStore::transform_parent(
+    ComponentId child) const
+{
+    const auto found = transform_parents_.find(child.value);
+    return found == transform_parents_.end() ? nullptr : &found->second;
+}
+
+std::vector<TransformParentRelation> ComponentStore::transform_parents() const
+{
+    std::vector<TransformParentRelation> result;
+    result.reserve(transform_parents_.size());
+    for (const auto& [_, relation] : transform_parents_) {
+        result.push_back(relation);
+    }
+    std::sort(result.begin(), result.end(),
+        [](const TransformParentRelation& left,
+            const TransformParentRelation& right) {
+            return left.child.value < right.child.value;
+        });
+    return result;
 }
 
 ComponentStore::Record* ComponentStore::record(ComponentId id) {

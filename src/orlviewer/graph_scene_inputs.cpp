@@ -723,7 +723,12 @@ void SceneInputCatalog::set_computed_joints_device(
 
 void SceneInputCatalog::clear_computed_joints_device()
 {
-    clear_computed_device_state();
+    computed_joints_device_.reset();
+    computed_joints_device_count_ = 0;
+    handle_view_context_.joints.device_ptr = 0;
+    handle_view_context_.joints.device_bytes = 0;
+    packed_solver_inputs.device_host_joints_snapshot.clear();
+    computed_solver_context_device_.reset();
 }
 
 void SceneInputCatalog::clear_computed_device_state()
@@ -764,7 +769,11 @@ void SceneInputCatalog::set_computed_locators_device(
 
 void SceneInputCatalog::clear_computed_locators_device()
 {
-    clear_computed_device_state();
+    computed_locators_device_.reset();
+    computed_locators_device_count_ = 0;
+    handle_view_context_.locators.device_ptr = 0;
+    handle_view_context_.locators.device_bytes = 0;
+    packed_solver_inputs.device_host_locators_snapshot.clear();
 }
 
 void SceneInputCatalog::set_computed_solver_context_device(

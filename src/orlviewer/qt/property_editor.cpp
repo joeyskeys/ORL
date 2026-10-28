@@ -33,6 +33,7 @@
 #include <glm/gtx/quaternion.hpp>
 
 #include "../component_manager.hpp"
+#include "../runtime_config.hpp"
 #include "../scene_graph_context.hpp"
 #include "node_graph_editor.hpp"
 
@@ -236,6 +237,27 @@ PropertyEditor::PropertyEditor(const Selection& selection,
     }
     content_layout->addWidget(transform_group_);
 
+    transform_parent_group_ = new QGroupBox(
+        QStringLiteral("Transform Parent"), content);
+    auto* parent_layout = new QVBoxLayout(transform_parent_group_);
+    transform_parent_source_ = new QLabel(transform_parent_group_);
+    transform_parent_source_->setWordWrap(true);
+    parent_layout->addWidget(transform_parent_source_);
+    auto* parent_buttons = new QHBoxLayout();
+    bind_transform_parent_button_ = new QPushButton(
+        QStringLiteral("Bind selected parent"), transform_parent_group_);
+    clear_transform_parent_button_ = new QPushButton(
+        QStringLiteral("Clear parent"), transform_parent_group_);
+    parent_buttons->addWidget(bind_transform_parent_button_);
+    parent_buttons->addWidget(clear_transform_parent_button_);
+    parent_layout->addLayout(parent_buttons);
+    QObject::connect(bind_transform_parent_button_, &QPushButton::clicked,
+        this, [this] { bind_selected_transform_parent(); });
+    QObject::connect(clear_transform_parent_button_, &QPushButton::clicked,
+        this, [this] { clear_selected_transform_parent(); });
+    content_layout->addWidget(transform_parent_group_);
+    transform_parent_group_->setVisible(false);
+
     draft_note_ = new QLabel(
         QStringLiteral("Edit a component and press Enter or leave the field "
                        "to write it back to the selected element."),
@@ -270,6 +292,7 @@ void PropertyEditor::refresh_scene_context() {
             QStringLiteral("Select a viewport element to inspect its properties."));
         nameGroup->setVisible(false);
         transform_group_->setVisible(false);
+        transform_parent_group_->setVisible(false);
         return;
     }
 
@@ -301,6 +324,7 @@ void PropertyEditor::refresh_scene_context() {
     QString source;
     if (focus == nullptr || !make_transform(*focus, values, source)) {
         transform_group_->setVisible(false);
+        transform_parent_group_->setVisible(false);
         return;
     }
 
@@ -311,6 +335,119 @@ void PropertyEditor::refresh_scene_context() {
         rotation_editor_, values.rotation_degrees, has_trs);
     set_vector_editor(scale_editor_, values.scale, has_trs);
     transform_group_->setVisible(true);
+
+    const bool locator_focus =
+        focus != nullptr && focus->kind == SelectionRef::Kind::Locator;
+    transform_parent_group_->setVisible(locator_focus);
+    if (locator_focus) {
+        const auto* relation = components_.transform_parent(
+            focus->component);
+        if (relation == nullptr
+            || relation->parent_kind == orlrig::TransformParentKind::World)
+        {
+            transform_parent_source_->setText(
+                QStringLiteral("Parent: World"));
+            clear_transform_parent_button_->setEnabled(false);
+        } else {
+            const auto* parent = components_.find(relation->parent);
+            transform_parent_source_->setText(
+                QStringLiteral("Parent: %1")
+                    .arg(parent == nullptr
+                        ? QStringLiteral("<missing>")
+                        : QString::fromStdString(parent->name)));
+            clear_transform_parent_button_->setEnabled(true);
+        }
+        bool has_parent_candidate = false;
+        for (const auto& ref : refs) {
+            if (ref.component != focus->component
+                && (ref.kind == SelectionRef::Kind::Joint
+                    || ref.kind == SelectionRef::Kind::Locator))
+            {
+                has_parent_candidate = true;
+                break;
+            }
+        }
+        bind_transform_parent_button_->setEnabled(has_parent_candidate);
+    }
+}
+
+void PropertyEditor::bind_selected_transform_parent()
+{
+    ComponentId child;
+    ComponentId parent;
+    const auto* focus = selection_.focus();
+    for (const auto& ref : selection_.refs()) {
+        if (ref.kind == SelectionRef::Kind::Locator
+            && (!child
+                || (focus != nullptr && ref.component == focus->component)))
+        {
+            child = ref.component;
+        }
+    }
+    for (const auto& ref : selection_.refs()) {
+        if (ref.component == child
+            || (ref.kind != SelectionRef::Kind::Joint
+                && ref.kind != SelectionRef::Kind::Locator))
+        {
+            continue;
+        }
+        if (parent) {
+            QMessageBox::warning(this, QStringLiteral("Transform parent"),
+                QStringLiteral(
+                    "Select exactly one parent joint or locator."));
+            return;
+        }
+        parent = ref.component;
+    }
+    if (!child || !parent) {
+        QMessageBox::warning(this, QStringLiteral("Transform parent"),
+            QStringLiteral(
+                "Select a locator and exactly one joint or locator parent."));
+        return;
+    }
+    std::string error;
+    if (!components_.bind_transform_parent(
+            child, parent, true, true, true, true, &error))
+    {
+        QMessageBox::warning(this, QStringLiteral("Transform parent"),
+            QString::fromStdString(error));
+        return;
+    }
+    if (runtime_config.evaluate_orl) {
+        runtime_config.evaluate_orl = false;
+        runtime_config.evaluation_phase = OrlEvaluationPhase::Disabled;
+        if (graphContext != nullptr) {
+            graphContext->clear_computed_joints_device();
+            graphContext->clear_computed_locators_device();
+        }
+    }
+    if (graphContext != nullptr) {
+        graphContext->refresh_scene_inputs();
+    }
+    refresh();
+}
+
+void PropertyEditor::clear_selected_transform_parent()
+{
+    const auto* focus = selection_.focus();
+    if (focus == nullptr || focus->kind != SelectionRef::Kind::Locator) {
+        return;
+    }
+    if (!components_.clear_transform_parent(focus->component)) {
+        return;
+    }
+    if (runtime_config.evaluate_orl) {
+        runtime_config.evaluate_orl = false;
+        runtime_config.evaluation_phase = OrlEvaluationPhase::Disabled;
+        if (graphContext != nullptr) {
+            graphContext->clear_computed_joints_device();
+            graphContext->clear_computed_locators_device();
+        }
+    }
+    if (graphContext != nullptr) {
+        graphContext->refresh_scene_inputs();
+    }
+    refresh();
 }
 
 void PropertyEditor::refresh_node_graph_context() {
@@ -318,6 +455,7 @@ void PropertyEditor::refresh_node_graph_context() {
     node_group_->setVisible(true);
     nameGroup->setVisible(false);
     transform_group_->setVisible(false);
+    transform_parent_group_->setVisible(false);
     draft_note_->setVisible(false);
 
     if (node_graph_editor_ == nullptr) {

@@ -4,6 +4,7 @@
 #include "hierarchy.hpp"
 #include "graph_ir.hpp"
 #include "graph_schedule.hpp"
+#include "transform_hierarchy.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -41,6 +42,7 @@ struct SolverRegion {
     std::vector<std::int64_t> write_packed_indices;
     std::vector<std::int64_t> affected_packed_indices;
     std::vector<std::size_t> dependencies;
+    std::optional<std::int64_t> execution_order;
 };
 
 struct DirtyInputs {
@@ -90,6 +92,11 @@ struct EvaluationPlan {
         joint_readers;
     std::map<std::uint64_t, std::vector<orlgraph::StableId>>
         joint_writers;
+    // Reverse edges for the transform base layer.  Dirty propagation uses
+    // these stable component IDs to reach parented locator consumers without
+    // rebuilding the evaluation plan.
+    std::map<std::uint64_t, std::vector<ComponentId>>
+        transform_children;
 
     const SolverRegion* region(
         const orlgraph::StableId& node_id) const;
@@ -99,12 +106,55 @@ struct EvaluationPlan {
         ComponentId id) const;
 };
 
+enum class EvaluationPlanStatus {
+    Success,
+    InvalidGraph,
+    UnresolvedOrder,
+    DependencyCycle,
+};
+
+struct EvaluationOrderConflict {
+    std::string destination_kind;
+    ComponentId destination;
+    // Resource destinations do not have a rig component ID.  This remains
+    // empty for joint/locator/controller conflicts.
+    orlgraph::StableId destination_resource;
+    std::string destination_name;
+    std::vector<orlgraph::StableId> writers;
+    std::vector<std::string> writer_names;
+    struct Writer {
+        orlgraph::StableId node_id;
+        std::string name;
+        std::optional<std::int64_t> execution_order;
+        std::vector<ComponentId> read_joints;
+        std::vector<ComponentId> write_joints;
+        std::vector<ComponentId> read_locators;
+        std::vector<ComponentId> write_locators;
+        std::vector<orlgraph::StableId> read_resources;
+        std::vector<orlgraph::StableId> write_resources;
+        std::vector<orlgraph::StableId> hard_predecessors;
+        std::vector<orlgraph::StableId> hard_successors;
+    };
+    struct Candidate {
+        orlgraph::StableId before;
+        orlgraph::StableId after;
+    };
+    std::vector<Writer> writer_details;
+    std::vector<Candidate> candidates;
+    std::string reason;
+    bool pairwise = false;
+};
+
 struct EvaluationPlanCompileResult {
+    EvaluationPlanStatus status = EvaluationPlanStatus::Success;
     std::optional<EvaluationPlan> plan;
     std::vector<std::string> errors;
+    std::vector<EvaluationOrderConflict> order_conflicts;
 
     explicit operator bool() const {
-        return plan.has_value() && errors.empty();
+        return status == EvaluationPlanStatus::Success
+            && plan.has_value() && errors.empty()
+            && order_conflicts.empty();
     }
 };
 
@@ -112,7 +162,8 @@ EvaluationPlanCompileResult compile_evaluation_plan(
     const orlgraph::GraphModule& graph,
     const orlgraph::NodeRegistry& registry,
     const ComponentStore& components,
-    const HierarchyPlan& hierarchy);
+    const HierarchyPlan& hierarchy,
+    const TransformHierarchyPlan* transform_hierarchy = nullptr);
 
 DynamicDispatchPlan build_dynamic_dispatch_plan(
     const EvaluationPlan& plan, const DirtyInputs& dirty,
