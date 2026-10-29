@@ -200,6 +200,11 @@ public:
     // execution uses the host allocation directly; CUDA uploads the same
     // allocation once and passes offsets from SolverContext.
     bool bind_solver_context(const PackedBufferView& view);
+    // Binds the complete packed arena for a persistent CUDA evaluation
+    // session. Unlike a parameter binding, this remains owned and usable
+    // across clear_bindings() calls and also works for handle-only programs
+    // that have no explicit solver_context parameter.
+    bool bind_persistent_packed_arena(const PackedBufferView& view);
     // Updates the implicit hierarchy_context global when the compiled
     // program uses it. This is a no-op for ordinary programs.
     bool set_hierarchy_context(const orlrig::HierarchyContext& context);
@@ -217,8 +222,16 @@ public:
     bool evaluate_device(std::uint32_t element_count = 1);
     std::optional<DeviceBufferView> device_buffer_view(std::string_view parameter);
     std::optional<std::uint64_t> device_buffer_pointer(std::string_view parameter);
+    // Returns the complete persistent packed CUDA allocation.
+    std::optional<DeviceBufferView> persistent_packed_device_view();
+    // Uploads pending host changes for the complete persistent packed arena
+    // without launching the entry function.
+    bool flush_persistent_packed_arena();
     std::optional<DeviceBufferView> handle_joint_device_view();
     std::optional<DeviceBufferView> handle_locator_device_view();
+    // Copies the complete persistent packed CUDA allocation into its bound
+    // host arena. The caller must synchronize the last launch first.
+    bool readback_persistent_packed_arena();
     ExecutionTelemetry last_execution_telemetry() const;
     bool synchronize();
 

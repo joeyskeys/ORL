@@ -63,6 +63,7 @@ public:
     Status draw_mesh_pick(std::span<const MeshPickInstance> instances);
     Status upload_device_pick_joints(DeviceBuffer device, std::uint32_t count);
     Status draw_joint_pick(const JointPickDraw& draw);
+    Status upload_device_pick_locators(DeviceBuffer device, std::uint32_t count);
     Status draw_rig_pick(const RigPickDraw& draw);
     Status read_pick(PickLayer layer, std::uint64_t min_serial,
         std::uint32_t x, std::uint32_t y, PickReadback& readback);

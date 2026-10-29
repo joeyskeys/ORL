@@ -66,7 +66,7 @@ public:
                 continue;
             }
             const auto attr = selection.dest(ref);
-            if (!attr) {
+            if (!attr || !attr.writable()) {
                 starts.clear();
                 engaged = false;
                 return;

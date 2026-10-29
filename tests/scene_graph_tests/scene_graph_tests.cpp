@@ -609,6 +609,63 @@ TEST_CASE("controller attachments preserve target-local transforms",
     REQUIRE(components.validate_controller_attachments(&error));
 }
 
+TEST_CASE("controlled locators reject direct transform edits",
+    "[scene-graph][attachment][transform]")
+{
+    ORL::ComponentManager components;
+    const auto locator = components.create_locator(
+        "locator", orlrig::make_locator(glm::vec3{2.0f, 0.0f, 0.0f}));
+    const auto controller = components.create_controller(
+        "controller", orlrig::make_controller(glm::vec3{2.0f, 0.0f, 0.0f}));
+    std::string error;
+    REQUIRE(components.attach_controller(controller, locator, &error));
+
+    glm::mat4 direct_edit{1.0f};
+    direct_edit[3] = glm::vec4{8.0f, 0.0f, 0.0f, 1.0f};
+    REQUIRE_FALSE(components.set_locator_world_xform(locator, direct_edit));
+    REQUIRE(components.locator(locator)->xform[3].x
+        == Catch::Approx(2.0f));
+
+    REQUIRE(components.set_controller_world_xform(
+        controller, direct_edit, &error));
+    REQUIRE(components.apply_controller_inputs(&error));
+    REQUIRE(components.locator(locator)->xform[3].x
+        == Catch::Approx(8.0f));
+
+    const auto parent = components.create_joint("parent");
+    const auto parented = components.create_locator(
+        "parented", orlrig::make_locator(glm::vec3{3.0f, 0.0f, 0.0f}));
+    REQUIRE(components.bind_transform_parent(
+        parented, parent, true, true, true, true, &error));
+    REQUIRE_FALSE(components.set_locator_world_xform(
+        parented, direct_edit));
+    REQUIRE(components.locator(parented)->xform[3].x
+        == Catch::Approx(3.0f));
+}
+
+TEST_CASE("selection rejects graph-constrained locator edits",
+    "[scene-graph][selection][transform]")
+{
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    const auto locator = components.create_locator(
+        "locator", orlrig::make_locator(glm::vec3{2.0f, 0.0f, 0.0f}));
+    ORL::Selection selection(components, scene);
+    selection.set_locator_edit_predicate(
+        [locator](ORL::ComponentId id) { return id != locator; });
+
+    auto attr = selection.dest(ORL::SelectionRef::locator(locator));
+    REQUIRE(attr);
+    REQUIRE_FALSE(attr.writable());
+
+    glm::mat4 attempted{1.0f};
+    attempted[3] = glm::vec4{9.0f, 0.0f, 0.0f, 1.0f};
+    REQUIRE_FALSE(attr.set_world_position(glm::vec3{9.0f, 0.0f, 0.0f}));
+    REQUIRE_FALSE(attr.set_world_matrix(attempted));
+    REQUIRE(components.locator(locator)->xform[3].x
+        == Catch::Approx(2.0f));
+}
+
 TEST_CASE("attachment toggle accepts controller plus joint context",
     "[scene-graph][attachment][controls]")
 {
@@ -1168,6 +1225,28 @@ TEST_CASE("CUDA scene inputs share one packed arena",
     REQUIRE(controllers.packed->bytes == 2 * orlrig::kMatrixStride);
     REQUIRE(target.packed->bytes == orlrig::kLocatorStride);
     REQUIRE(target.packed->offset == locators.packed->offset);
+
+    const auto target_id = components.find("target")->id;
+    context.set_computed_joints_device(
+        ORL::exec::DeviceBufferView{
+            0x12340000, 2 * orlrig::kJointStride},
+        2);
+    context.set_computed_locators_device(
+        ORL::exec::DeviceBufferView{
+            0x56780000, 2 * orlrig::kLocatorStride},
+        2);
+    components.locator(target_id)->xform[3][0] += 1.0f;
+    context.refresh_scene_inputs();
+    REQUIRE(context.scene_inputs().resolve_binding(
+        orlrig::kSceneLocatorsBinding, locators, &error));
+    REQUIRE(locators.packed.has_value());
+    REQUIRE(locators.packed->dirty_ranges.size() == 1);
+    REQUIRE(locators.packed->dirty_ranges.front().bytes
+        == orlrig::kLocatorStride);
+    REQUIRE(locators.packed->dirty_ranges.front().offset
+        >= locators.packed->offset);
+    REQUIRE(locators.packed->dirty_ranges.front().offset
+        < locators.packed->offset + locators.packed->bytes);
 
     REQUIRE(context.scene_inputs().set_cuda_evaluation(false));
     REQUIRE(context.scene_inputs().resolve_binding(

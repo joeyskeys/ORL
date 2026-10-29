@@ -311,6 +311,20 @@ bool OrlGraphExecution::bind_solver_context(
     return true;
 }
 
+bool OrlGraphExecution::bind_persistent_packed_arena(
+    const PackedBufferView& view)
+{
+    if (!execution_.has_value()) {
+        errors_.emplace_back("ORL graph execution is invalid");
+        return false;
+    }
+    if (!execution_->bind_persistent_packed_arena(view)) {
+        errors_ = execution_->errors();
+        return false;
+    }
+    return true;
+}
+
 bool OrlGraphExecution::set_hierarchy_context(
     const orlrig::HierarchyContext& context)
 {
@@ -540,6 +554,46 @@ OrlGraphExecution::handle_locator_device_view()
     return execution_.has_value()
         ? execution_->handle_locator_device_view()
         : std::nullopt;
+}
+
+std::optional<DeviceBufferView>
+OrlGraphExecution::persistent_packed_device_view()
+{
+    if (!execution_.has_value()) {
+        errors_.emplace_back("ORL graph execution is invalid");
+        return std::nullopt;
+    }
+    const auto result = execution_->persistent_packed_device_view();
+    if (!result.has_value()) {
+        errors_ = execution_->errors();
+    }
+    return result;
+}
+
+bool OrlGraphExecution::flush_persistent_packed_arena()
+{
+    if (!execution_.has_value()) {
+        errors_.emplace_back("ORL graph execution is invalid");
+        return false;
+    }
+    if (!execution_->flush_persistent_packed_arena()) {
+        errors_ = execution_->errors();
+        return false;
+    }
+    return true;
+}
+
+bool OrlGraphExecution::readback_persistent_packed_arena()
+{
+    if (!execution_.has_value()) {
+        errors_.emplace_back("ORL graph execution is invalid");
+        return false;
+    }
+    if (!execution_->readback_persistent_packed_arena()) {
+        errors_ = execution_->errors();
+        return false;
+    }
+    return true;
 }
 
 void OrlGraphExecution::clear_bindings() {

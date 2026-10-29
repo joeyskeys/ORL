@@ -220,6 +220,9 @@ struct RigPickDraw {
     // Line shape instanced once per locator.
     std::string locator_shape;
     std::span<const RigPickLocator> locators{};
+    // When true, locator transforms come from the device buffer uploaded for
+    // this frame; the host records above still provide stable pick IDs.
+    bool use_device_locators = false;
 };
 
 // Unique vertex-vertex adjacency (CSR) of a triangle mesh: neighbors of vertex
@@ -353,6 +356,7 @@ concept PickingAdapter = requires(
     { adapter.draw_mesh_pick(meshes) } -> std::same_as<Status>;
     { adapter.upload_device_pick_joints(device, count) } -> std::same_as<Status>;
     { adapter.draw_joint_pick(joints) } -> std::same_as<Status>;
+    { adapter.upload_device_pick_locators(device, count) } -> std::same_as<Status>;
     { adapter.draw_rig_pick(rig) } -> std::same_as<Status>;
     { adapter.read_pick(PickLayer{}, serial, pixel, pixel, readback) } -> std::same_as<Status>;
 };

@@ -278,6 +278,11 @@ int main(int argc, char** argv) {
     }
 #endif
     ORL::Selection selection(components, scene);
+    selection.set_locator_edit_predicate(
+        [&scene_graph](ORL::ComponentId id) {
+            return !ORL::runtime_config.evaluate_orl
+                || !scene_graph.locator_is_evaluation_destination(id);
+        });
     ORL::SelectionModeRegistry selection_modes;
     ORL::register_default_selection_modes(selection_modes);
     if (const auto* mode = selection_modes.active(); mode != nullptr) {
@@ -373,7 +378,8 @@ int main(int argc, char** argv) {
     if (auto* mesh_pick = viewport.find_feature(mesh_pick_handle)) {
         select_op.set_mesh_picking(*mesh_pick);
     }
-    const auto rig_pick_handle = viewport.add_feature<ORL::RigPickingFeature>(components);
+    const auto rig_pick_handle = viewport.add_feature<ORL::RigPickingFeature>(
+        scene_graph, components);
     if (auto* rig_pick = viewport.find_feature(rig_pick_handle)) {
         select_op.set_rig_picking(*rig_pick);
     }
@@ -440,7 +446,6 @@ int main(int argc, char** argv) {
                         // Keep controller editing in animation mode while
                         // only the kernel pass is paused.
                         ORL::runtime_config.evaluate_orl = false;
-                        scene_graph.scene_inputs().set_cuda_evaluation(false);
                     }
                 }
                 return;
@@ -657,8 +662,6 @@ int main(int argc, char** argv) {
         selection.set_controller_input_mode(ORL::runtime_config.evaluate_orl);
         if (ORL::runtime_config.evaluate_orl) {
             scene_graph.request_evaluation();
-        } else {
-            scene_graph.scene_inputs().set_cuda_evaluation(false);
         }
         std::cout << "ORL evaluation: "
                   << (ORL::runtime_config.evaluate_orl ? "enabled" : "disabled")

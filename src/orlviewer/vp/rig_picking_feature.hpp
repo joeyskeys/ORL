@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <unordered_map>
@@ -7,6 +8,7 @@
 #include <vector>
 
 #include "component_manager.hpp"
+#include "../scene_graph_context.hpp"
 #include "selection.hpp"
 #include "vp/picking.hpp"
 #include "vp/rhi_feature.hpp"
@@ -22,9 +24,11 @@ class RigPickingFeature final : public RhiFeature {
 public:
     using HitCallback = PickRequest::HitCallback;
 
-    explicit RigPickingFeature(const ComponentManager& components,
+    RigPickingFeature(SceneGraphContext& graph_context,
+        const ComponentManager& components,
         std::uint32_t nodes_per_pixel = 8)
-        : components(components)
+        : graph_context(graph_context)
+        , components(components)
         , nodes_per_pixel(nodes_per_pixel)
     {
     }
@@ -63,20 +67,38 @@ public:
                     .id = controller_token(meta.id),
                 });
             }
-            else if (meta.kind == ComponentKind::Locator
-                && components.locator(meta.id) != nullptr)
-            {
-                locators.push_back({
-                    .model = to_rhi(components.locator(meta.id)->xform),
-                    .id = locator_token(meta.id),
-                });
-            }
         });
+        for (const auto id : components.packed_locator_ids()) {
+            const auto* locator = components.locator(id);
+            if (locator == nullptr) {
+                continue;
+            }
+            locators.push_back({
+                .model = to_rhi(locator->xform),
+                .id = locator_token(id),
+            });
+        }
+
+        bool device_locators = false;
+        const auto current_locators = graph_context.computed_locators_device();
+        if (current_locators.has_value()
+            && graph_context.computed_locators_device_count() != 0)
+        {
+            const auto count = static_cast<std::uint32_t>(
+                std::min(
+                    graph_context.computed_locators_device_count(),
+                    locators.size()));
+            device_locators = count != 0
+                && static_cast<bool>(adapter.upload_device_pick_locators(
+                    {current_locators->device_ptr, current_locators->bytes},
+                    count));
+        }
 
         const auto status = adapter.draw_rig_pick({
             .controllers = controllers,
             .locator_shape = rig_shapes::kLocatorCross,
             .locators = locators,
+            .use_device_locators = device_locators,
         });
         if (!status) {
             std::cerr << "RigPickingFeature: " << status.message << '\n';
@@ -168,6 +190,7 @@ private:
         return token;
     }
 
+    SceneGraphContext& graph_context;
     const ComponentManager& components;
     PickRequest pick{Rhi::PickLayer::rig, "RigPickingFeature"};
     std::vector<Rhi::RigPickShape> controllers;

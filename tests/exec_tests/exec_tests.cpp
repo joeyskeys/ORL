@@ -1034,7 +1034,7 @@ TEST_CASE("orlexec retains program diagnostics", "[orl][exec][compile][error]") 
     REQUIRE_FALSE(execution.errors().empty());
 }
 
-TEST_CASE("orlexec rejects partial fused handle state after locator host edit",
+TEST_CASE("orlexec keeps a persistent packed arena after locator host edit",
     "[orl][exec][solver_context][handle][locator][cuda][device-state]")
 {
     const auto program = OrlProgram::Compile(R"(
@@ -1048,10 +1048,8 @@ TEST_CASE("orlexec rejects partial fused handle state after locator host edit",
             joint_handle end,
             locator_handle target,
             locator_handle pole) {
-            int status = solver_ik_two_bone(
+            return solver_ik_two_bone(
                 root, mid, end, target, pole);
-            Joint direct = solver_context.joints[0];
-            return status && direct.parent < 0;
         }
     )", {.entry_function = "solve", .source_name = "locator_edit"});
     REQUIRE(program.valid());
@@ -1119,6 +1117,10 @@ TEST_CASE("orlexec rejects partial fused handle state after locator host edit",
         orlcomp::HandleTypeIdFor("orlrig::locator_handle");
     const auto bind = [&](OrlExecution& target_execution,
                           orlrig::HandleViewContext& context) {
+        REQUIRE(target_execution.bind_persistent_packed_arena(
+            PackedBufferView{
+            storage_data, storage.byte_size(), 0,
+            storage.byte_size(), storage.version()}));
         REQUIRE(target_execution.bind_solver_context(PackedBufferView{
             storage_data, storage.byte_size(), 0,
             storage.byte_size(), storage.version()}));
@@ -1150,17 +1152,20 @@ TEST_CASE("orlexec rejects partial fused handle state after locator host edit",
     storage.mark_modified();
     const auto edited_version = storage.version();
     orlrig::HandleViewContext second_context{
-        {joint_bytes, 3, orlrig::kJointStride, true,
-            published_joints->device_ptr, published_joints->bytes},
+        {joint_bytes, 3, orlrig::kJointStride, true},
         {locator_bytes, 2, orlrig::kLocatorStride, true},
         1,
         edited_version,
         edited_version,
     };
+    REQUIRE(execution.bind_persistent_packed_arena(PackedBufferView{
+        storage_data, storage.byte_size(), 0,
+        storage.byte_size(), edited_version,
+        {{locators_offset, orlrig::kLocatorStride}}}));
     REQUIRE(execution.bind_solver_context(PackedBufferView{
         storage_data, storage.byte_size(), 0,
         storage.byte_size(), edited_version,
-        {{locators_offset, 2 * orlrig::kLocatorStride}}}));
+        {{locators_offset, orlrig::kLocatorStride}}}));
     REQUIRE(execution.set_solver_context(solver_context));
     REQUIRE(execution.bind_handle_view_context(second_context));
     REQUIRE(execution.bind_handle("root", {joint_type, 0}));
@@ -1168,10 +1173,11 @@ TEST_CASE("orlexec rejects partial fused handle state after locator host edit",
     REQUIRE(execution.bind_handle("end", {joint_type, 2}));
     REQUIRE(execution.bind_handle("target", {locator_type, 0}));
     REQUIRE(execution.bind_handle("pole", {locator_type, 1}));
-    REQUIRE_FALSE(execution.evaluate_device());
-    REQUIRE_FALSE(execution.errors().empty());
-    REQUIRE(execution.errors().front().find(
-        "Published typed handle state is incomplete") != std::string::npos);
+    REQUIRE(execution.evaluate_device());
+    REQUIRE(execution.last_execution_telemetry().upload_bytes
+        == orlrig::kLocatorStride);
+    REQUIRE(execution.readback_persistent_packed_arena());
+    REQUIRE(edited_target[3] == Catch::Approx(1.25));
 }
 
 TEST_CASE("orlexec executes CUDA buffers when CUDA is available", "[orl][exec][cuda]") {

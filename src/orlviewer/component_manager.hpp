@@ -196,6 +196,8 @@ public:
 
 private:
     bool target_world_xform(ComponentId target, glm::mat4& world) const;
+    bool set_locator_world_xform_internal(
+        ComponentId locator, const glm::mat4& world, bool driven_write);
     bool set_target_world_xform(ComponentId target,
         const glm::mat4& world, std::string* error);
     bool set_error(std::string* error, std::string message) const;

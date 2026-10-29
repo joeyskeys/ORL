@@ -116,6 +116,10 @@ Status MtAdapter::draw_joint_pick(const JointPickDraw&) {
     return unsupported("draw_joint_pick");
 }
 
+Status MtAdapter::upload_device_pick_locators(DeviceBuffer, std::uint32_t) {
+    return unsupported("upload_device_pick_locators");
+}
+
 Status MtAdapter::draw_rig_pick(const RigPickDraw&) {
     return unsupported("draw_rig_pick");
 }

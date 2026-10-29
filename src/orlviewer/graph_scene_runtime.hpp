@@ -87,6 +87,8 @@ private:
         std::string* error);
     bool execute_orl_segment(
         vkkk::Context& context, std::size_t segment_index);
+    bool materialize_device_state(
+        bool disable_cuda, std::string* error = nullptr);
     bool segment_is_clean(std::size_t segment_index) const;
     bool execute_runtime_node(
         vkkk::Context& context,
@@ -178,6 +180,7 @@ private:
     std::size_t reportedEvaluationRevision = 0;
     std::string fusion_diagnostic_;
     bool owns_device_views_ = true;
+    bool device_state_materialized_ = false;
 };
 
 } // namespace ORL

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <iostream>
 #include <vector>
 
 #include <glm/vec3.hpp>
@@ -68,6 +69,7 @@ public:
     void on_enter() {
         constraint.reset();
         starts.clear();
+        write_failed = false;
         const auto* focus = selection.focus();
         if (focus == nullptr || window == nullptr) {
             engaged = false;
@@ -80,7 +82,7 @@ public:
                 continue;
             }
             const auto attr = selection.dest(ref);
-            if (!attr) {
+            if (!attr || !attr.writable()) {
                 starts.clear();
                 engaged = false;
                 return;
@@ -123,7 +125,14 @@ public:
         apply(pointer.x, pointer.y);
     }
 
-    void on_confirm() { engaged = false; }
+    void on_confirm() {
+        if (write_failed) {
+            std::cerr << "Move: one or more selected transforms rejected "
+                         "the edit\n";
+            restore();
+        }
+        engaged = false;
+    }
 
     void on_cancel() {
         restore();
@@ -205,7 +214,7 @@ private:
             }
             auto attr = selection.dest(ref);
             if (attr) {
-                attr.set_world_position(starts[i].world_position);
+                (void)attr.set_world_position(starts[i].world_position);
             }
             ++i;
         }
@@ -233,7 +242,9 @@ private:
                 }
                 auto attr = selection.dest(ref);
                 if (attr) {
-                    attr.set_world_position(starts[i].world_position + delta);
+                    write_failed = !attr.set_world_position(
+                        starts[i].world_position + delta)
+                        || write_failed;
                 }
                 ++i;
             }
@@ -256,8 +267,9 @@ private:
                     ? transform_axis_vector(constraint.axis)
                     : starts[i].local_axes[
                         static_cast<std::size_t>(axis_index)];
-                attr.set_world_position(
-                    starts[i].world_position + axis * amount);
+                write_failed = !attr.set_world_position(
+                    starts[i].world_position + axis * amount)
+                    || write_failed;
             }
             ++i;
         }
@@ -272,6 +284,7 @@ private:
     glm::vec2 grab_screen{0.0f};
     TransformConstraint constraint;
     std::vector<Start> starts;
+    bool write_failed = false;
 };
 
 } // namespace ORL

@@ -399,8 +399,6 @@ bool NodeGraphEditor::load_project_file()
     const OrlEvaluationPhase was_phase = runtime_config.evaluation_phase;
     runtime_config.evaluate_orl = false;
     runtime_config.evaluation_phase = OrlEvaluationPhase::Disabled;
-    scene_graph_context_->scene_inputs().set_cuda_evaluation(false);
-    scene_graph_context_->clear_computed_joints_device();
     if (project_selection != nullptr) {
         project_selection->clear();
     }
@@ -807,10 +805,6 @@ void NodeGraphEditor::paste_nodes()
     if (project_selection != nullptr) {
         project_selection->set_controller_input_mode(false);
     }
-    if (scene_graph_context_ != nullptr) {
-        scene_graph_context_->scene_inputs().set_cuda_evaluation(false);
-    }
-
     ++pasteSerial;
     const double offset = 48.0 * static_cast<double>(pasteSerial);
     std::vector<std::string> frame_ids;

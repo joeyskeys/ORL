@@ -187,6 +187,8 @@ struct PickLayerState {
     std::size_t joint_stride = 0;
     std::optional<std::uint64_t> device_upload_serial;
     std::uint32_t device_joint_count = 0;
+    std::optional<std::uint64_t> device_locator_upload_serial;
+    std::uint32_t device_locator_count = 0;
 };
 
 struct JointState {

@@ -119,6 +119,7 @@ public:
     evaluation_order_conflicts() const {
         return evaluation_order_conflicts_;
     }
+    bool locator_is_evaluation_destination(ComponentId id) const;
     exec::OrlBuffer& hierarchy_data() { return hierarchy_data_; }
     const exec::OrlBuffer& hierarchy_data() const {
         return hierarchy_data_;

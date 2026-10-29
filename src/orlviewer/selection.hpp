@@ -38,6 +38,7 @@ struct XformAttr {
     double* scale = nullptr;
     glm::mat4 to_world{1.0f};
     std::function<glm::mat4()> read_world;
+    std::function<bool()> can_write;
     std::function<bool(const glm::mat4&)> write_world;
 
     explicit operator bool() const { return kind != XformAttrKind::None; }
@@ -46,6 +47,11 @@ struct XformAttr {
         return matrix != nullptr
             || static_cast<bool>(read_world)
             || static_cast<bool>(write_world);
+    }
+
+    bool writable() const {
+        return kind != XformAttrKind::None
+            && (!can_write || can_write());
     }
 
     glm::mat4 world_matrix() const {
@@ -59,6 +65,9 @@ struct XformAttr {
     }
 
     bool set_world_matrix(const glm::mat4& world) {
+        if (can_write && !can_write()) {
+            return false;
+        }
         if (write_world) {
             return write_world(world);
         }
@@ -89,12 +98,14 @@ struct XformAttr {
         return {};
     }
 
-    void set_world_position(const glm::vec3& world) {
+    bool set_world_position(const glm::vec3& world) {
+        if (can_write && !can_write()) {
+            return false;
+        }
         if (write_world) {
             auto current = world_matrix();
             current[3] = glm::vec4{world, 1.0f};
-            write_world(current);
-            return;
+            return write_world(current);
         }
         glm::vec3 local = world;
         if (translation != nullptr || vector != nullptr) {
@@ -102,17 +113,19 @@ struct XformAttr {
         }
         if (kind == XformAttrKind::Matrix && matrix != nullptr) {
             (*matrix)[3] = glm::vec4{world, 1.0f};
-            return;
+            return true;
         }
         if (vector != nullptr) {
             *vector = local;
-            return;
+            return true;
         }
         if (translation != nullptr) {
             translation[0] = local.x;
             translation[1] = local.y;
             translation[2] = local.z;
+            return true;
         }
+        return false;
     }
 
     glm::vec3 local_axis(int index) const {
@@ -399,6 +412,8 @@ inline bool selection_refs_equal(
 // they should write: a matrix for objects that have one, otherwise a vector.
 class Selection {
 public:
+    using LocatorEditPredicate = std::function<bool(ComponentId)>;
+
     Selection(ComponentManager& components, vkkk::Scene& scene)
         : components(components)
         , scene(scene)
@@ -610,6 +625,10 @@ public:
         controller_input_mode_ = enabled;
     }
     bool controller_input_mode() const { return controller_input_mode_; }
+
+    void set_locator_edit_predicate(LocatorEditPredicate predicate) {
+        locator_edit_predicate_ = std::move(predicate);
+    }
 
     std::string selected_mesh_name() const {
         for (const auto& item : items) {
@@ -824,6 +843,10 @@ private:
                 return {};
             }
             attr.kind = XformAttrKind::Matrix;
+            attr.can_write = [this, id = ref.component] {
+                return !locator_edit_predicate_
+                    || locator_edit_predicate_(id);
+            };
             attr.read_world = [this, id = ref.component] {
                 const auto* value = components.locator(id);
                 return value == nullptr
@@ -831,6 +854,11 @@ private:
             };
             attr.write_world = [this, id = ref.component](
                                    const glm::mat4& world) {
+                if (locator_edit_predicate_
+                    && !locator_edit_predicate_(id))
+                {
+                    return false;
+                }
                 return components.set_locator_world_xform(id, world);
             };
             return attr;
@@ -851,6 +879,7 @@ private:
     std::uint64_t revision_ = 0;
     std::uint64_t mask_revision_ = 0;
     bool controller_input_mode_ = true;
+    LocatorEditPredicate locator_edit_predicate_;
 };
 
 } // namespace ORL

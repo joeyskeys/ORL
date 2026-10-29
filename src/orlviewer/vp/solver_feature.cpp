@@ -43,17 +43,16 @@ void SolverFeature::on_update(
     vkkk::Context& context, const vkkk::Context::Frame&)
 {
     if (!runtime_config.evaluate_orl) {
-        runtime_config.evaluation_phase =
-            OrlEvaluationPhase::Disabled;
-        graph_context.scene_inputs().set_cuda_evaluation(false);
-        graph_context.clear_computed_joints_device();
+        // Let GraphSceneRuntime flush/materialize its persistent CUDA arena
+        // before disabling the scene bindings.
+        graph_runtime.on_update(context);
         return;
     }
     // A populated solver-stage graph is authoritative. Keep the component
     // constraint path as a compatibility fallback for scenes authored before
     // staged graphs existed.
+    graph_runtime.on_update(context);
     if (graph_runtime.has_active_graph_content()) {
-        graph_runtime.on_update(context);
         return;
     }
     std::string hierarchy_error;

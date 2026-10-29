@@ -171,6 +171,7 @@ bool SceneInputCatalog::set_cuda_evaluation(bool enabled)
         if (!enabled) {
             clear_computed_joints_device();
             clear_computed_locators_device();
+            persistent_device_state_ = false;
         }
         return true;
     }
@@ -179,6 +180,7 @@ bool SceneInputCatalog::set_cuda_evaluation(bool enabled)
     if (!enabled) {
         clear_computed_joints_device();
         clear_computed_locators_device();
+        persistent_device_state_ = false;
     }
     return true;
 }
@@ -190,6 +192,40 @@ bool SceneInputCatalog::ensure_cuda_inputs()
     }
     refresh();
     return packed_solver_inputs.ready;
+}
+
+bool SceneInputCatalog::bind_persistent_packed_arena(
+    exec::OrlGraphExecution& execution, std::string* error)
+{
+    if (execution.backend() != exec::Backend::Cuda) {
+        return true;
+    }
+    if (!cuda_evaluation || !ensure_cuda_inputs()) {
+        return set_error(error,
+            "Packed CUDA scene inputs are unavailable");
+    }
+    if (!execution.bind_persistent_packed_arena(packed_arena_view())) {
+        return set_error(error,
+            execution.errors().empty()
+                ? "Unable to bind persistent packed CUDA arena"
+                : execution.errors().front());
+    }
+    persistent_device_state_ = true;
+    return true;
+}
+
+exec::PackedBufferView SceneInputCatalog::packed_arena_view()
+{
+    if (!packed_solver_inputs.ready) {
+        prepare_packed_inputs();
+    }
+    return exec::PackedBufferView{
+        packed_solver_inputs.storage.data(),
+        packed_solver_inputs.storage.size(),
+        0,
+        packed_solver_inputs.storage.size(),
+        packed_solver_inputs.version,
+        packed_solver_inputs.dirty_ranges};
 }
 
 orlrig::HandleViewContext& SceneInputCatalog::handle_view_context()
@@ -723,12 +759,7 @@ void SceneInputCatalog::set_computed_joints_device(
 
 void SceneInputCatalog::clear_computed_joints_device()
 {
-    computed_joints_device_.reset();
-    computed_joints_device_count_ = 0;
-    handle_view_context_.joints.device_ptr = 0;
-    handle_view_context_.joints.device_bytes = 0;
-    packed_solver_inputs.device_host_joints_snapshot.clear();
-    computed_solver_context_device_.reset();
+    clear_computed_device_state();
 }
 
 void SceneInputCatalog::clear_computed_device_state()
@@ -769,11 +800,7 @@ void SceneInputCatalog::set_computed_locators_device(
 
 void SceneInputCatalog::clear_computed_locators_device()
 {
-    computed_locators_device_.reset();
-    computed_locators_device_count_ = 0;
-    handle_view_context_.locators.device_ptr = 0;
-    handle_view_context_.locators.device_bytes = 0;
-    packed_solver_inputs.device_host_locators_snapshot.clear();
+    clear_computed_device_state();
 }
 
 void SceneInputCatalog::set_computed_solver_context_device(
@@ -791,6 +818,9 @@ bool SceneInputCatalog::bind_graph_inputs(exec::OrlGraphExecution& execution,
     const orlgraph::GraphModule& module)
 {
     refresh();
+    if (!bind_persistent_packed_arena(execution)) {
+        return false;
+    }
     if (!execution.bind_graph_inputs(module,
         [this](const orlgraph::InterfacePort& port,
             exec::GraphInputBinding& binding, std::string& error) {
@@ -808,27 +838,6 @@ bool SceneInputCatalog::bind_solver_context(
     if (!packed_solver_inputs.ready && !prepare_packed_inputs()) {
         return set_error(error,
             "Unable to prepare packed solver context storage");
-    }
-    if (execution.backend() == exec::Backend::Cuda
-        && computed_solver_context_device_.has_value())
-    {
-        const auto& device = *computed_solver_context_device_;
-        if (device.device_ptr == 0
-            || device.bytes < packed_solver_inputs.storage.size())
-        {
-            return set_error(error,
-                "Published solver context device storage is invalid");
-        }
-        if (!execution.bind_device_buffer(
-                orlcomp::kSolverContextParameterName,
-                device.device_ptr, device.bytes))
-        {
-            return set_error(error,
-                execution.errors().empty()
-                    ? "Unable to bind published solver context device storage"
-                    : execution.errors().front());
-        }
-        return true;
     }
     const auto view = exec::PackedBufferView{
         packed_solver_inputs.storage.data(),
@@ -1377,7 +1386,8 @@ bool SceneInputCatalog::prepare_packed_inputs()
             static_cast<const exec::OrlBuffer&>(source).data());
     };
     const auto copy_if_changed = [&](const exec::OrlBuffer& source,
-        std::size_t destination_offset, bool preserve_device_state,
+        std::size_t destination_offset, std::size_t element_stride,
+        bool preserve_device_state,
         const std::vector<std::byte>& device_host_snapshot) {
         const auto bytes = source.byte_size();
         if (bytes == 0) {
@@ -1395,17 +1405,38 @@ bool SceneInputCatalog::prepare_packed_inputs()
             // result merely because another packed section changed.
             return false;
         }
-        if (std::memcmp(
+        if (element_stride == 0 || bytes % element_stride != 0) {
+            if (std::memcmp(
+                    packed_solver_inputs.storage.data() + destination_offset,
+                    source_data, bytes) == 0)
+            {
+                return false;
+            }
+            std::memcpy(
                 packed_solver_inputs.storage.data() + destination_offset,
-                source_data, bytes) == 0)
-        {
-            return false;
+                source_data, bytes);
+            mark_dirty(destination_offset, bytes);
+            return true;
         }
-        std::memcpy(
-            packed_solver_inputs.storage.data() + destination_offset,
-            source_data, bytes);
-        mark_dirty(destination_offset, bytes);
-        return true;
+        bool changed = false;
+        for (std::size_t offset = 0; offset < bytes;
+             offset += element_stride)
+        {
+            if (std::memcmp(
+                    packed_solver_inputs.storage.data()
+                        + destination_offset + offset,
+                    source_data + offset, element_stride) == 0)
+            {
+                continue;
+            }
+            std::memcpy(
+                packed_solver_inputs.storage.data()
+                    + destination_offset + offset,
+                source_data + offset, element_stride);
+            mark_dirty(destination_offset + offset, element_stride);
+            changed = true;
+        }
+        return changed;
     };
 
     bool content_changed = layout_changed;
@@ -1425,38 +1456,14 @@ bool SceneInputCatalog::prepare_packed_inputs()
         computed_joints_device_.has_value() && !layout_changed;
     const bool preserve_locators =
         computed_locators_device_.has_value() && !layout_changed;
-    const bool joints_host_changed =
-        preserve_joints
-        && joints_.byte_size() != 0
-        && packed_solver_inputs.device_host_joints_snapshot.size()
-            == joints_.byte_size()
-        && std::memcmp(
-            source_bytes(joints_),
-            packed_solver_inputs.device_host_joints_snapshot.data(),
-            joints_.byte_size()) != 0;
-    const bool locators_host_changed =
-        preserve_locators
-        && locators_.byte_size() != 0
-        && packed_solver_inputs.device_host_locators_snapshot.size()
-            == locators_.byte_size()
-        && std::memcmp(
-            source_bytes(locators_),
-            packed_solver_inputs.device_host_locators_snapshot.data(),
-            locators_.byte_size()) != 0;
-    if (joints_host_changed) {
-        clear_computed_joints_device();
-    }
-    if (locators_host_changed) {
-        clear_computed_locators_device();
-    }
     const bool joints_changed = copy_if_changed(
-        joints_, joints_offset, preserve_joints,
+        joints_, joints_offset, orlrig::kJointStride, preserve_joints,
         packed_solver_inputs.device_host_joints_snapshot);
     const bool locators_changed = copy_if_changed(
-        locators_, locators_offset, preserve_locators,
+        locators_, locators_offset, orlrig::kLocatorStride, preserve_locators,
         packed_solver_inputs.device_host_locators_snapshot);
     const bool controllers_changed = copy_if_changed(
-        controllers_, controllers_offset, false, {});
+        controllers_, controllers_offset, orlrig::kMatrixStride, false, {});
     content_changed = content_changed
         || joints_changed || locators_changed || controllers_changed;
 

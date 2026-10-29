@@ -451,11 +451,94 @@ GraphSceneRuntime::GraphSceneRuntime(GraphSceneRuntime&& other) noexcept
     , reportedEvaluationRevision(other.reportedEvaluationRevision)
     , fusion_diagnostic_(std::move(other.fusion_diagnostic_))
     , owns_device_views_(true)
+    , device_state_materialized_(other.device_state_materialized_)
 {
     // Device views are borrowed by SceneInputCatalog. The moved-to runtime
     // keeps ownership of the segment allocations; the moved-from feature must
     // not clear those views from its destructor.
     other.owns_device_views_ = false;
+}
+
+bool GraphSceneRuntime::materialize_device_state(
+    bool disable_cuda, std::string* error)
+{
+    if (!stage_.has_value()
+        || *stage_ != orlgraph::GraphStage::Solver)
+    {
+        return true;
+    }
+    if (device_state_materialized_) {
+        graph_context_.clear_computed_joints_device();
+        graph_context_.clear_computed_locators_device();
+        if (disable_cuda) {
+            graph_context_.scene_inputs().set_cuda_evaluation(false);
+        }
+        return true;
+    }
+
+    OrlSegment* owner = nullptr;
+    for (auto& segment : orl_segments_) {
+        if (segment.fused_solver
+            && segment.execution.has_value()
+            && segment.execution->backend() == exec::Backend::Cuda)
+        {
+            owner = &segment;
+        }
+    }
+
+    if (owner != nullptr
+        && graph_context_.scene_inputs().cuda_evaluation_enabled()) {
+        auto& execution = *owner->execution;
+        if (!execution.synchronize()) {
+            if (error != nullptr) {
+                *error = execution.errors().empty()
+                    ? "Unable to synchronize the fused solver"
+                    : execution.errors().front();
+            }
+            return false;
+        }
+
+        // Refresh the host-side mapping before flushing. The transform
+        // hierarchy preserves the currently published solver outputs, while
+        // a user-edited locator is copied into the mapped packed range.
+        graph_context_.refresh_scene_inputs();
+        if (!graph_context_.scene_inputs()
+                .bind_persistent_packed_arena(execution, error)
+            || !execution.flush_persistent_packed_arena())
+        {
+            if (error != nullptr && error->empty()) {
+                *error = execution.errors().empty()
+                    ? "Unable to flush the fused solver packed arena"
+                    : execution.errors().front();
+            }
+            return false;
+        }
+        if (!execution.synchronize()
+            || !execution.readback_persistent_packed_arena())
+        {
+            if (error != nullptr) {
+                *error = execution.errors().empty()
+                    ? "Unable to read back the fused solver packed arena"
+                    : execution.errors().front();
+            }
+            return false;
+        }
+
+        if (!graph_context_.commit_scene_writes(true, error)) {
+            return false;
+        }
+        // Rebuild the host staging copy from the newly materialized component
+        // state without applying the transform hierarchy a second time.
+        graph_context_.scene_inputs().refresh();
+    }
+
+    graph_context_.clear_computed_joints_device();
+    graph_context_.clear_computed_locators_device();
+    if (disable_cuda) {
+        graph_context_.scene_inputs().set_cuda_evaluation(false);
+    }
+    device_state_materialized_ = true;
+    return true;
 }
 
 GraphSceneRuntime::~GraphSceneRuntime()
@@ -466,6 +549,13 @@ GraphSceneRuntime::~GraphSceneRuntime()
         && stage_.has_value()
         && *stage_ == orlgraph::GraphStage::Solver)
     {
+        std::string error;
+        if (!materialize_device_state(true, &error)
+            && !error.empty())
+        {
+            std::cerr << "Solver: final device-state materialization failed: "
+                      << error << '\n';
+        }
         graph_context_.clear_computed_joints_device();
         graph_context_.clear_computed_locators_device();
     }
@@ -538,6 +628,17 @@ void GraphSceneRuntime::request_bind()
 }
 
 void GraphSceneRuntime::unbind() {
+    if (stage_.has_value()
+        && *stage_ == orlgraph::GraphStage::Solver)
+    {
+        std::string error;
+        if (!materialize_device_state(true, &error)
+            && !error.empty())
+        {
+            std::cerr << "Solver: unbind device-state materialization failed: "
+                      << error << '\n';
+        }
+    }
     while (graph_context_.take_operation(kBindOperation)) {
     }
     if (auto* deformer = graph_context_.components().deformer(deformer_id)) {
@@ -568,9 +669,14 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
         && runtime_config.evaluation_phase
             == OrlEvaluationPhase::AwaitingOrder)
     {
-        graph_context_.scene_inputs().set_cuda_evaluation(false);
-        graph_context_.clear_computed_joints_device();
-        graph_context_.clear_computed_locators_device();
+        std::string materialize_error;
+        if (!materialize_device_state(true, &materialize_error)
+            && !materialize_error.empty())
+        {
+            report_evaluation_failure(
+                "Solver: failed to materialize device state: "
+                + materialize_error);
+        }
         return;
     }
     if (!runtime_config.evaluate_orl
@@ -582,10 +688,17 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
             runtime_config.evaluation_phase =
                 OrlEvaluationPhase::Disabled;
         }
-        graph_context_.scene_inputs().set_cuda_evaluation(false);
         if (solver_stage) {
-            graph_context_.clear_computed_joints_device();
-            graph_context_.clear_computed_locators_device();
+            std::string materialize_error;
+            if (!materialize_device_state(true, &materialize_error)
+                && !materialize_error.empty())
+            {
+                report_evaluation_failure(
+                    "Solver: failed to materialize device state: "
+                    + materialize_error);
+            }
+        } else {
+            graph_context_.scene_inputs().set_cuda_evaluation(false);
         }
         return;
     }
@@ -594,8 +707,8 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
         std::string hierarchy_error;
         if (!graph_context_.ensure_hierarchy_plan(&hierarchy_error)) {
             report_compile_error("Solver: " + hierarchy_error);
-            graph_context_.clear_computed_joints_device();
-            graph_context_.clear_computed_locators_device();
+            std::string materialize_error;
+            (void)materialize_device_state(true, &materialize_error);
             runtime_config.evaluate_orl = false;
             runtime_config.evaluation_phase = OrlEvaluationPhase::Disabled;
             return;
@@ -612,6 +725,16 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
             graph_context_.graph_edit_revision();
         observed_evaluation_revision_ =
             graph_context_.evaluation_revision();
+        if (solver_stage) {
+            std::string materialize_error;
+            if (!materialize_device_state(false, &materialize_error)
+                && !materialize_error.empty())
+            {
+                report_evaluation_failure(
+                    "Solver: failed to materialize device state before rebuild: "
+                    + materialize_error);
+            }
+        }
         execution_plan_ready_ = false;
         execution_plan_.clear();
         if (solver_stage) {
@@ -655,8 +778,8 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
         }
         if (graph_active_) {
             if (!dispatch_graph(context, false)) {
-                graph_context_.clear_computed_joints_device();
-                graph_context_.clear_computed_locators_device();
+                std::string materialize_error;
+                (void)materialize_device_state(true, &materialize_error);
                 graph_active_ = false;
                 if (graph_context_.evaluation_plan_status()
                     == orlrig::EvaluationPlanStatus::UnresolvedOrder)
@@ -1899,6 +2022,15 @@ bool GraphSceneRuntime::ensure_execution_plan(
     if (stage_.has_value()
         && *stage_ == orlgraph::GraphStage::Solver)
     {
+        std::string materialize_error;
+        if (!materialize_device_state(false, &materialize_error)) {
+            if (error != nullptr) {
+                *error =
+                    "unable to materialize the previous fused device state: "
+                    + materialize_error;
+            }
+            return false;
+        }
         // The old execution owns the published CUDA arenas. Clear their
         // borrowed views before destroying it so a failed rebuild cannot
         // leave the deformer bound to freed storage.
@@ -2662,6 +2794,9 @@ bool GraphSceneRuntime::execute_orl_segment(
                     : result->errors.front()));
         }
     }
+    if (solver_device_evaluation) {
+        device_state_materialized_ = false;
+    }
 
     // Typed solver views write the internal Joint arena directly. Keep that
     // device allocation available to the deformer without forcing a
@@ -2686,20 +2821,51 @@ bool GraphSceneRuntime::execute_orl_segment(
         graph_context_.set_computed_joints_device(
             device, graph_context_.scene_inputs()
                 .computed_joints_buffer().count());
-        const auto locator_device =
-            execution.handle_locator_device_view();
-        const auto published_locator_device = locator_device.has_value()
-            ? locator_device
-            : graph_context_.scene_inputs()
+        // The persistent packed arena is the authoritative device state.
+        // Prefer its current locator range for both downstream graph inputs
+        // and viewport drawing. The handle view can refer to an older
+        // per-execution allocation after a rebuild or rebind.
+        std::optional<exec::DeviceBufferView> published_locator_device;
+        const auto packed_device =
+            execution.persistent_packed_device_view();
+        const auto solver_context =
+            graph_context_.scene_inputs().solver_context();
+        if (packed_device.has_value()
+            && solver_context.locator_count > 0
+            && solver_context.locators_offset >= 0)
+        {
+            const auto locator_offset = static_cast<std::size_t>(
+                solver_context.locators_offset);
+            const auto locator_count = static_cast<std::size_t>(
+                solver_context.locator_count);
+            constexpr std::size_t locator_stride =
+                orlrig::kLocatorStride;
+            if (locator_offset <= packed_device->bytes
+                && locator_count <=
+                    (packed_device->bytes - locator_offset) / locator_stride)
+            {
+                published_locator_device = exec::DeviceBufferView{
+                    packed_device->device_ptr
+                        + static_cast<std::uint64_t>(locator_offset),
+                    locator_count * locator_stride};
+            }
+        }
+        if (!published_locator_device.has_value()) {
+            published_locator_device =
+                execution.handle_locator_device_view();
+        }
+        if (!published_locator_device.has_value()) {
+            published_locator_device = graph_context_.scene_inputs()
                 .solver_locators_device_view(execution);
-        const auto locator_count =
-            graph_context_.scene_inputs().handle_view_context()
+        }
+        const auto locator_count = solver_context.locator_count > 0
+            ? static_cast<std::size_t>(solver_context.locator_count)
+            : graph_context_.scene_inputs().handle_view_context()
                 .locators.count;
         graph_context_.set_computed_locators_device(
             published_locator_device, locator_count);
         graph_context_.set_computed_solver_context_device(
-            execution.device_buffer_view(
-                orlcomp::kSolverContextParameterName));
+            execution.persistent_packed_device_view());
     } else if (!solver_device_evaluation && stage_.has_value()
         && *stage_ == orlgraph::GraphStage::Solver)
     {

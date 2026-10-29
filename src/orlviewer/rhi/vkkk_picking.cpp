@@ -1,5 +1,6 @@
 #include "vkkk_adapter.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <utility>
@@ -33,21 +34,38 @@ constexpr const char* kControllerPickPoly = "orl_controller_picking_poly";
 constexpr const char* kLocatorPickPipeline = "orl_locator_picking";
 constexpr const char* kRigPickABuffer = "orl_rig_picking_abuffer";
 constexpr const char* kModelBlock = "ModelUBO";
-constexpr const char* kLocatorsBlock = "Locators";
+constexpr const char* kLocatorTransformsBlock = "LocatorTransforms";
+constexpr const char* kLocatorIdsBlock = "LocatorIds";
 constexpr const char* kPickIdBlock = "PickId";
+constexpr std::size_t kDeviceLocatorStride = sizeof(double) * 16;
 
 struct PickId {
     std::uint32_t value = 0;
 };
 
 // Matches the std430 Locators record in locator_picking.vert.
-struct LocatorPickData {
-    glm::mat4 model{1.0f};
+struct LocatorPickTransform {
+    double xform[16] = {};
+};
+
+struct LocatorPickId {
     std::uint32_t id = 0;
     std::uint32_t pad0 = 0;
     std::uint32_t pad1 = 0;
     std::uint32_t pad2 = 0;
 };
+
+LocatorPickTransform locator_pick_transform(const Mat4& model) {
+    const auto value = to_glm(model);
+    LocatorPickTransform result;
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            result.xform[column * 4 + row] =
+                static_cast<double>(value[column][row]);
+        }
+    }
+    return result;
+}
 
 struct ShapePick {
     std::string shape;
@@ -125,8 +143,14 @@ bool create_layer_resources(VkkkAdapter::Impl& impl, const PickLayerSetup& setup
             && vkkk_detail::create_pipeline(context, pick_pipeline(impl, kLocatorPickPipeline,
                    "locator_picking.vert", "selection_abuffer.frag",
                    vk::PrimitiveTopology::eLineList))
-            && context.resize_pipeline_ssbo(kLocatorPickPipeline, kLocatorsBlock, 1)
-            && context.alloc_pipeline_ssbo(kLocatorPickPipeline, kLocatorsBlock);
+            && context.resize_pipeline_ssbo(
+                kLocatorPickPipeline, kLocatorTransformsBlock, 1)
+            && context.alloc_pipeline_ssbo(
+                kLocatorPickPipeline, kLocatorTransformsBlock)
+            && context.resize_pipeline_ssbo(
+                kLocatorPickPipeline, kLocatorIdsBlock, 1)
+            && context.alloc_pipeline_ssbo(
+                kLocatorPickPipeline, kLocatorIdsBlock);
     }
     return false;
 }
@@ -185,6 +209,8 @@ Status VkkkAdapter::prepare_pick_layer(const PickLayerSetup& setup) {
     state.prepared = false;
     state.rendered_serial.reset();
     state.device_upload_serial.reset();
+    state.device_locator_upload_serial.reset();
+    state.device_locator_count = 0;
     try {
         if (!create_layer_resources(*impl_, setup)) {
             return Status::failure(StatusCode::resource_failure,
@@ -357,6 +383,47 @@ Status VkkkAdapter::draw_joint_pick(const JointPickDraw& draw) {
     return Status::success();
 }
 
+Status VkkkAdapter::upload_device_pick_locators(
+    DeviceBuffer device, std::uint32_t count)
+{
+    if (auto status = require_layer(
+            *impl_, PickLayer::rig, "upload_device_pick_locators");
+        !status)
+    {
+        return status;
+    }
+    auto& state = impl_->pick_layers[index_of(PickLayer::rig)];
+    state.device_locator_upload_serial.reset();
+    state.device_locator_count = 0;
+    const auto bytes = static_cast<vk::DeviceSize>(count)
+        * static_cast<vk::DeviceSize>(kDeviceLocatorStride);
+    if (count == 0 || device.device_ptr == 0
+        || device.bytes < static_cast<std::size_t>(bytes))
+    {
+        return Status::failure(StatusCode::invalid_argument,
+            "device locators are empty or smaller than the requested count");
+    }
+    auto& context = *impl_->context;
+    try {
+        const bool uploaded = context.resize_pipeline_ssbo(
+                kLocatorPickPipeline, kLocatorTransformsBlock, count)
+            && context.write_pipeline_ssbo_from_cuda(
+                kLocatorPickPipeline, kLocatorTransformsBlock,
+                impl_->active_frame->image_index, device.device_ptr, bytes);
+        if (!uploaded) {
+            return Status::failure(
+                StatusCode::resource_failure,
+                "vkkk could not copy device locators into the rig pick buffer");
+        }
+    }
+    catch (const std::exception& error) {
+        return exception_status(StatusCode::resource_failure, error);
+    }
+    state.device_locator_upload_serial = impl_->active_frame->serial;
+    state.device_locator_count = count;
+    return Status::success();
+}
+
 Status VkkkAdapter::draw_rig_pick(const RigPickDraw& draw) {
     if (auto status = require_layer(*impl_, PickLayer::rig, "draw_rig_pick"); !status) {
         return status;
@@ -373,27 +440,56 @@ Status VkkkAdapter::draw_rig_pick(const RigPickDraw& draw) {
             to_glm(controller.model), controller.id});
     }
 
-    std::vector<LocatorPickData> locators;
+    std::vector<LocatorPickTransform> locator_transforms;
+    std::vector<LocatorPickId> locator_ids;
     if (!draw.locators.empty()) {
         const auto found = impl_->shapes.find(draw.locator_shape);
         if (found == impl_->shapes.end() || found->second != ShapeKind::lines) {
             return Status::failure(StatusCode::invalid_argument,
                 "draw_rig_pick: '" + draw.locator_shape + "' is not a registered line shape");
         }
-        locators.reserve(draw.locators.size());
+        locator_transforms.reserve(draw.locators.size());
+        locator_ids.reserve(draw.locators.size());
         for (const auto& locator : draw.locators) {
-            locators.push_back({.model = to_glm(locator.model), .id = locator.id});
+            locator_transforms.push_back(locator_pick_transform(locator.model));
+            locator_ids.push_back({.id = locator.id});
         }
     }
+    const auto& state = impl_->pick_layers[index_of(PickLayer::rig)];
+    const bool use_device_locators = draw.use_device_locators;
+    if (use_device_locators
+        && state.device_locator_upload_serial != impl_->active_frame->serial)
+    {
+        return Status::failure(
+            StatusCode::invalid_argument,
+            "draw_rig_pick uses device locators that were not uploaded this frame");
+    }
+    const auto locator_count = use_device_locators
+        ? std::min(
+            static_cast<std::uint32_t>(locator_ids.size()),
+            state.device_locator_count)
+        : static_cast<std::uint32_t>(locator_ids.size());
 
     queue_pick_pass(*impl_, PickLayer::rig,
         [impl = impl_.get(), controllers = std::move(controllers),
-            locator_shape = draw.locator_shape, locators = std::move(locators)](
+            locator_shape = draw.locator_shape,
+            host = !use_device_locators,
+            locator_count,
+            locator_transforms = std::move(locator_transforms),
+            locator_ids = std::move(locator_ids)](
             vkkk::Context& context, vk::raii::CommandBuffer& cmd, std::uint32_t image_index) {
-            const bool locator_buffer_ready = !locators.empty()
+            const bool locator_buffer_ready = locator_count != 0
                 && context.resize_pipeline_ssbo(
-                    kLocatorPickPipeline, kLocatorsBlock, locators.size())
-                && context.alloc_pipeline_ssbo(kLocatorPickPipeline, kLocatorsBlock);
+                    kLocatorPickPipeline, kLocatorIdsBlock, locator_count)
+                && context.alloc_pipeline_ssbo(
+                    kLocatorPickPipeline, kLocatorIdsBlock)
+                && (!host || (
+                    context.resize_pipeline_ssbo(
+                        kLocatorPickPipeline,
+                        kLocatorTransformsBlock,
+                        locator_count)
+                    && context.alloc_pipeline_ssbo(
+                        kLocatorPickPipeline, kLocatorTransformsBlock)));
 
             context.sync_ubo(kControllerPickLines, vkkk::buf::CameraUBO,
                 &impl->camera_ubo, image_index);
@@ -422,15 +518,20 @@ Status VkkkAdapter::draw_rig_pick(const RigPickDraw& draw) {
             if (!locator_buffer_ready) {
                 return;
             }
-            context.sync_ssbo(kLocatorPickPipeline, kLocatorsBlock, locators.data(),
-                image_index, static_cast<std::uint32_t>(
-                    locators.size() * sizeof(LocatorPickData)));
+            if (host) {
+                context.sync_ssbo(
+                    kLocatorPickPipeline, kLocatorTransformsBlock,
+                    locator_transforms.data(), image_index,
+                    locator_count * sizeof(LocatorPickTransform));
+            }
+            context.sync_ssbo(
+                kLocatorPickPipeline, kLocatorIdsBlock, locator_ids.data(),
+                image_index, locator_count * sizeof(LocatorPickId));
             if (context.bind(*cmd, kLocatorPickPipeline, image_index)) {
                 const PickId no_controller_id{};
                 context.push_constants(*cmd, kLocatorPickPipeline, kPickIdBlock,
                     &no_controller_id, sizeof(no_controller_id));
-                context.draw_lines(*cmd, locator_shape, 0,
-                    static_cast<std::uint32_t>(locators.size()));
+                context.draw_lines(*cmd, locator_shape, 0, locator_count);
             }
         });
     return Status::success();

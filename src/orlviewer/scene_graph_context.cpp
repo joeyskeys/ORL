@@ -478,6 +478,25 @@ SceneGraphContext::evaluation_plan() const
     return std::atomic_load(&compiled_evaluation_plan_);
 }
 
+bool SceneGraphContext::locator_is_evaluation_destination(
+    ComponentId id) const
+{
+    const auto plan = evaluation_plan();
+    if (plan == nullptr) {
+        return false;
+    }
+    for (const auto& region : plan->regions) {
+        if (std::find(
+                region.write_locators.begin(),
+                region.write_locators.end(), id)
+            != region.write_locators.end())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool SceneGraphContext::ensure_hierarchy_plan(std::string* error)
 {
     const auto signature = hierarchy_signature();
@@ -722,6 +741,9 @@ bool SceneGraphContext::bind_graph_inputs(
     scene_inputs_.set_cuda_evaluation(
         execution.backend() == exec::Backend::Cuda);
     if (!scene_inputs_.ensure_cuda_inputs()) {
+        return false;
+    }
+    if (!scene_inputs_.bind_persistent_packed_arena(execution)) {
         return false;
     }
     if (!execution.bind_graph_inputs(module,

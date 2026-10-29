@@ -62,7 +62,15 @@ public:
     // scene arrays into one host arena; disabling it restores normal scene
     // buffer bindings for rig editing and CPU evaluation.
     bool set_cuda_evaluation(bool enabled);
+    bool cuda_evaluation_enabled() const { return cuda_evaluation; }
     bool ensure_cuda_inputs();
+    // Binds the complete packed host arena as the persistent device state for
+    // one CUDA execution. The execution retains the allocation across normal
+    // graph-input rebinding.
+    bool bind_persistent_packed_arena(
+        exec::OrlGraphExecution& execution,
+        std::string* error = nullptr);
+    exec::PackedBufferView packed_arena_view();
     orlrig::HandleViewContext& handle_view_context();
     bool resolve(const orlgraph::InterfacePort& port,
         exec::GraphInputBinding& binding, std::string* error = nullptr);
@@ -215,6 +223,7 @@ private:
     PackedSolverInputs packed_solver_inputs;
     orlrig::HandleViewContext handle_view_context_;
     bool cuda_evaluation = false;
+    bool persistent_device_state_ = false;
     std::size_t revision_ = 0;
 };
 

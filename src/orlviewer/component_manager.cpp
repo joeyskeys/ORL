@@ -566,8 +566,27 @@ bool ComponentManager::apply_controller_inputs(std::string* error) {
 bool ComponentManager::set_locator_world_xform(ComponentId locator,
     const glm::mat4& world)
 {
+    return set_locator_world_xform_internal(locator, world, false);
+}
+
+bool ComponentManager::set_locator_world_xform_internal(
+    ComponentId locator, const glm::mat4& world, bool driven_write)
+{
     auto* value = this->locator(locator);
     if (value == nullptr) {
+        return false;
+    }
+    // A locator with an authored parent or controller attachment is not an
+    // independent transform destination. Direct viewport/property edits must
+    // leave its authored and computed positions untouched; the owning parent
+    // or controller is the only valid writer.
+    if (!driven_write
+        && (attached_controller(locator)
+                || (store.transform_parent(locator) != nullptr
+                    && store.transform_parent(locator)->enabled
+                    && store.transform_parent(locator)->parent_kind
+                        != orlrig::TransformParentKind::World)))
+    {
         return false;
     }
     if (const auto* existing = store.transform_parent(locator);
@@ -585,7 +604,8 @@ bool ComponentManager::set_locator_world_xform(ComponentId locator,
             existing->inherit_rotation,
             existing->inherit_scale);
         updated.local_offset = glm::inverse(inherited) * world;
-        if (!store.set_transform_parent(std::move(updated))) {
+        if (!driven_write
+            || !store.set_transform_parent(std::move(updated))) {
             return false;
         }
     }
@@ -624,6 +644,9 @@ bool ComponentManager::bind_transform_parent(
     relation.parent_kind = parent_meta->kind == ComponentKind::Joint
         ? orlrig::TransformParentKind::Joint
         : orlrig::TransformParentKind::Locator;
+    relation.inherit_translation = inherit_translation;
+    relation.inherit_rotation = inherit_rotation;
+    relation.inherit_scale = inherit_scale;
     const glm::mat4 inherited_parent = orlrig::inherited_parent_matrix(
         parent_world,
         relation.inherit_translation,
@@ -632,9 +655,6 @@ bool ComponentManager::bind_transform_parent(
     relation.local_offset = maintain_world
         ? glm::inverse(inherited_parent) * child_value->xform
         : glm::mat4{1.0f};
-    relation.inherit_translation = inherit_translation;
-    relation.inherit_rotation = inherit_rotation;
-    relation.inherit_scale = inherit_scale;
     relation.enabled = true;
     if (!store.set_transform_parent(std::move(relation), error)) {
         return false;
@@ -691,8 +711,9 @@ bool ComponentManager::set_target_world_xform(ComponentId target,
         // Controller input is an authored/input-layer write. For a parented
         // locator, update the local offset so the next hierarchy pass keeps
         // the requested world pose instead of overwriting it with the old
-        // offset.
-        if (!set_locator_world_xform(target, world)) {
+        // offset. This is distinct from a direct edit of the controlled
+        // locator, which must be rejected.
+        if (!set_locator_world_xform_internal(target, world, true)) {
             return set_error(error, "Locator transform is unavailable");
         }
         return true;

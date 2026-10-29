@@ -115,6 +115,7 @@ public:
         std::int64_t joint_count, std::int64_t controller_count);
     bool set_solver_context(const orlrig::SolverContext& context);
     bool bind_solver_context(const PackedBufferView& view);
+    bool bind_persistent_packed_arena(const PackedBufferView& view);
     bool set_hierarchy_context(const orlrig::HierarchyContext& context);
     bool bind_hierarchy_data(OrlBuffer& buffer);
     bool bind_graph_inputs(const orlgraph::GraphModule& module,
@@ -123,6 +124,9 @@ public:
         orlrig::HandleViewContext& context);
     std::optional<DeviceBufferView> handle_joint_device_view();
     std::optional<DeviceBufferView> handle_locator_device_view();
+    std::optional<DeviceBufferView> persistent_packed_device_view();
+    bool flush_persistent_packed_arena();
+    bool readback_persistent_packed_arena();
     void clear_bindings();
 
     std::optional<std::int64_t> evaluate(std::uint32_t element_count = 1);

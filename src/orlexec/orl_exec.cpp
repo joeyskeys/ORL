@@ -647,6 +647,8 @@ struct OrlExecution::Impl {
     std::unordered_map<std::string, OrlBuffer*> buffers;
     std::unordered_map<std::string, ExternalDeviceBuffer> device_bindings;
     std::unordered_map<std::string, PackedBinding> packed_bindings;
+    PackedBinding persistent_packed_binding;
+    bool persistent_packed_arena = false;
     std::unordered_map<std::string, std::int64_t> integers;
     std::unordered_map<std::string, double> floats;
     std::unordered_map<std::string, HandleValue> handles;
@@ -1150,10 +1152,11 @@ struct OrlExecution::Impl {
         }
 
         if (packed_device.handle == 0
-            || packed_device.capacity_bytes != packed_storage->bytes
-            || packed_device.source_data != packed_storage->data)
+            || packed_device.capacity_bytes != packed_storage->bytes)
         {
-            release_packed_device();
+            if (packed_device.handle != 0) {
+                release_packed_device();
+            }
             const auto allocated = gpu->AllocateBuffer(packed_storage->bytes);
             if (!allocated.has_value()) {
                 append_errors(errors, gpu->Errors());
@@ -1163,24 +1166,42 @@ struct OrlExecution::Impl {
             packed_device.capacity_bytes = packed_storage->bytes;
             packed_device.uploaded_version = 0;
             packed_device.source_data = packed_storage->data;
+        } else if (packed_device.source_data != packed_storage->data) {
+            // A host vector may move while retaining the same capacity. The
+            // device allocation is still ours and remains valid; only force a
+            // complete upload from the new host address.
+            packed_device.source_data = packed_storage->data;
+            packed_device.uploaded_version = 0;
+            persistent_packed_binding.uploaded_version = 0;
         }
 
         std::vector<PackedBufferRange> ranges;
         bool upload_complete_storage = packed_device.uploaded_version == 0;
-        for (auto& [_, binding] : packed_bindings) {
+        const auto collect_ranges = [&](const PackedBinding& binding) {
             if (binding.version != packed_storage->version
                 || binding.uploaded_version == binding.version)
             {
-                continue;
+                return;
             }
             if (binding.dirty_ranges.empty()) {
                 upload_complete_storage = true;
-                break;
+                return;
             }
             ranges.insert(
                 ranges.end(),
                 binding.dirty_ranges.begin(),
                 binding.dirty_ranges.end());
+        };
+        if (persistent_packed_arena) {
+            collect_ranges(persistent_packed_binding);
+        }
+        if (!upload_complete_storage) {
+            for (const auto& [_, binding] : packed_bindings) {
+                collect_ranges(binding);
+                if (upload_complete_storage) {
+                    break;
+                }
+            }
         }
         if (upload_complete_storage) {
             if (!gpu->UploadBuffer(
@@ -1246,6 +1267,12 @@ struct OrlExecution::Impl {
             if (binding.version == packed_storage->version) {
                 binding.uploaded_version = binding.version;
             }
+        }
+        if (persistent_packed_arena
+            && persistent_packed_binding.version == packed_storage->version)
+        {
+            persistent_packed_binding.uploaded_version =
+                persistent_packed_binding.version;
         }
         packed_device.uploaded_version = packed_storage->version;
         *handle = packed_device.handle;
@@ -1393,7 +1420,11 @@ struct OrlExecution::Impl {
         // locator ranges instead of creating duplicate typed arenas.
         const bool has_solver_context_parameter =
             parameter(orlcomp::kSolverContextParameterName) != nullptr;
-        if (has_solver_context_parameter && !packed_storage.has_value()) {
+        const bool use_packed_handle_arena =
+            persistent_packed_arena
+            || (has_solver_context_parameter && packed_storage.has_value());
+        if (has_solver_context_parameter && !packed_storage.has_value()
+            && !persistent_packed_arena) {
             const bool has_published_handle_state =
                 handle_view_context->joints.device_ptr != 0
                 || handle_view_context->locators.device_ptr != 0;
@@ -1411,6 +1442,7 @@ struct OrlExecution::Impl {
             (handle_view_context->joints.device_ptr != 0)
             != (handle_view_context->locators.device_ptr != 0);
         if (has_solver_context_parameter
+            && !persistent_packed_arena
             && has_partial_published_handle_state
             && handle_view_context->joints.count != 0
             && handle_view_context->locators.count != 0)
@@ -1420,9 +1452,7 @@ struct OrlExecution::Impl {
                 "joint and locator arenas must be invalidated together");
             return false;
         }
-        if (packed_storage.has_value()
-            && has_solver_context_parameter
-            && !has_published_handle_state) {
+        if (packed_storage.has_value() && use_packed_handle_arena) {
             if (packed_storage->data == nullptr
                 || packed_storage->bytes < sizeof(orlrig::SolverContext))
             {
@@ -1975,8 +2005,7 @@ bool OrlExecution::bind_packed_buffer(
 
     const std::string name(parameter);
     if (impl_->packed_storage.has_value()
-        && (impl_->packed_storage->data != view.data
-            || impl_->packed_storage->bytes != view.storage_bytes))
+        && impl_->packed_storage->bytes != view.storage_bytes)
     {
         impl_->errors.emplace_back(
             "All packed buffer bindings must share one storage allocation");
@@ -1986,6 +2015,14 @@ bool OrlExecution::bind_packed_buffer(
         impl_->packed_storage = Impl::PackedStorage{
             view.data, view.storage_bytes, view.version};
     } else {
+        if (impl_->packed_storage->data != view.data) {
+            // The host arena can move without changing its capacity. Keep
+            // the device allocation and force the next dispatch to upload
+            // from the new address.
+            impl_->packed_device.uploaded_version = 0;
+            impl_->persistent_packed_binding.uploaded_version = 0;
+        }
+        impl_->packed_storage->data = view.data;
         impl_->packed_storage->version = view.version;
     }
 
@@ -2003,6 +2040,67 @@ bool OrlExecution::bind_packed_buffer(
     binding.dirty_ranges = view.dirty_ranges;
     if (!same_range && view.version == 0) {
         binding.uploaded_version = 0;
+    }
+    return true;
+}
+
+bool OrlExecution::bind_persistent_packed_arena(
+    const PackedBufferView& view)
+{
+    impl_->errors.clear();
+    if (!impl_->initialized) {
+        impl_->errors.emplace_back("ORL execution was not initialized");
+        return false;
+    }
+    if (impl_->backend != Backend::Cuda) {
+        impl_->errors.emplace_back(
+            "bind_persistent_packed_arena requires the CUDA backend");
+        return false;
+    }
+    if (view.data == nullptr || view.storage_bytes == 0
+        || view.offset != 0 || view.bytes != view.storage_bytes)
+    {
+        impl_->errors.emplace_back(
+            "Persistent packed arena must bind the complete host storage");
+        return false;
+    }
+    for (const auto& range : view.dirty_ranges) {
+        if (range.bytes == 0
+            || range.offset > view.storage_bytes
+            || range.bytes > view.storage_bytes - range.offset)
+        {
+            impl_->errors.emplace_back(
+                "Persistent packed arena has an invalid dirty range");
+            return false;
+        }
+    }
+
+    if (impl_->packed_storage.has_value()
+        && impl_->packed_storage->bytes != view.storage_bytes)
+    {
+        // A changed packed layout cannot alias the old typed views. The
+        // caller is responsible for synchronizing before rebinding, after
+        // which releasing the old owned allocation is safe.
+        impl_->release_packed_device();
+    } else if (impl_->packed_storage.has_value()
+        && impl_->packed_storage->data != view.data)
+    {
+        impl_->packed_device.uploaded_version = 0;
+        impl_->persistent_packed_binding.uploaded_version = 0;
+    }
+
+    impl_->packed_storage = Impl::PackedStorage{
+        view.data, view.storage_bytes, view.version};
+    impl_->persistent_packed_arena = true;
+    impl_->persistent_packed_binding.offset = 0;
+    impl_->persistent_packed_binding.bytes = view.storage_bytes;
+    impl_->persistent_packed_binding.version = view.version;
+    impl_->persistent_packed_binding.dirty_ranges = view.dirty_ranges;
+    if (impl_->packed_device.handle == 0
+        || impl_->packed_device.capacity_bytes != view.storage_bytes
+        || impl_->packed_device.source_data != view.data)
+    {
+        impl_->persistent_packed_binding.uploaded_version = 0;
     }
     return true;
 }
@@ -2212,6 +2310,24 @@ bool OrlExecution::set_solver_context(
                     }
                 }
             }
+            if (impl_->persistent_packed_arena) {
+                auto& binding = impl_->persistent_packed_binding;
+                binding.version = impl_->packed_storage->version;
+                binding.uploaded_version = 0;
+                const bool context_range_present =
+                    std::any_of(
+                        binding.dirty_ranges.begin(),
+                        binding.dirty_ranges.end(),
+                        [](const PackedBufferRange& range) {
+                            return range.offset == 0
+                                && range.bytes
+                                    >= sizeof(orlrig::SolverContext);
+                        });
+                if (!context_range_present) {
+                    binding.dirty_ranges.push_back({
+                        0, sizeof(orlrig::SolverContext)});
+                }
+            }
         }
         return true;
     }
@@ -2288,14 +2404,19 @@ bool OrlExecution::bind_hierarchy_data(OrlBuffer& buffer)
 
 void OrlExecution::clear_bindings() {
     impl_->release_device_bindings();
-    if (impl_->handle_arenas_alias_packed) {
-        impl_->release_handle_arena_devices();
-    }
+    // A persistent packed arena is the owner of the typed handle storage for
+    // the whole evaluation session. Normal graph rebinding must not release
+    // that allocation or the stable device views published to consumers.
+    impl_->release_handle_arena_devices();
     impl_->handle_view_context = nullptr;
     impl_->handle_context_uploaded = false;
     impl_->buffers.clear();
     impl_->packed_bindings.clear();
-    impl_->packed_storage.reset();
+    if (!impl_->persistent_packed_arena) {
+        impl_->release_packed_device();
+        impl_->packed_storage.reset();
+        impl_->persistent_packed_binding = {};
+    }
     impl_->integers.clear();
     impl_->floats.clear();
     impl_->handles.clear();
@@ -2429,6 +2550,14 @@ std::optional<std::int64_t> OrlExecution::evaluate_impl(std::uint32_t element_co
     const auto t_upload = Clock::now();
     std::size_t upload_calls = 0;
     std::size_t upload_bytes = 0;
+    if (impl_->persistent_packed_arena) {
+        orlcomp::OrlGpuBuffer packed_handle = 0;
+        if (!impl_->ensure_packed_device_buffer(
+                &packed_handle, &upload_calls, &upload_bytes))
+        {
+            return std::nullopt;
+        }
+    }
     std::vector<orlcomp::OrlGpuKernelArgument> arguments;
     arguments.reserve(impl_->program->parameters.size());
     for (const auto& parameter : impl_->program->parameters) {
@@ -2865,6 +2994,76 @@ std::optional<std::uint64_t> OrlExecution::device_buffer_pointer(
     return view.has_value()
         ? std::optional<std::uint64_t>(view->device_ptr)
         : std::nullopt;
+}
+
+std::optional<DeviceBufferView>
+OrlExecution::persistent_packed_device_view()
+{
+    if (impl_ == nullptr || !impl_->initialized
+        || impl_->backend != Backend::Cuda || impl_->gpu == nullptr
+        || !impl_->persistent_packed_arena
+        || impl_->packed_device.handle == 0)
+    {
+        if (impl_ != nullptr) {
+            impl_->errors.clear();
+            impl_->errors.emplace_back(
+                "Persistent packed device view is unavailable");
+        }
+        return std::nullopt;
+    }
+    const auto view =
+        impl_->gpu->DeviceBufferView(impl_->packed_device.handle);
+    if (!view.has_value()) {
+        append_errors(impl_->errors, impl_->gpu->Errors());
+        return std::nullopt;
+    }
+    return DeviceBufferView{view->device_ptr, view->bytes};
+}
+
+bool OrlExecution::flush_persistent_packed_arena()
+{
+    if (impl_ == nullptr || !impl_->initialized
+        || impl_->backend != Backend::Cuda || impl_->gpu == nullptr
+        || !impl_->persistent_packed_arena)
+    {
+        if (impl_ != nullptr) {
+            impl_->errors.clear();
+            impl_->errors.emplace_back(
+                "Persistent packed arena flush is unavailable");
+        }
+        return false;
+    }
+    impl_->errors.clear();
+    orlcomp::OrlGpuBuffer packed_handle = 0;
+    return impl_->ensure_packed_device_buffer(
+        &packed_handle, nullptr, nullptr);
+}
+
+bool OrlExecution::readback_persistent_packed_arena()
+{
+    if (impl_ == nullptr || !impl_->initialized
+        || impl_->backend != Backend::Cuda || impl_->gpu == nullptr
+        || !impl_->persistent_packed_arena
+        || !impl_->packed_storage.has_value()
+        || impl_->packed_device.handle == 0)
+    {
+        if (impl_ != nullptr) {
+            impl_->errors.clear();
+            impl_->errors.emplace_back(
+                "Persistent packed arena readback is unavailable");
+        }
+        return false;
+    }
+    impl_->errors.clear();
+    if (!impl_->gpu->DownloadBuffer(
+            impl_->packed_device.handle,
+            impl_->packed_storage->data,
+            impl_->packed_storage->bytes))
+    {
+        append_errors(impl_->errors, impl_->gpu->Errors());
+        return false;
+    }
+    return true;
 }
 
 bool OrlExecution::synchronize() {
