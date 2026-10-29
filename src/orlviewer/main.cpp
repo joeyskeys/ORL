@@ -29,6 +29,7 @@
 #include <QFile>
 #include <QStyleFactory>
 #include "qt/node_color_theme.hpp"
+#include "qt/hierarchy_outliner.hpp"
 #include "qt/node_graph_editor.hpp"
 #include "qt/property_editor.hpp"
 #endif
@@ -292,6 +293,15 @@ int main(int argc, char** argv) {
     if (node_graph_editor != nullptr) {
         node_graph_editor->set_selection(&selection);
     }
+    auto* hierarchy_outliner = new ORL::HierarchyOutliner(
+        selection, components);
+    if (window_backend.add_dock_panel(
+            hierarchy_outliner, "Hierarchy",
+            Qt::LeftDockWidgetArea) < 0)
+    {
+        delete hierarchy_outliner;
+        hierarchy_outliner = nullptr;
+    }
     auto* property_editor = new ORL::PropertyEditor(
         selection, components, &scene_graph);
     property_editor->set_node_graph_editor(node_graph_editor);
@@ -424,9 +434,13 @@ int main(int argc, char** argv) {
             && (focused == panel || panel->isAncestorOf(focused));
     };
     controls.set_active_panel_provider(
-        [node_graph_editor, property_editor, panel_has_focus] {
+        [node_graph_editor, hierarchy_outliner, property_editor,
+            panel_has_focus] {
             if (panel_has_focus(node_graph_editor)) {
                 return std::string{"node_graph"};
+            }
+            if (panel_has_focus(hierarchy_outliner)) {
+                return std::string{"hierarchy"};
             }
             if (panel_has_focus(property_editor)) {
                 return std::string{"properties"};
@@ -733,11 +747,16 @@ int main(int argc, char** argv) {
         if (node_graph_editor != nullptr) {
             node_graph_editor->refresh_scene_inputs();
         }
+        if (hierarchy_outliner != nullptr) {
+            hierarchy_outliner->refresh();
+        }
         if (property_editor != nullptr) {
             if (panel_has_focus(node_graph_editor)) {
                 property_editor->set_context(
                     ORL::PropertyEditor::Context::NodeGraph);
-            } else if (panel_has_focus(window_backend.viewport_panel())) {
+            } else if (panel_has_focus(window_backend.viewport_panel())
+                || panel_has_focus(hierarchy_outliner))
+            {
                 property_editor->set_context(
                     ORL::PropertyEditor::Context::Scene);
             }

@@ -82,6 +82,8 @@ if(ORL_USE_QT6)
         qt/node_graph_editor.hpp
         qt/node_color_theme.cpp
         qt/node_color_theme.hpp
+        qt/hierarchy_outliner.cpp
+        qt/hierarchy_outliner.hpp
         qt/property_editor.cpp
         qt/property_editor.hpp
         node_graph/node_ops.cpp
