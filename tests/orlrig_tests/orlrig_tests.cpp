@@ -1438,6 +1438,14 @@ TEST_CASE("transform hierarchy propagates joint parents to locators",
         *transform.plan, *hierarchy.plan, store,
         &joints, &locators));
     REQUIRE(glm::vec3{locators[0][3]}.x == Catch::Approx(15.0f));
+
+    auto posed_offset = transform.plan->nodes[1].local_offset;
+    posed_offset[3].x += 1.0f;
+    REQUIRE(store.set_transform_local_offset(locator, posed_offset));
+    REQUIRE(orlrig::evaluate_transform_hierarchy(
+        *transform.plan, *hierarchy.plan, store,
+        &joints, &locators));
+    REQUIRE(glm::vec3{locators[0][3]}.x == Catch::Approx(16.0f));
 }
 
 TEST_CASE("transform hierarchy rejects locator parent cycles",

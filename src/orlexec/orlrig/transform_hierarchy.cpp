@@ -333,7 +333,21 @@ bool evaluate_transform_hierarchy(
                         node.inherit_translation,
                         node.inherit_rotation,
                         node.inherit_scale);
-                world = parent_selected * node.local_offset;
+                // The compiled plan fixes topology. The live offset is pose
+                // data and can change during evaluation without a rebuild.
+                glm::mat4 local_offset = node.local_offset;
+                if (const auto* relation = components.transform_parent(node.id);
+                    relation != nullptr && relation->enabled
+                    && relation->parent_kind != TransformParentKind::World)
+                {
+                    local_offset = relation->local_offset;
+                }
+                if (!finite_matrix(local_offset)) {
+                    return fail(
+                        "Transform parent offset is not finite for locator '"
+                        + std::to_string(node.id.value) + "'");
+                }
+                world = parent_selected * local_offset;
             }
             const auto packed = components.locator_index(node.id);
             if (packed < 0

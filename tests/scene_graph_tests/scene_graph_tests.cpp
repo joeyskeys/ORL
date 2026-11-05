@@ -643,6 +643,78 @@ TEST_CASE("controlled locators reject direct transform edits",
         == Catch::Approx(3.0f));
 }
 
+TEST_CASE("eval posing moves parented locators without editing the blueprint",
+    "[scene-graph][transform][evaluation]")
+{
+    struct EvaluationGuard {
+        bool previous = ORL::runtime_config.evaluate_orl;
+        explicit EvaluationGuard(bool enabled) {
+            ORL::runtime_config.evaluate_orl = enabled;
+        }
+        ~EvaluationGuard() {
+            ORL::runtime_config.evaluate_orl = previous;
+        }
+    };
+
+    vkkk::Scene scene;
+    ORL::ComponentManager components;
+    ORL::SceneGraphContext graph(scene, components);
+    auto joint_value = orlviewer::make_identity_joint();
+    joint_value.translation[0] = 2.0;
+    const auto joint = components.create_joint("joint", joint_value);
+    const auto locator = components.create_locator(
+        "locator", orlrig::make_locator(glm::vec3{1.0f, 0.0f, 0.0f}));
+    const auto controller = components.create_controller(
+        "controller", orlrig::make_controller(glm::vec3{0.0f, 0.0f, 0.0f}));
+    std::string error;
+    REQUIRE(components.bind_transform_parent(
+        locator, joint, true, true, true, true, &error));
+    const float rest_locator_x = components.locator(locator)->xform[3].x;
+    const float rest_offset_x =
+        components.transform_parent(locator)->local_offset[3].x;
+    const auto relation_revision =
+        components.rigging().relation_revision();
+
+    graph.begin_pose_session();
+    REQUIRE(graph.pose_session_active());
+
+    {
+        EvaluationGuard posing(true);
+        components.joint(joint)->translation[0] = 9.0;
+        glm::mat4 moved{1.0f};
+        moved[3] = glm::vec4{6.0f, 0.0f, 0.0f, 1.0f};
+        REQUIRE(components.set_locator_world_xform(locator, moved));
+        REQUIRE(components.rigging().relation_revision()
+            == relation_revision);
+        REQUIRE(components.locator(locator)->xform[3].x
+            == Catch::Approx(6.0f));
+        REQUIRE(components.transform_parent(locator)->local_offset[3].x
+            != Catch::Approx(rest_offset_x));
+
+        glm::mat4 controller_world{1.0f};
+        controller_world[3] = glm::vec4{4.0f, 0.0f, 0.0f, 1.0f};
+        REQUIRE(components.set_controller_world_xform(
+            controller, controller_world, &error));
+        REQUIRE(components.controller(controller)->input_xform[3].x
+            == Catch::Approx(4.0f));
+
+        graph.begin_pose_session();
+        REQUIRE(graph.pose_session_active());
+    }
+
+    graph.end_pose_session();
+    REQUIRE_FALSE(graph.pose_session_active());
+    REQUIRE(components.joint(joint)->translation[0] == Catch::Approx(2.0));
+    REQUIRE(components.locator(locator)->xform[3].x
+        == Catch::Approx(rest_locator_x));
+    REQUIRE(components.transform_parent(locator)->local_offset[3].x
+        == Catch::Approx(rest_offset_x));
+    REQUIRE(components.controller(controller)->input_xform[3].x
+        == Catch::Approx(0.0f));
+    graph.end_pose_session();
+    REQUIRE(components.joint(joint)->translation[0] == Catch::Approx(2.0));
+}
+
 TEST_CASE("selection rejects graph-constrained locator edits",
     "[scene-graph][selection][transform]")
 {
@@ -1362,4 +1434,68 @@ TEST_CASE("stable scene handles survive packed index changes",
     REQUIRE(components.rename(second_controller, "z_ctrl_2"));
     context.refresh_scene_inputs();
     REQUIRE(context.scene_input_revision() > initial_revision);
+}
+
+TEST_CASE("joint reparenting preserves world transform and rejects cycles",
+    "[components][hierarchy][reparent]")
+{
+    ORL::ComponentManager components;
+    auto root_data = orlviewer::make_identity_joint();
+    root_data.translation[0] = 2.0;
+    const auto root = components.create_joint("root", root_data);
+
+    auto child_data = orlviewer::make_identity_joint();
+    child_data.parent = 0;
+    child_data.translation[0] = 1.0;
+    const auto child = components.create_joint("child", child_data);
+
+    auto alternate_data = orlviewer::make_identity_joint();
+    alternate_data.translation[0] = 5.0;
+    const auto alternate = components.create_joint(
+        "alternate", alternate_data);
+
+    REQUIRE(root);
+    REQUIRE(child);
+    REQUIRE(alternate);
+
+    const auto before = components.packed_joints();
+    const auto child_index = components.joint_index(child);
+    REQUIRE(child_index >= 0);
+    const auto world_before = orlviewer::joint_world_matrix(
+        before, child_index);
+
+    std::string error;
+    REQUIRE(components.set_joint_parent(
+        child, alternate, true, &error));
+    const auto after = components.packed_joints();
+    const auto world_after = orlviewer::joint_world_matrix(
+        after, components.joint_index(child));
+    REQUIRE(world_after[3].x == Catch::Approx(world_before[3].x));
+    REQUIRE(components.joint(child)->parent
+        == components.joint_index(alternate));
+    REQUIRE(components.joint(child)->translation[0]
+        == Catch::Approx(-2.0));
+
+    REQUIRE_FALSE(components.set_joint_parent(
+        alternate, child, true, &error));
+    REQUIRE(error.find("cycle") != std::string::npos);
+}
+
+TEST_CASE("clearing a locator parent preserves its current world transform",
+    "[components][hierarchy][reparent]")
+{
+    ORL::ComponentManager components;
+    auto parent_data = orlviewer::make_identity_joint();
+    parent_data.translation[0] = 5.0;
+    const auto parent = components.create_joint("parent", parent_data);
+    const auto locator = components.create_locator(
+        "locator", orlrig::make_locator(glm::vec3{7.0f, 0.0f, 0.0f}));
+
+    std::string error;
+    REQUIRE(components.bind_transform_parent(
+        locator, parent, true, true, true, true, &error));
+    REQUIRE(components.clear_transform_parent(locator, true));
+    REQUIRE(components.locator(locator)->xform[3].x
+        == Catch::Approx(7.0f));
+    REQUIRE(components.transform_parent(locator) == nullptr);
 }

@@ -52,7 +52,9 @@ void SolverFeature::on_update(
     // constraint path as a compatibility fallback for scenes authored before
     // staged graphs existed.
     graph_runtime.on_update(context);
-    if (graph_runtime.has_active_graph_content()) {
+    if (!runtime_config.evaluate_orl
+        || graph_runtime.has_active_graph_content())
+    {
         return;
     }
     std::string hierarchy_error;
@@ -61,6 +63,7 @@ void SolverFeature::on_update(
         runtime_config.evaluate_orl = false;
         runtime_config.evaluation_phase =
             OrlEvaluationPhase::Disabled;
+        graph_context.end_pose_session();
         return;
     }
     if (const auto status = runner.set_hierarchy_plan(
@@ -71,6 +74,7 @@ void SolverFeature::on_update(
         runtime_config.evaluate_orl = false;
         runtime_config.evaluation_phase =
             OrlEvaluationPhase::Disabled;
+        graph_context.end_pose_session();
         return;
     }
     graph_context.clear_computed_joints_device();
@@ -82,6 +86,7 @@ void SolverFeature::on_update(
         runtime_config.evaluate_orl = false;
         runtime_config.evaluation_phase =
             OrlEvaluationPhase::Disabled;
+        graph_context.end_pose_session();
         return;
     }
     if (components.size(ComponentKind::Constraint) == 0) {

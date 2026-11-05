@@ -176,6 +176,16 @@ public:
         bool host_readback_complete, std::string* error = nullptr);
     void acknowledge_pose_changes();
 
+    // Evaluation is a posing session. The first call captures the edit-mode
+    // rig as the blueprint. Later calls keep that blueprint. Leaving the
+    // session writes it back and drops posing edits.
+    void begin_pose_session();
+    void end_pose_session();
+    // Drop the captured blueprint without writing it. Used when the scene
+    // itself is replaced, so the old snapshot cannot land on new components.
+    void discard_pose_session();
+    bool pose_session_active() const { return pose_blueprint_.has_value(); }
+
     orlgraph::ValidationResult validate() const;
     orlgraph::ValidationResult validate(orlgraph::GraphStage stage) const;
     bool has_runtime_node(std::string_view runtime_name) const;
@@ -197,6 +207,28 @@ private:
     void invalidate_evaluation_plan();
     void update_change_set();
     void mark_plan_invalidated();
+
+    struct PoseBlueprint {
+        struct JointChannel {
+            ComponentId id;
+            orlviewer::Joint value;
+        };
+        struct LocatorChannel {
+            ComponentId id;
+            glm::mat4 xform{1.0f};
+        };
+        struct ControllerChannel {
+            ComponentId id;
+            glm::mat4 input_xform{1.0f};
+            bool has_attachment = false;
+            bool input_drives_target = false;
+        };
+
+        std::vector<JointChannel> joints;
+        std::vector<LocatorChannel> locators;
+        std::vector<ControllerChannel> controllers;
+        std::vector<orlrig::TransformParentRelation> parents;
+    };
 
     vkkk::Scene& scene_;
     ComponentManager& components_;
@@ -228,6 +260,7 @@ private:
     std::uint64_t change_generation_ = 0;
     ChangeSet pending_changes_;
     std::map<std::uint64_t, std::size_t> pose_snapshots_;
+    std::optional<PoseBlueprint> pose_blueprint_;
     std::size_t observed_topology_signature_ = 0;
     std::size_t observed_scene_input_revision_ = 0;
 };

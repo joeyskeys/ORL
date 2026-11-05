@@ -418,6 +418,7 @@ bool NodeGraphEditor::load_project_file()
         return false;
     }
 
+    scene_graph_context_->discard_pose_session();
     graph_ = &scene_graph_context_->stage_graph(stage_);
     registry_ = &scene_graph_context_->registry();
     scene_input_catalog_ = &scene_graph_context_->scene_inputs();

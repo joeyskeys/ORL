@@ -174,13 +174,17 @@ public:
     bool apply_controller_inputs(std::string* error = nullptr);
     bool set_locator_world_xform(ComponentId locator,
         const glm::mat4& world);
+    bool set_joint_parent(ComponentId child, ComponentId parent,
+        bool maintain_world = true,
+        std::string* error = nullptr);
     bool bind_transform_parent(ComponentId child, ComponentId parent,
         bool maintain_world = true,
         bool inherit_translation = true,
         bool inherit_rotation = true,
         bool inherit_scale = true,
         std::string* error = nullptr);
-    bool clear_transform_parent(ComponentId child);
+    bool clear_transform_parent(ComponentId child,
+        bool maintain_world = true);
     const orlrig::TransformParentRelation* transform_parent(
         ComponentId child) const;
 
@@ -197,7 +201,8 @@ public:
 private:
     bool target_world_xform(ComponentId target, glm::mat4& world) const;
     bool set_locator_world_xform_internal(
-        ComponentId locator, const glm::mat4& world, bool driven_write);
+        ComponentId locator, const glm::mat4& world,
+        bool driven_write, bool pose_edit);
     bool set_target_world_xform(ComponentId target,
         const glm::mat4& world, std::string* error);
     bool set_error(std::string* error, std::string message) const;

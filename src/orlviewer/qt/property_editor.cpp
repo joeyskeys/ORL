@@ -405,13 +405,8 @@ void PropertyEditor::bind_selected_transform_parent()
                 "Select a locator and exactly one joint or locator parent."));
         return;
     }
-    std::string error;
-    if (!components_.bind_transform_parent(
-            child, parent, true, true, true, true, &error))
-    {
-        QMessageBox::warning(this, QStringLiteral("Transform parent"),
-            QString::fromStdString(error));
-        return;
+    if (graphContext != nullptr && graphContext->pose_session_active()) {
+        graphContext->end_pose_session();
     }
     if (runtime_config.evaluate_orl) {
         runtime_config.evaluate_orl = false;
@@ -420,6 +415,14 @@ void PropertyEditor::bind_selected_transform_parent()
             graphContext->clear_computed_joints_device();
             graphContext->clear_computed_locators_device();
         }
+    }
+    std::string error;
+    if (!components_.bind_transform_parent(
+            child, parent, true, true, true, true, &error))
+    {
+        QMessageBox::warning(this, QStringLiteral("Transform parent"),
+            QString::fromStdString(error));
+        return;
     }
     if (graphContext != nullptr) {
         graphContext->refresh_scene_inputs();
@@ -433,8 +436,8 @@ void PropertyEditor::clear_selected_transform_parent()
     if (focus == nullptr || focus->kind != SelectionRef::Kind::Locator) {
         return;
     }
-    if (!components_.clear_transform_parent(focus->component)) {
-        return;
+    if (graphContext != nullptr && graphContext->pose_session_active()) {
+        graphContext->end_pose_session();
     }
     if (runtime_config.evaluate_orl) {
         runtime_config.evaluate_orl = false;
@@ -443,6 +446,9 @@ void PropertyEditor::clear_selected_transform_parent()
             graphContext->clear_computed_joints_device();
             graphContext->clear_computed_locators_device();
         }
+    }
+    if (!components_.clear_transform_parent(focus->component)) {
+        return;
     }
     if (graphContext != nullptr) {
         graphContext->refresh_scene_inputs();

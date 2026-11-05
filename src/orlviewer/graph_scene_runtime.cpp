@@ -467,11 +467,18 @@ bool GraphSceneRuntime::materialize_device_state(
     {
         return true;
     }
+    // Disabled evaluation is an exit from posing. Device results stay
+    // discarded so the edit-mode blueprint is not replaced by the pose.
+    const bool exit_pose = disable_cuda
+        && runtime_config.evaluation_phase == OrlEvaluationPhase::Disabled;
     if (device_state_materialized_) {
         graph_context_.clear_computed_joints_device();
         graph_context_.clear_computed_locators_device();
         if (disable_cuda) {
             graph_context_.scene_inputs().set_cuda_evaluation(false);
+        }
+        if (exit_pose) {
+            graph_context_.end_pose_session();
         }
         return true;
     }
@@ -498,44 +505,50 @@ bool GraphSceneRuntime::materialize_device_state(
             return false;
         }
 
-        // Refresh the host-side mapping before flushing. The transform
-        // hierarchy preserves the currently published solver outputs, while
-        // a user-edited locator is copied into the mapped packed range.
-        graph_context_.refresh_scene_inputs();
-        if (!graph_context_.scene_inputs()
-                .bind_persistent_packed_arena(execution, error)
-            || !execution.flush_persistent_packed_arena())
-        {
-            if (error != nullptr && error->empty()) {
-                *error = execution.errors().empty()
-                    ? "Unable to flush the fused solver packed arena"
-                    : execution.errors().front();
+        if (!exit_pose) {
+            // Refresh the host-side mapping before flushing. The transform
+            // hierarchy preserves the currently published solver outputs, while
+            // a user-edited locator is copied into the mapped packed range.
+            graph_context_.refresh_scene_inputs();
+            if (!graph_context_.scene_inputs()
+                    .bind_persistent_packed_arena(execution, error)
+                || !execution.flush_persistent_packed_arena())
+            {
+                if (error != nullptr && error->empty()) {
+                    *error = execution.errors().empty()
+                        ? "Unable to flush the fused solver packed arena"
+                        : execution.errors().front();
+                }
+                return false;
             }
-            return false;
-        }
-        if (!execution.synchronize()
-            || !execution.readback_persistent_packed_arena())
-        {
-            if (error != nullptr) {
-                *error = execution.errors().empty()
-                    ? "Unable to read back the fused solver packed arena"
-                    : execution.errors().front();
+            if (!execution.synchronize()
+                || !execution.readback_persistent_packed_arena())
+            {
+                if (error != nullptr) {
+                    *error = execution.errors().empty()
+                        ? "Unable to read back the fused solver packed arena"
+                        : execution.errors().front();
+                }
+                return false;
             }
-            return false;
-        }
 
-        if (!graph_context_.commit_scene_writes(true, error)) {
-            return false;
+            if (!graph_context_.commit_scene_writes(true, error)) {
+                return false;
+            }
+            // Rebuild the host staging copy from the newly materialized
+            // component state without applying the transform hierarchy a
+            // second time.
+            graph_context_.scene_inputs().refresh();
         }
-        // Rebuild the host staging copy from the newly materialized component
-        // state without applying the transform hierarchy a second time.
-        graph_context_.scene_inputs().refresh();
     }
 
     graph_context_.clear_computed_joints_device();
     graph_context_.clear_computed_locators_device();
     if (disable_cuda) {
         graph_context_.scene_inputs().set_cuda_evaluation(false);
+    }
+    if (exit_pose) {
+        graph_context_.end_pose_session();
     }
     device_state_materialized_ = true;
     return true;
@@ -556,6 +569,7 @@ GraphSceneRuntime::~GraphSceneRuntime()
             std::cerr << "Solver: final device-state materialization failed: "
                       << error << '\n';
         }
+        graph_context_.end_pose_session();
         graph_context_.clear_computed_joints_device();
         graph_context_.clear_computed_locators_device();
     }
@@ -704,13 +718,14 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
     }
 
     if (solver_stage) {
+        graph_context_.begin_pose_session();
         std::string hierarchy_error;
         if (!graph_context_.ensure_hierarchy_plan(&hierarchy_error)) {
             report_compile_error("Solver: " + hierarchy_error);
-            std::string materialize_error;
-            (void)materialize_device_state(true, &materialize_error);
             runtime_config.evaluate_orl = false;
             runtime_config.evaluation_phase = OrlEvaluationPhase::Disabled;
+            std::string materialize_error;
+            (void)materialize_device_state(true, &materialize_error);
             return;
         }
     }
@@ -774,16 +789,17 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
             runtime_config.evaluate_orl = false;
             runtime_config.evaluation_phase = OrlEvaluationPhase::Disabled;
             graph_active_ = false;
+            graph_context_.end_pose_session();
             return;
         }
         if (graph_active_) {
             if (!dispatch_graph(context, false)) {
-                std::string materialize_error;
-                (void)materialize_device_state(true, &materialize_error);
                 graph_active_ = false;
                 if (graph_context_.evaluation_plan_status()
                     == orlrig::EvaluationPlanStatus::UnresolvedOrder)
                 {
+                    std::string materialize_error;
+                    (void)materialize_device_state(true, &materialize_error);
                     runtime_config.evaluate_orl = false;
                     runtime_config.evaluation_phase =
                         OrlEvaluationPhase::AwaitingOrder;
@@ -791,6 +807,8 @@ void GraphSceneRuntime::on_update(vkkk::Context& context) {
                     runtime_config.evaluate_orl = false;
                     runtime_config.evaluation_phase =
                         OrlEvaluationPhase::Disabled;
+                    std::string materialize_error;
+                    (void)materialize_device_state(true, &materialize_error);
                 }
             } else {
                 runtime_config.evaluation_phase =

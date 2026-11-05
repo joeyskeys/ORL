@@ -308,12 +308,94 @@ bool ComponentStore::set_transform_parent(
     return true;
 }
 
+bool ComponentStore::set_transform_local_offset(
+    ComponentId child, const glm::mat4& local_offset)
+{
+    const auto found = transform_parents_.find(child.value);
+    if (found == transform_parents_.end() || !found->second.enabled
+        || found->second.parent_kind == TransformParentKind::World)
+    {
+        return false;
+    }
+    found->second.local_offset = local_offset;
+    return true;
+}
+
 bool ComponentStore::clear_transform_parent(ComponentId child)
 {
     if (transform_parents_.erase(child.value) == 0) {
         return false;
     }
     ++relation_revision_;
+    ++revision;
+    return true;
+}
+
+bool ComponentStore::set_joint_parent(
+    ComponentId child, ComponentId parent, std::string* error)
+{
+    const auto fail = [error](std::string message) {
+        if (error != nullptr) {
+            *error = std::move(message);
+        }
+        return false;
+    };
+    const auto* child_meta = find(child);
+    auto* child_value = joint(child);
+    if (child_meta == nullptr || child_meta->kind != ComponentKind::Joint
+        || child_value == nullptr)
+    {
+        return fail("Joint parent child must be an existing joint");
+    }
+
+    std::int64_t parent_index = -1;
+    if (parent) {
+        const auto* parent_meta = find(parent);
+        if (parent_meta == nullptr
+            || parent_meta->kind != ComponentKind::Joint)
+        {
+            return fail("Joint parent must be another joint");
+        }
+        if (parent == child) {
+            return fail("A joint cannot be its own parent");
+        }
+        parent_index = joint_index(parent);
+        if (parent_index < 0) {
+            return fail("Joint parent is not in the packed hierarchy");
+        }
+
+        ComponentId current = parent;
+        bool reached_root = false;
+        for (std::size_t step = 0; step <= joint_order.size(); ++step) {
+            if (current == child) {
+                return fail("Joint parent relationship contains a cycle");
+            }
+            const auto* current_value = joint(current);
+            if (current_value == nullptr) {
+                return fail("Joint parent hierarchy contains a missing joint");
+            }
+            if (current_value->parent < 0) {
+                reached_root = true;
+                break;
+            }
+            if (static_cast<std::size_t>(current_value->parent)
+                >= joint_order.size())
+            {
+                return fail(
+                    "Joint parent hierarchy contains an invalid parent index");
+            }
+            current = joint_order[
+                static_cast<std::size_t>(current_value->parent)];
+        }
+        if (!reached_root) {
+            return fail("Joint parent relationship contains a cycle");
+        }
+    }
+
+    if (child_value->parent == parent_index) {
+        return true;
+    }
+    child_value->parent = parent_index;
     ++revision;
     return true;
 }

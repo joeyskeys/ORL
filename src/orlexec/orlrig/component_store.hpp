@@ -127,7 +127,14 @@ public:
 
     bool set_transform_parent(TransformParentRelation relation,
         std::string* error = nullptr);
+    // Pose-only offset write. Topology, inheritance, and relation revision
+    // stay put so an evaluation session can move a parented locator without
+    // rebuilding the hierarchy plan.
+    bool set_transform_local_offset(ComponentId child,
+        const glm::mat4& local_offset);
     bool clear_transform_parent(ComponentId child);
+    bool set_joint_parent(ComponentId child, ComponentId parent,
+        std::string* error = nullptr);
     const TransformParentRelation* transform_parent(
         ComponentId child) const;
     std::vector<TransformParentRelation> transform_parents() const;

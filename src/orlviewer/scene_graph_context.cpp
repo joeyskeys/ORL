@@ -181,13 +181,8 @@ std::size_t SceneGraphContext::hierarchy_signature() const
             + (signature << 6) + (signature >> 2);
         signature ^= std::hash<bool>{}(relation.enabled)
             + (signature << 6) + (signature >> 2);
-        for (int column = 0; column < 4; ++column) {
-            for (int row = 0; row < 4; ++row) {
-                signature ^= std::hash<float>{}(
-                        relation.local_offset[column][row])
-                    + (signature << 6) + (signature >> 2);
-            }
-        }
+        // local_offset is pose data. It is read from the store when the
+        // hierarchy evaluates, so a posing edit must not invalidate the plan.
     }
     for (const ComponentId id : components_.rigging().packed_locator_ids()) {
         signature ^= std::hash<std::uint64_t>{}(id.value)
@@ -416,6 +411,111 @@ void SceneGraphContext::update_change_set()
 void SceneGraphContext::acknowledge_pose_changes()
 {
     pose_snapshots_ = capture_pose_snapshot();
+}
+
+void SceneGraphContext::begin_pose_session()
+{
+    if (pose_blueprint_.has_value()) {
+        return;
+    }
+    PoseBlueprint blueprint;
+    components_.for_each([&](const Component& component) {
+        if (component.kind == ComponentKind::Joint) {
+            const auto* joint = components_.joint(component.id);
+            if (joint == nullptr) {
+                return;
+            }
+            blueprint.joints.push_back(
+                PoseBlueprint::JointChannel{component.id, *joint});
+        } else if (component.kind == ComponentKind::Locator) {
+            const auto* locator = components_.locator(component.id);
+            if (locator == nullptr) {
+                return;
+            }
+            blueprint.locators.push_back(
+                PoseBlueprint::LocatorChannel{component.id, locator->xform});
+        } else if (component.kind == ComponentKind::Controller) {
+            const auto* controller = components_.controller(component.id);
+            if (controller == nullptr) {
+                return;
+            }
+            PoseBlueprint::ControllerChannel channel;
+            channel.id = component.id;
+            channel.input_xform = controller->input_xform;
+            if (const auto* attachment =
+                    components_.controller_attachment(component.id))
+            {
+                channel.has_attachment = true;
+                channel.input_drives_target = attachment->input_drives_target;
+            }
+            blueprint.controllers.push_back(channel);
+        }
+    });
+    blueprint.parents = components_.rigging().transform_parents();
+    pose_blueprint_ = std::move(blueprint);
+}
+
+void SceneGraphContext::end_pose_session()
+{
+    if (!pose_blueprint_.has_value()) {
+        return;
+    }
+    const PoseBlueprint blueprint = std::move(*pose_blueprint_);
+    pose_blueprint_.reset();
+
+    for (const auto& channel : blueprint.joints) {
+        auto* joint = components_.joint(channel.id);
+        if (joint == nullptr) {
+            continue;
+        }
+        const auto parent = joint->parent;
+        const auto selected = joint->selected;
+        *joint = channel.value;
+        joint->parent = parent;
+        joint->selected = selected;
+    }
+    const auto blueprint_parent = [&blueprint](ComponentId child) {
+        for (const auto& relation : blueprint.parents) {
+            if (relation.child == child) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto current_parents = components_.rigging().transform_parents();
+    for (const auto& relation : current_parents) {
+        if (!blueprint_parent(relation.child)) {
+            (void)components_.rigging().clear_transform_parent(relation.child);
+        }
+    }
+    for (const auto& relation : blueprint.parents) {
+        (void)components_.rigging().set_transform_parent(relation);
+    }
+    for (const auto& channel : blueprint.locators) {
+        auto* locator = components_.locator(channel.id);
+        if (locator == nullptr) {
+            continue;
+        }
+        locator->xform = channel.xform;
+    }
+    for (const auto& channel : blueprint.controllers) {
+        auto* controller = components_.controller(channel.id);
+        if (controller != nullptr) {
+            controller->input_xform = channel.input_xform;
+        }
+        if (!channel.has_attachment) {
+            continue;
+        }
+        if (auto* attachment = components_.controller_attachment(channel.id)) {
+            attachment->input_drives_target = channel.input_drives_target;
+        }
+    }
+    refresh_scene_inputs();
+}
+
+void SceneGraphContext::discard_pose_session()
+{
+    pose_blueprint_.reset();
 }
 
 bool SceneGraphContext::ensure_evaluation_plan(

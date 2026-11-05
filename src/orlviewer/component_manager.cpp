@@ -1,5 +1,7 @@
 #include "component_manager.hpp"
 
+#include "runtime_config.hpp"
+
 #include <glm/gtc/matrix_inverse.hpp>
 
 #include "../orlexec/orlrig/transform_hierarchy.hpp"
@@ -566,46 +568,96 @@ bool ComponentManager::apply_controller_inputs(std::string* error) {
 bool ComponentManager::set_locator_world_xform(ComponentId locator,
     const glm::mat4& world)
 {
-    return set_locator_world_xform_internal(locator, world, false);
+    // Evaluation is a posing session. A parented locator stays movable so it
+    // can drive solvers; the write updates the pose offset, not the blueprint.
+    return set_locator_world_xform_internal(
+        locator, world, false, runtime_config.evaluate_orl);
+}
+
+bool ComponentManager::set_joint_parent(
+    ComponentId child, ComponentId parent, bool maintain_world,
+    std::string* error)
+{
+    const auto* child_meta = find(child);
+    if (child_meta == nullptr || child_meta->kind != ComponentKind::Joint) {
+        return set_error(error, "Joint parent child must be a joint");
+    }
+    if (parent && (find(parent) == nullptr
+            || find(parent)->kind != ComponentKind::Joint))
+    {
+        return set_error(error, "Joint parent must be another joint");
+    }
+
+    const auto packed = store.packed_joints();
+    const auto child_index = store.joint_index(child);
+    const auto parent_index = parent
+        ? store.joint_index(parent) : static_cast<std::int64_t>(-1);
+    auto* child_value = joint(child);
+    if (child_value == nullptr || child_index < 0
+        || static_cast<std::size_t>(child_index) >= packed.size()
+        || parent_index < -1
+        || (parent && static_cast<std::size_t>(parent_index)
+            >= packed.size()))
+    {
+        return set_error(error, "Joint parent transform is unavailable");
+    }
+
+    orlviewer::Joint updated = *child_value;
+    if (maintain_world) {
+        const glm::mat4 world = orlrig::joint_world_matrix(
+            packed, child_index);
+        const glm::mat4 parent_world = parent_index < 0
+            ? glm::mat4{1.0f}
+            : orlrig::joint_world_matrix(packed, parent_index);
+        if (!orlrig::write_joint_local_matrix(
+                updated, glm::inverse(parent_world) * world))
+        {
+            return set_error(
+                error, "Joint world transform cannot be decomposed");
+        }
+    }
+    updated.parent = parent_index;
+
+    if (!store.set_joint_parent(child, parent, error)) {
+        return false;
+    }
+    *child_value = updated;
+    return true;
 }
 
 bool ComponentManager::set_locator_world_xform_internal(
-    ComponentId locator, const glm::mat4& world, bool driven_write)
+    ComponentId locator, const glm::mat4& world,
+    bool driven_write, bool pose_edit)
 {
     auto* value = this->locator(locator);
     if (value == nullptr) {
         return false;
     }
-    // A locator with an authored parent or controller attachment is not an
-    // independent transform destination. Direct viewport/property edits must
-    // leave its authored and computed positions untouched; the owning parent
-    // or controller is the only valid writer.
-    if (!driven_write
-        && (attached_controller(locator)
-                || (store.transform_parent(locator) != nullptr
-                    && store.transform_parent(locator)->enabled
-                    && store.transform_parent(locator)->parent_kind
-                        != orlrig::TransformParentKind::World)))
-    {
+    const auto* existing = store.transform_parent(locator);
+    const bool parented = existing != nullptr && existing->enabled
+        && existing->parent_kind != orlrig::TransformParentKind::World;
+    // Controller-owned locators are posed through the controller. A parent
+    // relation stores an offset, not a lock: evaluation may rewrite that
+    // offset so the locator can drive solvers. Edit mode leaves the authored
+    // offset alone.
+    if (!driven_write && attached_controller(locator)) {
         return false;
     }
-    if (const auto* existing = store.transform_parent(locator);
-        existing != nullptr && existing->enabled
-            && existing->parent_kind != orlrig::TransformParentKind::World)
-    {
+    if (parented && !driven_write && !pose_edit) {
+        return false;
+    }
+    if (parented) {
         glm::mat4 parent_world{1.0f};
         if (!target_world_xform(existing->parent, parent_world)) {
             return false;
         }
-        auto updated = *existing;
         const glm::mat4 inherited = orlrig::inherited_parent_matrix(
             parent_world,
             existing->inherit_translation,
             existing->inherit_rotation,
             existing->inherit_scale);
-        updated.local_offset = glm::inverse(inherited) * world;
-        if (!driven_write
-            || !store.set_transform_parent(std::move(updated))) {
+        const glm::mat4 local_offset = glm::inverse(inherited) * world;
+        if (!store.set_transform_local_offset(locator, local_offset)) {
             return false;
         }
     }
@@ -662,9 +714,37 @@ bool ComponentManager::bind_transform_parent(
     return true;
 }
 
-bool ComponentManager::clear_transform_parent(ComponentId child)
+bool ComponentManager::clear_transform_parent(
+    ComponentId child, bool maintain_world)
 {
-    return store.clear_transform_parent(child);
+    auto* child_value = locator(child);
+    const auto* relation = store.transform_parent(child);
+    if (child_value == nullptr || relation == nullptr) {
+        return false;
+    }
+
+    glm::mat4 world = child_value->xform;
+    if (maintain_world && relation->enabled
+        && relation->parent_kind != orlrig::TransformParentKind::World)
+    {
+        glm::mat4 parent_world{1.0f};
+        if (!target_world_xform(relation->parent, parent_world)) {
+            return false;
+        }
+        const glm::mat4 inherited = orlrig::inherited_parent_matrix(
+            parent_world,
+            relation->inherit_translation,
+            relation->inherit_rotation,
+            relation->inherit_scale);
+        world = inherited * relation->local_offset;
+    }
+    if (!store.clear_transform_parent(child)) {
+        return false;
+    }
+    if (maintain_world) {
+        child_value->xform = world;
+    }
+    return true;
 }
 
 const orlrig::TransformParentRelation*
@@ -713,7 +793,7 @@ bool ComponentManager::set_target_world_xform(ComponentId target,
         // the requested world pose instead of overwriting it with the old
         // offset. This is distinct from a direct edit of the controlled
         // locator, which must be rejected.
-        if (!set_locator_world_xform_internal(target, world, true)) {
+        if (!set_locator_world_xform_internal(target, world, true, false)) {
             return set_error(error, "Locator transform is unavailable");
         }
         return true;
