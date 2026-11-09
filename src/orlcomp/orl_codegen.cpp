@@ -4,6 +4,7 @@
 
 #if __has_include(<llvm/IR/BasicBlock.h>)
 
+#include <llvm/Config/llvm-config.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/CallingConv.h>
 #include <llvm/IR/Constants.h>
@@ -3448,11 +3449,72 @@ struct LlvmIrCodegen::Impl {
         return builder_.CreateFAdd(vector, builder_.CreateFAdd(w_cross, second_cross, "quatrotdelta"), "quatrot");
     }
 
+    llvm::Value *GenerateAtomicAdd(const CallExpression &call) {
+        if (call.arguments.size() != 2) {
+            AddError("atomic_add requires an int buffer element and an int");
+            return nullptr;
+        }
+        const auto *index = dynamic_cast<const IndexExpression *>(
+            call.arguments[0].get());
+        if (index == nullptr) {
+            AddError("atomic_add requires an int buffer element");
+            return nullptr;
+        }
+        llvm::Type *element_type = nullptr;
+        llvm::Value *address = GenerateIndexAddress(*index, &element_type);
+        if (address == nullptr) {
+            return nullptr;
+        }
+        if (element_type == nullptr || !element_type->isIntegerTy(64)) {
+            AddError("atomic_add requires an int buffer element");
+            return nullptr;
+        }
+        const auto *base = dynamic_cast<const IdentifierExpression *>(
+            index->base.get());
+        VariableInfo *variable = base == nullptr
+            ? nullptr : FindVariable(base->name);
+        if (variable == nullptr || !variable->is_buffer) {
+            AddError("atomic_add requires an int buffer element");
+            return nullptr;
+        }
+        llvm::Value *addend = GenerateExpression(*call.arguments[1]);
+        addend = CastValue(addend, builder_.getInt64Ty(), "atomic_add");
+        if (addend == nullptr) {
+            return nullptr;
+        }
+        if (target_ == OrlCodegenTarget::Cuda) {
+            llvm::Type *global_pointer = llvm::PointerType::get(*context_, 1);
+            address = builder_.CreateAddrSpaceCast(
+                address, global_pointer, "atomic.global");
+        }
+        llvm::AtomicRMWInst *update = nullptr;
+#if LLVM_VERSION_MAJOR >= 13
+        update = builder_.CreateAtomicRMW(
+            llvm::AtomicRMWInst::Add,
+            address,
+            addend,
+            llvm::Align(8),
+            llvm::AtomicOrdering::Monotonic);
+#else
+        update = builder_.CreateAtomicRMW(
+            llvm::AtomicRMWInst::Add,
+            address,
+            addend,
+            llvm::AtomicOrdering::Monotonic);
+        update->setAlignment(llvm::Align(8));
+#endif
+        update->setName("atomic.add");
+        return update;
+    }
+
     llvm::Value *GenerateCall(const CallExpression &call) {
         const auto *callee_identifier = dynamic_cast<const IdentifierExpression *>(call.callee.get());
         if (callee_identifier == nullptr) {
             AddError("Only direct function name calls are supported");
             return nullptr;
+        }
+        if (callee_identifier->name == "atomic_add") {
+            return GenerateAtomicAdd(call);
         }
 
         std::vector<llvm::Value *> arguments;

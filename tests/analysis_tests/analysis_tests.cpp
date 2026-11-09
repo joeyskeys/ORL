@@ -799,4 +799,29 @@ TEST_CASE("compiled oro documents provide node definitions",
 }
 #endif
 
+TEST_CASE("semantic analysis accepts atomic_add on an int buffer", "[orl][analysis][atomic]") {
+    Parser parser(R"(
+        int bump(int values[], int index) {
+            return atomic_add(values[index], 1);
+        }
+    )");
+    REQUIRE(parser.Parse());
+    SemanticAnalyzer analyzer;
+    const AnalysisResult analysis = analyzer.analyze(*parser.Ast(), "atomic.orl");
+    REQUIRE(analysis.ok());
+    const auto* function = analysis.function("bump");
+    REQUIRE(function != nullptr);
+    REQUIRE_FALSE(function->pure);
+    REQUIRE(function->parameters[0].access == ParameterAccess::ReadWrite);
+
+    Parser rejected(R"(
+        int bump(int value) {
+            return atomic_add(value, 1);
+        }
+    )");
+    REQUIRE(rejected.Parse());
+    const AnalysisResult bad = analyzer.analyze(*rejected.Ast(), "atomic_bad.orl");
+    REQUIRE_FALSE(bad.ok());
+}
+
 #endif

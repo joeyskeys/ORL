@@ -31,7 +31,7 @@ public:
     void on_update(ViewerAdapter& adapter, const Rhi::FrameState&);
 
 private:
-    bool run(ViewerAdapter& adapter);
+    bool run();
 
     vkkk::Scene& scene;
     ComponentManager& components;

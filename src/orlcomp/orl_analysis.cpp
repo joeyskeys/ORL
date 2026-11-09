@@ -1109,6 +1109,40 @@ private:
                     "Only direct function calls can be imported as graph nodes");
             } else {
                 const std::string& name = callee->name;
+                if (name == "atomic_add") {
+                    summary_.has_external_call = true;
+                    if (call->arguments.size() != 2) {
+                        add_error("ORL_ANALYSIS_ATOMIC",
+                            "atomic_add expects an int buffer element and an int");
+                        return type_of("int");
+                    }
+                    const auto* index = dynamic_cast<const IndexExpression*>(
+                        call->arguments[0].get());
+                    const auto* base = index == nullptr
+                        ? nullptr
+                        : dynamic_cast<const IdentifierExpression*>(
+                            index->base.get());
+                    const bool int_buffer = base != nullptr
+                        && buffer_variables_.contains(base->name)
+                        && variables_.at(base->name).kind
+                            == SemanticTypeKind::Builtin
+                        && (variables_.at(base->name).name == "int"
+                            || variables_.at(base->name).name == "int64");
+                    if (!int_buffer) {
+                        add_error("ORL_ANALYSIS_ATOMIC",
+                            "atomic_add requires an int buffer element");
+                    } else {
+                        access(base->name, ParameterAccess::Write);
+                    }
+                    const auto& addend = argument_types[1];
+                    if (addend.kind != SemanticTypeKind::Builtin
+                        || (addend.name != "int" && addend.name != "int64"))
+                    {
+                        add_error("ORL_ANALYSIS_ATOMIC",
+                            "atomic_add requires an int addend");
+                    }
+                    return type_of("int");
+                }
                 if (name == "handle_valid") {
                     if (argument_types.size() != 1) {
                         add_error("ORL_ANALYSIS_CALL_ARGUMENT",
@@ -1433,11 +1467,11 @@ bool is_supported_orl_type(std::string_view name) {
 }
 
 bool is_known_orl_builtin(std::string_view name) {
-    static constexpr std::array<std::string_view, 22> builtins = {
-        "global_id", "print", "dot", "cross", "length", "normalize",
-        "clamp", "lerp", "mat_identity", "mat_transpose", "mat_inverse",
-        "mat_mul", "quat_mul", "quat_conjugate", "quat_normalize",
-        "quat_rotate", "min", "max", "handle_valid",
+    static constexpr std::array<std::string_view, 23> builtins = {
+        "atomic_add", "global_id", "print", "dot", "cross", "length",
+        "normalize", "clamp", "lerp", "mat_identity", "mat_transpose",
+        "mat_inverse", "mat_mul", "quat_mul", "quat_conjugate",
+        "quat_normalize", "quat_rotate", "min", "max", "handle_valid",
         "joint_handle_invalid", "joint_parent", "joint_is_ancestor",
     };
     return std::find(builtins.begin(), builtins.end(), name) != builtins.end();

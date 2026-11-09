@@ -225,19 +225,6 @@ struct RigPickDraw {
     bool use_device_locators = false;
 };
 
-// Unique vertex-vertex adjacency (CSR) of a triangle mesh: neighbors of vertex
-// v are neighbors[offsets[v] .. offsets[v + 1]).
-struct MeshAdjacencyInput {
-    std::span<const std::uint32_t> triangle_indices{};
-    std::uint32_t vertex_count = 0;
-};
-
-struct MeshAdjacency {
-    std::uint32_t vertex_count = 0;
-    std::vector<std::uint32_t> offsets;
-    std::vector<std::uint32_t> neighbors;
-};
-
 template <typename Adapter>
 concept ShapeRegistryAdapter = requires(
     Adapter& adapter,
@@ -361,18 +348,6 @@ concept PickingAdapter = requires(
     { adapter.read_pick(PickLayer{}, serial, pixel, pixel, readback) } -> std::same_as<Status>;
 };
 
-// A synchronous GPU precompute: build_mesh_adjacency waits for the device and
-// returns the finished CSR. It may run inside or outside a frame.
-template <typename Adapter>
-concept MeshAdjacencyAdapter = requires(
-    Adapter& adapter,
-    const MeshAdjacencyInput& input,
-    MeshAdjacency& output)
-{
-    { adapter.prepare_mesh_adjacency() } -> std::same_as<Status>;
-    { adapter.build_mesh_adjacency(input, output) } -> std::same_as<Status>;
-};
-
 template <typename Adapter>
 concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && ShapeRegistryAdapter<Adapter>
@@ -384,7 +359,6 @@ concept ViewerDisplayAdapter = StaticAdapter<Adapter>
     && OverlayLineDisplayAdapter<Adapter>
     && StatusTextDisplayAdapter<Adapter>
     && ReferenceDisplayAdapter<Adapter>
-    && PickingAdapter<Adapter>
-    && MeshAdjacencyAdapter<Adapter>;
+    && PickingAdapter<Adapter>;
 
 } // namespace ORL::Rhi

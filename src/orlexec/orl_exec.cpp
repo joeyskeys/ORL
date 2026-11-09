@@ -416,6 +416,22 @@ void OrlBuffer::mark_modified() {
     ++version_;
 }
 
+bool transfer_host_buffer(const OrlBuffer& source, OrlBuffer& destination) {
+    if (source.element_stride() == 0
+        || source.element_stride() != destination.element_stride())
+    {
+        return false;
+    }
+    if (!destination.resize(source.count())) {
+        return false;
+    }
+    if (source.byte_size() != 0) {
+        std::memcpy(destination.data(), source.data(), source.byte_size());
+    }
+    destination.mark_modified();
+    return true;
+}
+
 bool OrlBuffer::write(std::size_t index, const void* source, std::size_t bytes) {
     if (source == nullptr || bytes != element_stride_ || index >= count_) {
         return false;

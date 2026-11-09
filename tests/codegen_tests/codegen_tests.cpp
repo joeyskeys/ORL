@@ -223,6 +223,38 @@ TEST_CASE("llvm codegen preserves global_id for GPU lowering", "[orl][codegen][i
     REQUIRE(ir.find("declare i64 @__orl_global_id()") != std::string::npos);
 }
 
+TEST_CASE("llvm codegen lowers atomic_add on an int buffer", "[orl][codegen][atomic]") {
+    const std::string src =
+        "int bump(int values[], int index, int amount) {\n"
+        "    return atomic_add(values[index], amount);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+
+    LlvmIrCodegen codegen("orl_atomic_add_module");
+    REQUIRE(codegen.Generate(*parser.Ast()));
+    REQUIRE(codegen.Errors().empty());
+    const std::string ir = codegen.DumpIR();
+    REQUIRE(ir.find("atomicrmw add") != std::string::npos);
+
+    LlvmIrCodegen cuda("orl_atomic_add_cuda", OrlCodegenTarget::Cuda);
+    REQUIRE(cuda.Generate(*parser.Ast()));
+    REQUIRE(cuda.DumpIR().find("addrspace(1)") != std::string::npos);
+}
+
+TEST_CASE("llvm codegen rejects atomic_add on a scalar", "[orl][codegen][atomic]") {
+    const std::string src =
+        "int bump(int value) {\n"
+        "    return atomic_add(value, 1);\n"
+        "}\n";
+
+    Parser parser(src);
+    REQUIRE(parser.Parse());
+    LlvmIrCodegen codegen("orl_atomic_add_scalar");
+    REQUIRE_FALSE(codegen.Generate(*parser.Ast()));
+}
+
 TEST_CASE("llvm codegen rejects global_id arguments", "[orl][codegen][intrinsic][gpu]") {
     const std::string src =
         "int invalid_work_item() {\n"

@@ -93,11 +93,22 @@ public:
 
     bool set_algorithm(std::string_view name);
     const std::string& algorithm() const { return algorithm_name; }
+    // Host buffers are a copy of a standalone compute result. Device views,
+    // when set, are that result's CUDA allocations and are bound instead of
+    // uploaded. The producing execution must outlive this call.
+    struct PublishedCsr {
+        const ORL::exec::OrlBuffer* offsets = nullptr;
+        const ORL::exec::OrlBuffer* neighbors = nullptr;
+        std::optional<ORL::exec::DeviceBufferView> offsets_device;
+        std::optional<ORL::exec::DeviceBufferView> neighbors_device;
+    };
+
     RunnerStatus run(const MeshData& mesh,
         const std::vector<Joint>& joints,
         const MeshCsrData* csr,
         WeightData& weights,
-        double dropoff);
+        double dropoff,
+        const PublishedCsr* published = nullptr);
 
 private:
     RunnerStatus ensure_program();

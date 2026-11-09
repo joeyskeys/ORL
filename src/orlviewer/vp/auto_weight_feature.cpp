@@ -181,16 +181,16 @@ void AutoWeightFeature::request() {
     pending = true;
 }
 
-void AutoWeightFeature::on_update(ViewerAdapter& adapter, const Rhi::FrameState&)
+void AutoWeightFeature::on_update(ViewerAdapter&, const Rhi::FrameState&)
 {
     if (!pending) {
         return;
     }
     pending = false;
-    run(adapter);
+    run();
 }
 
-bool AutoWeightFeature::run(ViewerAdapter& adapter) {
+bool AutoWeightFeature::run() {
     OrlEvaluationPause pause;
     WeightData* weight = components.weight(weight_id);
     if (weight == nullptr) {
@@ -223,21 +223,25 @@ bool AutoWeightFeature::run(ViewerAdapter& adapter) {
         return false;
     }
 
-    orlrig::MeshCsrData core_csr;
-    const orlrig::MeshCsrData* csr_data = nullptr;
+    orlrig::AutoWeightRunner::PublishedCsr published_csr;
+    const orlrig::AutoWeightRunner::PublishedCsr* published = nullptr;
     if (csr != nullptr) {
-        if (!csr->build(adapter, mesh_name, *mesh)) {
+        if (!csr->build(mesh_name, *mesh)) {
             std::cerr << "Auto weight: CSR build failed for '" << mesh_name
                 << "'\n";
         }
-        if (const auto* built = csr->find(mesh_name); built != nullptr) {
-            core_csr.offsets = built->offsets;
-            core_csr.neighbors = built->neighbors;
-            csr_data = &core_csr;
+        const auto built = csr->find(mesh_name);
+        if (built.offsets != nullptr && built.neighbors != nullptr) {
+            published_csr.offsets = built.offsets;
+            published_csr.neighbors = built.neighbors;
+            published_csr.offsets_device = built.offsets_device;
+            published_csr.neighbors_device = built.neighbors_device;
+            published = &published_csr;
         }
     }
 
-    const auto status = runner.run(input, packed, csr_data, *weight, dropoff);
+    const auto status = runner.run(
+        input, packed, nullptr, *weight, dropoff, published);
     if (!status) {
         print_runner_errors(status.errors);
         return false;

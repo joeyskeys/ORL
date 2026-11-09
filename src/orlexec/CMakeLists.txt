@@ -5,6 +5,8 @@ endif()
 add_library(orlexec
     orl_exec.cpp
     orl_exec.hpp
+    orl_compute.cpp
+    orl_compute.hpp
     orl_graph_exec.cpp
     orl_graph_exec.hpp
     orlrig/handle_registry.cpp

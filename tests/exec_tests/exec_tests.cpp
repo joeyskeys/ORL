@@ -3,6 +3,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "orl_exec.hpp"
+#include "orl_compute.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <vector>
 
 #include <glm/vec3.hpp>
 
@@ -1327,6 +1329,80 @@ TEST_CASE("orlexec tracks packed solver-context mutations after binding",
     const auto result = execution.evaluate();
     REQUIRE(result.has_value());
     REQUIRE(*result == 11);
+}
+
+TEST_CASE("atomic_add accumulates across a parallel buffer", "[orl][exec][atomic][cpu]") {
+    const auto program = OrlProgram::Compile(R"(
+        int bump(int values[], int count) {
+            parallel for (int index = 0; index < count; index = index + 1) {
+                atomic_add(values[0], 1);
+            }
+            return values[0];
+        }
+    )", {.entry_function = "bump"});
+    REQUIRE(program.valid());
+
+    OrlBuffer values("int", sizeof(std::int64_t));
+    REQUIRE(values.resize(1));
+    auto execution = OrlExecution::Create(program, Backend::Cpu);
+    REQUIRE(execution.valid());
+    REQUIRE(execution.bind_buffer("values", values));
+    REQUIRE(execution.bind_int("count", 8));
+    const auto result = execution.evaluate(8);
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 8);
+    std::int64_t stored = 0;
+    REQUIRE(values.read(0, &stored));
+    REQUIRE(stored == 8);
+}
+
+TEST_CASE("mesh csr compute publishes buffers another execution can read",
+    "[orl][exec][compute][csr][cpu]")
+{
+    const std::uint32_t indices[] = {0, 1, 2, 0, 2, 3};
+    MeshCsrCompute compute(Backend::Cpu);
+    REQUIRE(compute.build(indices, 4));
+    REQUIRE(compute.offsets().count() == 5);
+    std::int64_t edge_count = 0;
+    REQUIRE(compute.offsets().read(4, &edge_count));
+    REQUIRE(edge_count == 10);
+    REQUIRE(compute.neighbors().count() == 10);
+
+    const auto reader = OrlProgram::Compile(R"(
+        int edge_count(int offsets[], int vertex_count) {
+            return offsets[vertex_count];
+        }
+    )", {.entry_function = "edge_count"});
+    REQUIRE(reader.valid());
+    OrlBuffer transferred("int", sizeof(std::int64_t));
+    REQUIRE(transfer_host_buffer(compute.offsets(), transferred));
+    auto execution = OrlExecution::Create(reader, Backend::Cpu);
+    REQUIRE(execution.valid());
+    REQUIRE(execution.bind_buffer("offsets", transferred));
+    REQUIRE(execution.bind_int("vertex_count", 4));
+    const auto result = execution.evaluate();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == 10);
+
+    auto expect_neighbors = [&](std::int64_t vertex, std::vector<std::int64_t> expected) {
+        std::int64_t begin = 0;
+        std::int64_t end = 0;
+        REQUIRE(compute.offsets().read(static_cast<std::size_t>(vertex), &begin));
+        REQUIRE(compute.offsets().read(static_cast<std::size_t>(vertex) + 1, &end));
+        std::vector<std::int64_t> actual;
+        for (std::int64_t index = begin; index < end; ++index) {
+            std::int64_t neighbor = 0;
+            REQUIRE(compute.neighbors().read(static_cast<std::size_t>(index), &neighbor));
+            actual.push_back(neighbor);
+        }
+        std::sort(actual.begin(), actual.end());
+        std::sort(expected.begin(), expected.end());
+        REQUIRE(actual == expected);
+    };
+    expect_neighbors(0, {1, 2, 3});
+    expect_neighbors(1, {0, 2});
+    expect_neighbors(2, {0, 1, 3});
+    expect_neighbors(3, {0, 2});
 }
 
 #endif

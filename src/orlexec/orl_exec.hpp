@@ -128,6 +128,12 @@ private:
     std::vector<std::byte> storage_;
 };
 
+// Copies a standalone compute result into the host buffer a later execution
+// will bind. The destination is marked modified so a CUDA consumer uploads
+// the transferred bytes. Device handoff uses bind_device_buffer on the
+// published DeviceBufferView instead, and does not share this copy.
+bool transfer_host_buffer(const OrlBuffer& source, OrlBuffer& destination);
+
 struct CompileOptions {
     std::string entry_function = "compute";
     std::string source_name = "orl_runtime_program";

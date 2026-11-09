@@ -673,7 +673,8 @@ RunnerStatus AutoWeightRunner::run(const MeshData& mesh,
     const std::vector<Joint>& packed,
     const MeshCsrData* csr,
     WeightData& weights,
-    double dropoff)
+    double dropoff,
+    const PublishedCsr* published)
 {
     if (packed.empty() || mesh.positions.empty()) {
         return failure("Auto-weight requires positions and joints");
@@ -696,10 +697,24 @@ RunnerStatus AutoWeightRunner::run(const MeshData& mesh,
             || parameter.name == "neighbors";
         needs_scratch = needs_scratch || parameter.name == "scratch";
     }
-    if (needs_csr && csr == nullptr) {
+    const bool published_device = needs_csr
+        && published != nullptr
+        && compute_backend == exec::Backend::Cuda
+        && published->offsets_device.has_value()
+        && published->neighbors_device.has_value();
+    if (needs_csr && csr == nullptr && published == nullptr) {
         return failure("Auto-weight algorithm requires mesh CSR data");
     }
-    if (csr != nullptr
+    if (needs_csr && published != nullptr && !published_device) {
+        if (published->offsets == nullptr
+            || published->neighbors == nullptr
+            || !exec::transfer_host_buffer(*published->offsets, offsets)
+            || !exec::transfer_host_buffer(*published->neighbors, neighbors))
+        {
+            return failure("Failed to transfer mesh CSR buffers");
+        }
+    }
+    else if (needs_csr && csr != nullptr
         && (!fill_uints_as_int(offsets, csr->offsets)
             || !fill_uints_as_int(neighbors, csr->neighbors)))
     {
@@ -738,10 +753,18 @@ RunnerStatus AutoWeightRunner::run(const MeshData& mesh,
             bound = execution->bind_buffer("weights", weights.weights);
         }
         else if (parameter.name == "offsets") {
-            bound = execution->bind_buffer("offsets", offsets);
+            bound = published_device
+                ? execution->bind_device_buffer("offsets",
+                    published->offsets_device->device_ptr,
+                    published->offsets_device->bytes)
+                : execution->bind_buffer("offsets", offsets);
         }
         else if (parameter.name == "neighbors") {
-            bound = execution->bind_buffer("neighbors", neighbors);
+            bound = published_device
+                ? execution->bind_device_buffer("neighbors",
+                    published->neighbors_device->device_ptr,
+                    published->neighbors_device->bytes)
+                : execution->bind_buffer("neighbors", neighbors);
         }
         else if (parameter.name == "radii") {
             bound = execution->bind_buffer("radii", radii);

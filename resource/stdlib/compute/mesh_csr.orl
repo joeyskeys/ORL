@@ -1,0 +1,177 @@
+// Standalone mesh adjacency. Not a rig stage.
+// The host launches this entry once per pass. A launch is the barrier
+// between passes. Every write stays inside parallel for so extra threads
+// in a CUDA block do not repeat the serial scan.
+
+int mesh_csr_accept(int from, int to, int vertex_count) {
+    if (from == to) {
+        return 0;
+    }
+    if (from < 0) {
+        return 0;
+    }
+    if (to < 0) {
+        return 0;
+    }
+    if (from >= vertex_count) {
+        return 0;
+    }
+    if (to >= vertex_count) {
+        return 0;
+    }
+    return 1;
+}
+
+int mesh_csr_count_edge(int degrees[], int from, int to, int vertex_count) {
+    if (mesh_csr_accept(from, to, vertex_count) == 0) {
+        return 0;
+    }
+    return atomic_add(degrees[from], 1);
+}
+
+int mesh_csr_scatter_edge(int fill[], int offsets[], int neighbors[],
+    int from, int to, int vertex_count, int neighbor_capacity) {
+    if (mesh_csr_accept(from, to, vertex_count) == 0) {
+        return 0;
+    }
+    int slot = atomic_add(fill[from], 1);
+    int lo = offsets[from];
+    int hi = offsets[from + 1];
+    int dest = lo + slot;
+    if (dest < hi) {
+        if (dest < neighbor_capacity) {
+            neighbors[dest] = to;
+        }
+    }
+    return 0;
+}
+
+int mesh_csr_emit_count(int indices[], int degrees[], int tri, int vertex_count) {
+    int i0 = indices[tri * 3 + 0];
+    int i1 = indices[tri * 3 + 1];
+    int i2 = indices[tri * 3 + 2];
+    mesh_csr_count_edge(degrees, i0, i1, vertex_count);
+    mesh_csr_count_edge(degrees, i1, i0, vertex_count);
+    mesh_csr_count_edge(degrees, i1, i2, vertex_count);
+    mesh_csr_count_edge(degrees, i2, i1, vertex_count);
+    mesh_csr_count_edge(degrees, i2, i0, vertex_count);
+    mesh_csr_count_edge(degrees, i0, i2, vertex_count);
+    return 0;
+}
+
+int mesh_csr_emit_scatter(int indices[], int fill[], int offsets[], int neighbors[],
+    int tri, int vertex_count, int neighbor_capacity) {
+    int i0 = indices[tri * 3 + 0];
+    int i1 = indices[tri * 3 + 1];
+    int i2 = indices[tri * 3 + 2];
+    mesh_csr_scatter_edge(fill, offsets, neighbors, i0, i1, vertex_count, neighbor_capacity);
+    mesh_csr_scatter_edge(fill, offsets, neighbors, i1, i0, vertex_count, neighbor_capacity);
+    mesh_csr_scatter_edge(fill, offsets, neighbors, i1, i2, vertex_count, neighbor_capacity);
+    mesh_csr_scatter_edge(fill, offsets, neighbors, i2, i1, vertex_count, neighbor_capacity);
+    mesh_csr_scatter_edge(fill, offsets, neighbors, i2, i0, vertex_count, neighbor_capacity);
+    mesh_csr_scatter_edge(fill, offsets, neighbors, i0, i2, vertex_count, neighbor_capacity);
+    return 0;
+}
+
+int mesh_csr_unique(int offsets[], int neighbors[], int fill[], int v) {
+    int lo = offsets[v];
+    int hi = offsets[v + 1];
+    if (lo >= hi) {
+        fill[v] = 0;
+        return 0;
+    }
+    int i = lo + 1;
+    while (i < hi) {
+        int key = neighbors[i];
+        int j = i;
+        while (j > lo) {
+            if (neighbors[j - 1] <= key) {
+                break;
+            }
+            neighbors[j] = neighbors[j - 1];
+            j = j - 1;
+        }
+        neighbors[j] = key;
+        i = i + 1;
+    }
+    int write = lo;
+    int prev = -1;
+    i = lo;
+    while (i < hi) {
+        int n = neighbors[i];
+        if (n != prev) {
+            neighbors[write] = n;
+            write = write + 1;
+            prev = n;
+        }
+        i = i + 1;
+    }
+    fill[v] = write - lo;
+    return 0;
+}
+
+int mesh_csr(int indices[], int degrees[], int offsets[], int fill[],
+    int neighbors[], int packed[],
+    int vertex_count, int triangle_count, int neighbor_capacity,
+    int serial_count, int pass) {
+    if (pass == 0) {
+        parallel for (int id = 0; id < vertex_count; id = id + 1) {
+            degrees[id] = 0;
+            fill[id] = 0;
+            if (id == 0) {
+                offsets[0] = 0;
+            }
+        }
+        return 0;
+    }
+    if (pass == 1) {
+        parallel for (int id = 0; id < triangle_count; id = id + 1) {
+            mesh_csr_emit_count(indices, degrees, id, vertex_count);
+        }
+        return 0;
+    }
+    if (pass == 2) {
+        parallel for (int id = 0; id < serial_count; id = id + 1) {
+            offsets[0] = 0;
+            int v = 0;
+            while (v < vertex_count) {
+                offsets[v + 1] = offsets[v] + degrees[v];
+                v = v + 1;
+            }
+        }
+        return 0;
+    }
+    if (pass == 3) {
+        parallel for (int id = 0; id < triangle_count; id = id + 1) {
+            mesh_csr_emit_scatter(indices, fill, offsets, neighbors, id,
+                vertex_count, neighbor_capacity);
+        }
+        return 0;
+    }
+    if (pass == 4) {
+        parallel for (int id = 0; id < vertex_count; id = id + 1) {
+            mesh_csr_unique(offsets, neighbors, fill, id);
+        }
+        return 0;
+    }
+    if (pass == 5) {
+        parallel for (int id = 0; id < serial_count; id = id + 1) {
+            int dst = 0;
+            int v = 0;
+            while (v < vertex_count) {
+                int lo = offsets[v];
+                int n = fill[v];
+                int i = 0;
+                while (i < n) {
+                    packed[dst + i] = neighbors[lo + i];
+                    i = i + 1;
+                }
+                offsets[v] = dst;
+                dst = dst + n;
+                v = v + 1;
+            }
+            offsets[vertex_count] = dst;
+        }
+    }
+    return 0;
+}
