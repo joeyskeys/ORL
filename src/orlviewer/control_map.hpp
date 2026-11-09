@@ -206,7 +206,9 @@ private:
         std::function<bool()> active;
     };
 
-    void dispatch(const InputEvent& event);
+    // Returns true when a window-scoped shortcut handled the event. The Qt
+    // filter uses that to stop the key from propagating into child widgets.
+    bool dispatch(const InputEvent& event);
     void dispatch_view_navigation(const InputEvent& event);
     void invoke_modal(BoundOp& op, const InputEvent& event);
     void begin_operation_scope(BoundOp& op);
@@ -225,7 +227,7 @@ private:
 
     class QtEventFilter;
 
-    void dispatch_qt_key(
+    bool dispatch_qt_key(
         vkkk::Key key, vkkk::InputAction action, std::uint32_t mods);
     void reset_qt_key_state();
     void poll_qt_events();

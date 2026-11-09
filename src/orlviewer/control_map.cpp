@@ -340,12 +340,20 @@ protected:
         if (!key.has_value()) {
             return QObject::eventFilter(watched, event);
         }
-        owner_->dispatch_qt_key(
+        const bool handled = owner_->dispatch_qt_key(
             *key,
             event->type() == QEvent::KeyPress
                 ? vkkk::InputAction::Press
                 : vkkk::InputAction::Release,
             mods_from_qt(key_event->modifiers()));
+        if (handled) {
+            // A window shortcut already ran. Swallow the event so it is not
+            // delivered to the focus widget and then replayed on each parent.
+            // A modal dialog opened by the shortcut otherwise deactivates the
+            // window, clears key state, and the leftover event opens it again.
+            event->accept();
+            return true;
+        }
         return QObject::eventFilter(watched, event);
     }
 
@@ -727,22 +735,22 @@ void ControlMap::poll_holds() {
 
 #if ORL_USE_QT6
 
-void ControlMap::dispatch_qt_key(
+bool ControlMap::dispatch_qt_key(
     vkkk::Key key, vkkk::InputAction action, std::uint32_t mods)
 {
     const auto index = static_cast<std::size_t>(key);
     if (index >= qt_keys_down_.size()) {
-        return;
+        return false;
     }
     if (action == vkkk::InputAction::Press) {
         if (qt_keys_down_[index]) {
-            return;
+            return false;
         }
         qt_keys_down_[index] = true;
     }
     else if (action == vkkk::InputAction::Release) {
         if (!qt_keys_down_[index]) {
-            return;
+            return false;
         }
         qt_keys_down_[index] = false;
     }
@@ -754,7 +762,7 @@ void ControlMap::dispatch_qt_key(
     event.mods = mods;
     event.x = cursor_x_;
     event.y = cursor_y_;
-    dispatch(event);
+    return dispatch(event);
 }
 
 void ControlMap::reset_qt_key_state()
@@ -852,7 +860,7 @@ void ControlMap::dispatch_event(const InputEvent& event) {
     dispatch(event);
 }
 
-void ControlMap::dispatch(const InputEvent& event) {
+bool ControlMap::dispatch(const InputEvent& event) {
     if (auto* current = find_op(modal, &event)) {
         if (current->active && !current->active()) {
             if (modal_scope_active_) {
@@ -869,10 +877,11 @@ void ControlMap::dispatch(const InputEvent& event) {
                 }
                 modal.clear();
             }
-            return;
+            return false;
         }
     }
 
+    bool handled_window_shortcut = false;
     for (const auto& binding : bindings_) {
         if (!scope_matches(binding)) {
             continue;
@@ -898,15 +907,22 @@ void ControlMap::dispatch(const InputEvent& event) {
                 else {
                     end_operation_scope(*op);
                 }
+                if (binding.scope == BindingScope::Window) {
+                    handled_window_shortcut = true;
+                }
                 continue;
             }
             if (op->eval) {
                 begin_operation_scope(*op);
                 op->eval(event);
                 end_operation_scope(*op);
+                if (binding.scope == BindingScope::Window) {
+                    handled_window_shortcut = true;
+                }
             }
         }
     }
+    return handled_window_shortcut;
 }
 
 void ControlMap::dispatch_view_navigation(const InputEvent& event) {
